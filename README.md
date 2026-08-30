@@ -1,55 +1,67 @@
-# newhorse
+# agent-runtime
 
-**Model-agnostic, non-captive agent engine (v2).** An agent runtime that schedules subagents with a declarative DAG, keeps long-horizon work restartable via an append-only event log, and lets cheap models do the cheap work.
+**A reusable, model-agnostic agent runtime server.** Embed a full agent engine — sessions, tool loops, declarative DAG orchestration, durable memory, a permission layer — into any AI-native product via one HTTP/SSE boundary and a typed SDK.
 
-Not bound to one model; orchestrate agents with declarative scheduling instead of being orchestrated by another framework's runtime.
+> The stable that houses the horses. Developed in the [`newhorse`](https://github.com/Lin-A1/newhorse) monorepo; this repository is its standalone storage for reuse.
 
-> This README is a quick map. The target (north star) lives in `AGENTS.md`; the implemented/decision record lives in `docs/core-technology-notes.md`; the plans live in `specs/v2/`.
+## Quick start (zero code)
 
-## What it is (five differentiators)
-
-| Goal | Status | Where |
-|---|---|---|
-| 1. Declarative DAG scheduling — draw the graph forward, runtime topo-executes | Done (API only) | `core/agent/dag.ts`, `runtime/dag-runner.ts` |
-| 2. Long-horizon work — restartable sessions, durable log | Done (single-process) | `core/session/*`, `runtime/app.ts` |
-| 3. Cost-controlled subagent models — per-node model for cost balance | Done | `runtime/dag-runner.ts` (`resolveNodeModel`) |
-| 4. Model-agnostic output quality — one canonical vocabulary, four-axis route | Done | `schema/llm.ts`, `llm/*` |
-| 5. Usable + extensible — directory-as-registration, plugin seam, execpolicy floor | Partial (registration done, consumers TBD) | `plugin/*`, `runtime/tools/*` |
-
-## Architecture (dependency direction)
-
-```
-schema (leaf) → core / llm → plugin → runtime → cli
+```bash
+NEWHORSE_PROVIDER=anthropic \
+NEWHORSE_BASE_URL=https://api.anthropic.com \
+NEWHORSE_API_KEY=sk-... \
+NEWHORSE_MODEL=claude-sonnet-4 \
+NEWHORSE_MEMORY=on \
+bun run packages/server/src/main.ts
+# → listening : http://127.0.0.1:3927  (token: loopback-only)
 ```
 
-- **schema** — canonical LLM vocabulary (`LLMRequest`/`LLMEvent`), event shape `(aggregate_id, seq, type, data)`, session/execpolicy types.
-- **core** — seam container, event-sourced session, admission inbox, agent turn loop, DAG topology, `Initiator` (trusted caller kind), deny-all execpolicy fallback. Never imports upper layers.
-- **llm** — four-axis Route (Protocol / Endpoint / Auth / Framing), three protocols (openai / openai-responses / anthropic), uniform error taxonomy + retry.
-- **plugin** — five-kind capability registry + directory discovery (`tools/` `agents/` `commands/` `hooks/` `skills/`).
-- **runtime** — `createApp` domain assembly, builtin toolset (read/write/edit/list/search/bash), execpolicy engine, butler tools + session hub, DAG dispatcher.
-- **cli** — thin transport: `newhorse [--prompt TEXT] [--provider ...] [--butler]`.
+The whole runtime is env-configured — provider, model, persistence, memory, semantic search, tool trust. See the full env table in `packages/server/src/main.ts`.
 
-## Quick start
+## Embed it (SDK, three lines)
 
-Requires `OPENAI_API_KEY` (for `openai`/`openai-compatible`) or `ANTHROPIC_API_KEY` (for `anthropic`).
+```ts
+import { createSdkClient } from "./packages/sdk/src/index.ts"
+
+const client = createSdkClient({ baseUrl: "http://127.0.0.1:3927", token: process.env.TOKEN })
+const sessionId = await client.createSession({ workspace: "/your/project" })
+const result = await client.prompt(sessionId, "Fix the failing test", (e) => {
+  if (e.type === "text") process.stdout.write(e.text)
+})
+```
+
+## What the runtime gives you
+
+| Capability | How |
+|---|---|
+| **Agent sessions** — durable, restart-safe, event-sourced (`(aggregate_id, seq, type, data)`) | admission inbox → turn loop → tool settlement; interrupted tools settle durably, never replayed |
+| **Orchestration** — `spawn_agent` children + declarative DAG graphs, ONE task semantics (`wait_agent`/`followup_task` track both) | per-node models (cost-down), agent roles (restrictive overlay), crash-resume (`resumeDag`) |
+| **Task hierarchy** — goal (objective + token budget, enforced) → DAG → todo (model-maintained list) → delegated tasks | `goal_write/goal_read`, `todo_write` |
+| **Memory** — durable + switchable semantic search (FTS5 × cosine RRF), post-turn extraction | `memory_write/search` + `EmbeddingProvider` seam (MiniMax / OpenAI-compatible) |
+| **Tools** — read/write/edit/list/search/bash + todo/goal/memory/skill, all behind a permission floor | execpolicy: fail-closed, user-approved rules persist |
+| **Extensibility** — five-kind plugin seam, directory-as-registration (`tools/ agents/ commands/ hooks/ skills/`), `.ts` tools behind a trust switch | hooks (stop / pre-tool-use), commands (`/name`), providers |
+| **Model-agnostic** — four-axis Route; openai / openai-responses / anthropic protocols | one canonical `LLMRequest`/`LLMEvent` vocabulary; provider quirks never leak |
+
+## Reuse contract
+
+- **HTTP/SSE** (see `specs/v2/server.md`): `POST /v1/session`, `POST /v1/session/:id/prompt` (SSE), `/steer`, `/interrupt`, `GET /v1/session/:id`, `/v1/sessions`, `/v1/audit`, `/v1/session/:id/events`. Token auth or loopback-only.
+- **SDK**: `packages/sdk` — typed client, no domain logic crosses the boundary.
+- **Config**: everything via env (see the table in `packages/server/src/main.ts`).
+
+## Repository topology
+
+```
+newhorse (monorepo, upstream)  ──develop──▶  agent-runtime (this repo, standalone storage/reuse)
+```
+
+The engine packages (`schema → core / llm → plugin → memory → runtime → server / sdk`) live here; `packages/cli` is a reference shell. Runtime changes are developed upstream and synced here (`git pull upstream dev`).
+
+## Development
 
 ```bash
 bun install
-bun run packages/cli/src/index.ts --prompt "Read package.json and tell me the name" --data-dir ~/.newhorse/data
+cd packages/core && bun test        # per-package tests (299 total, all green)
+bunx tsc --noEmit                   # strict, clean in every package
 ```
 
-Run tests from package dirs (never repo root):
-
-```bash
-cd packages/core && bun test && bunx tsc --noEmit
-```
-
-## Key invariants
-
-- **model-visible ⟺ logged**: everything the model sees is in the append-only log first.
-- **seam register-as-disposer**: capabilities register through a seam, not `if`/`switch` chains.
-- **fail-closed**: no execpolicy → deny-all; no approve gate → `prompt` forbids; interrupted tools settle as `Tool execution interrupted`, never replay silently.
-
-## Known gaps (see `docs/` §17 + `specs/v2/plan.md`)
-
-Current direction: **runtime server first; model-driven orchestration as the main entrance, declarative DAG as the batch/planned form — both on one child-session base.** The child-session base (workspace inheritance + driven child) is **Phase 2, a prerequisite before orchestration** — not M4. Deferred to M4 or later: cross-session effect delivery + full `SessionManager`, fine-grained permissions bootstrap, web fetch / image read / memory tool, plugin TS loading, CLI entry for DAG (Phase 3 has `dag` subcommand). Memory is a *reserved seam* (events + message kind planned in schema; pluggable index), skills discovery works but needs a `skill` loader tool. The `specs/v2/` status lines mark implemented vs deferred.
+Design record: `docs/core-technology-notes.md` (24 sections) + `docs/architecture-map.md` (drift sentinel). Plans: `specs/v2/`.

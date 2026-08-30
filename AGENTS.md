@@ -1,10 +1,21 @@
 # AGENTS.md
 
-> This is the overall target for newhorse **v2**, not a stage-scoped note. It should remain true across M1/M2/M3 and beyond. Per-mechanism detail lives in `specs/v2/`; this file is the stable north star.
+> This is the north star for **agent-runtime** — the standalone, reusable agent runtime server (developed in the `newhorse` monorepo, stored here for independent reuse). Per-mechanism detail lives in `specs/v2/`; implementation decisions in `docs/`; this file is the stable contract.
+
+## Repository topology
+
+```
+newhorse (monorepo, upstream: engine development + first host project)
+  ──develop & sync──▶  agent-runtime (this repo: standalone storage / reuse boundary)
+```
+
+- **Runtime changes are developed upstream** (newhorse) and synced here. Do not start new engine work in this repo.
+- **This repo is the reuse boundary**: downstream AI-native products depend on it (SDK / HTTP boundary), so its README and docs must describe the runtime from the CONSUMER's perspective.
+- Naming: the engine is "agent-runtime" (this repo); "newhorse" refers to the upstream monorepo and its host project (CLI shell, project-specific flows).
 
 ## Positioning
 
-newhorse is a **model-agnostic, non-captive agent engine**. It is not trying to prove it is better than any other framework — it is trying to be **usable and extensible** for daily work, and to **not be captive to any single vendor, model family, or internal architecture**.
+agent-runtime is a **model-agnostic, non-captive agent engine served over HTTP/SSE + a typed SDK**. It is not trying to prove it is better than any other framework — it is trying to be **usable and extensible** for daily work, and to **not be captive to any single vendor, model family, or internal architecture**.
 
 > Not bound to a single model; orchestrate agents with declarative scheduling instead of being orchestrated by another framework's runtime.
 
@@ -20,7 +31,7 @@ The three pillars, each answering a different kind of captivity that existing fr
 
 ## What We Want (core differentiators)
 
-These are the priorities that define newhorse — the things worth doing and worth highlighting. Keep them in mind when designing and when comparing against codex / claude code / opencode.
+These are the priorities that define the agent-runtime engine — the things worth doing and worth highlighting. Keep them in mind when designing and when comparing against codex / claude code / opencode.
 
 ### 1. Declarative DAG scheduling + model-driven orchestration — two faces of one base
 
