@@ -27,6 +27,9 @@ export interface StoredEvent<T = UnknownRecord> {
   readonly seq: number
   readonly type: string
   readonly data: T
+  /** Store-level write time (ms). Present for events written after the
+   *  created_at column shipped; legacy rows carry no timestamp. */
+  readonly ts?: number
 }
 
 export type Delivery = "steer" | "queue"
@@ -57,6 +60,8 @@ export type SessionEvent =
   | SessionEventBase<"Session.TodoUpdated", { readonly sessionId: string; readonly todos: ReadonlyArray<{ readonly content: string; readonly status: "pending" | "in_progress" | "completed" | "cancelled"; readonly activeForm?: string }> }>
   | SessionEventBase<"Session.PolicyChanged", { readonly sessionId: string; readonly from: string; readonly to: string; readonly by: "host" | "model-approved"; readonly ts: number }>
   | SessionEventBase<"Session.GoalUpdated", { readonly sessionId: string; readonly objective: string; readonly status: "active" | "paused" | "blocked" | "complete"; readonly tokenBudget?: number; readonly ts: number }>
+  | SessionEventBase<"Session.TitleSet", { readonly sessionId: string; readonly title: string; readonly ts: number }>
+  | SessionEventBase<"Session.Archived", { readonly sessionId: string; readonly archived: boolean; readonly ts: number }>
   | SessionEventBase<"Session.ButlerAction", { readonly sessionId: string; readonly actorKind: "user" | "butler" | "parent"; readonly actorId: string; readonly op: string; readonly targetSessionId?: string; readonly outcome: "allowed" | "denied"; readonly reason?: string; readonly ts: number }>
   | SessionEventBase<"Session.ExecDecision", { readonly sessionId: string; readonly kind: "command" | "path"; readonly action: string; readonly decision: "prompt" | "forbid"; readonly reason?: string; readonly requestId?: string; readonly ts: number }>
 

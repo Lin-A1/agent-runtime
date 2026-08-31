@@ -1,4 +1,6 @@
 import { Database } from "bun:sqlite"
+import { mkdirSync } from "node:fs"
+import { dirname } from "node:path"
 import type { StoredEvent, UnknownRecord, AggregateType } from "@newhorse/schema"
 import type { EventStore } from "./store"
 
@@ -23,6 +25,8 @@ export class SqliteEventStore implements EventStore {
   }
 
   static open(path: string): SqliteEventStore {
+    // A fresh dataDir must not crash the store (first-run experience).
+    mkdirSync(dirname(path), { recursive: true })
     return new SqliteEventStore(new Database(path))
   }
 
@@ -51,6 +55,13 @@ export class SqliteEventStore implements EventStore {
     if (!cols.some((c) => c.name === "aggregate")) {
       this.#db.run("ALTER TABLE event ADD COLUMN aggregate TEXT NOT NULL DEFAULT 'session'")
     }
+    // Event timestamps (client-facing read models — usage heatmap, timelines):
+    // the durable shape stays (aggregate_id, seq, type, data); created_at is
+    // store-level metadata. Legacy rows keep NULL (honestly excluded from
+    // time-based views rather than backfilled with a fake time).
+    if (!cols.some((c) => c.name === "created_at")) {
+      this.#db.run("ALTER TABLE event ADD COLUMN created_at INTEGER")
+    }
     // A legacy DB may also have events without a corresponding `event_sequence`
     // row (the allocator predates the sequence table, or the DB was created by an
     // even older build). When the sequence table is empty but events exist, the
@@ -67,13 +78,13 @@ export class SqliteEventStore implements EventStore {
 
   async append<T extends UnknownRecord>(aggregate_id: string, type: string, data: T, aggregate: AggregateType = "session"): Promise<StoredEvent> {
     const seq = this.#nextSeq(aggregate_id)
-    this.#db.run("INSERT INTO event (aggregate_id, seq, type, data, aggregate) VALUES (?, ?, ?, ?, ?)", [aggregate_id, seq, type, JSON.stringify(data), aggregate])
+    this.#db.run("INSERT INTO event (aggregate_id, seq, type, data, aggregate, created_at) VALUES (?, ?, ?, ?, ?, ?)", [aggregate_id, seq, type, JSON.stringify(data), aggregate, Date.now()])
     return { aggregate, aggregate_id, seq, type, data }
   }
 
   async read(aggregate_id: string): Promise<StoredEvent[]> {
-    const rows = this.#db.query("SELECT seq, type, data, aggregate FROM event WHERE aggregate_id = ? ORDER BY seq ASC").all(aggregate_id) as { seq: number; type: string; data: string; aggregate: AggregateType }[]
-    return rows.map((r) => ({ aggregate: r.aggregate, aggregate_id, seq: r.seq, type: r.type, data: JSON.parse(r.data) as UnknownRecord }))
+    const rows = this.#db.query("SELECT seq, type, data, aggregate, created_at FROM event WHERE aggregate_id = ? ORDER BY seq ASC").all(aggregate_id) as { seq: number; type: string; data: string; aggregate: AggregateType; created_at: number | null }[]
+    return rows.map((r) => ({ aggregate: r.aggregate, aggregate_id, seq: r.seq, type: r.type, data: JSON.parse(r.data) as UnknownRecord, ...(r.created_at !== null ? { ts: r.created_at } : {}) }))
   }
 
   async latestSeq(aggregate_id: string): Promise<number> {

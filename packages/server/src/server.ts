@@ -1,6 +1,15 @@
-import { createApp, type App, type AppConfig, type PromptResult, type SessionRow, type RegistryQuery, type AuditEventRow, type SessionDirectory, type DirectoryEntry } from "@newhorse/runtime"
-import type { AdapterConfig } from "@newhorse/llm"
+import { createApp, type App, type AppConfig, type PromptResult, type SessionRow, type RegistryQuery, type AuditEventRow, type SessionDirectory, type DirectoryEntry, type SettingsController, type AgentHomeConfig, type ApprovalHub, type Scheduler, type ScheduleInput, type Schedule } from "@newhorse/runtime"
+import { redactSettings, aggregateUsage, type DagRunner, type DagStatus, createDagRunner } from "@newhorse/runtime"
+import { currentGoal, tokensUsed as foldTokensUsed, currentTodos, validateGoal, projectCompacted } from "@newhorse/core"
+import { discoverSkills, discoverPlugin } from "@newhorse/plugin"
+import { SessionRegistry, SqliteEventStore, type DAGSpec } from "@newhorse/core"
+import { Database } from "bun:sqlite"
+import type { MemoryStore, MemoryRecord } from "@newhorse/memory"
+import { listModels } from "@newhorse/llm"
+import type { AdapterConfig, Fetcher } from "@newhorse/llm"
 import type { StoredEvent, ApprovalRequest } from "@newhorse/schema"
+import { join, resolve, sep } from "node:path"
+import { readdir } from "node:fs/promises"
 
 /**
  * Runtime server (Phase 1): transport-only HTTP + SSE boundary over `createApp`.
@@ -56,6 +65,27 @@ export interface ServerConfig {
   readonly directory?: SessionDirectory
   /** URL other processes use to reach THIS server (default: derived baseUrl). */
   readonly advertiseUrl?: string
+  /** Directory with the built client UI (index.html + assets). When set, all
+   *  non-/v1 GET paths serve it with SPA fallback — one origin for API + UI:
+   *  standalone web, LAN mobile, and the desktop webview are the same artifact. */
+  readonly uiDir?: string
+  /** Settings surface for the client's settings page (read effective / write patch). */
+  readonly settings?: SettingsController
+  /** Interactive approval hub: the engine's gate parks requests here and the
+   *  client settles them via /v1/approvals. When present it is the DEFAULT
+   *  gate for created sessions (an explicit onApprove still wins). */
+  readonly approvals?: ApprovalHub
+  /** Scheduled prompts (定时任务). CRUD via /v1/schedules; the caller owns the
+   *  tick loop (the standalone entrypoint starts one; a host may use its own). */
+  readonly schedules?: Scheduler
+  /** Injectable fetch for the provider models listing (tests). */
+  readonly modelsFetch?: Fetcher
+  /** Shared memory store — client memory browser reads/deletes via /v1/memory. */
+  readonly memory?: MemoryStore
+  /** Scheduled + on-demand DAG orchestration (编排). */
+  readonly dagRunner?: DagRunner
+  /** Plugin directory — skills/agents discovery for the capability browser. */
+  readonly pluginsDir?: string
 }
 
 /** One session's create config (POST /v1/session body), transport DTO. */
@@ -63,6 +93,8 @@ export interface SessionCreateRequest {
   readonly workspace?: string
   readonly sessionId?: string
   readonly model?: string
+  /** Create the session as the fixed BUTLER role (coordinator toolset + body). */
+  readonly asButler?: boolean
   /** The create-model's context window in tokens (scales auto-compaction). */
   readonly contextWindowTokens?: number
   /** Output budget per reply in tokens (avoids the anthropic 4096 floor). */
@@ -86,6 +118,9 @@ export interface ServerHandle {
   readonly baseUrl: string
   /** Read a session (test/debug helper). */
   readonly appFor: (sessionId: string) => App | undefined
+  /** Fire-and-forget a user prompt into a session (get-or-create) — the
+   *  scheduled-prompts delivery path; the prompt lands in the durable inbox. */
+  readonly admitPrompt: (sessionId: string, prompt: string) => Promise<void>
   readonly stop: () => Promise<void>
 }
 
@@ -125,6 +160,27 @@ async function readJsonOr400<T>(req: Request): Promise<T | { error: string }> {
 
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
+}
+
+/** Serve the built client UI with SPA fallback. Path traversal is blocked by
+ *  requiring the resolved path to stay under root (root+sep compare). */
+const CONTENT_TYPES: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".json": "application/json", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".woff2": "font/woff2", ".map": "application/json" }
+async function serveStatic(root: string, pathname: string): Promise<Response> {
+  const rootAbs = resolve(root)
+  const rel = pathname === "/" ? "index.html" : decodeURIComponent(pathname.slice(1))
+  const resolved = resolve(root, rel)
+  if (resolved !== rootAbs && !resolved.startsWith(rootAbs + sep)) return json(403, { error: "forbidden" })
+  const file = Bun.file(resolved)
+  if (await file.exists()) {
+    const ext = resolved.slice(resolved.lastIndexOf(".")).toLowerCase()
+    return new Response(file, { headers: CONTENT_TYPES[ext] ? { "content-type": CONTENT_TYPES[ext]! } : {} })
+  }
+  // SPA fallback: unknown extension-less paths load the app shell.
+  if (!rel.includes(".")) {
+    const index = Bun.file(join(rootAbs, "index.html"))
+    if (await index.exists()) return new Response(index, { headers: { "content-type": CONTENT_TYPES[".html"]! } })
+  }
+  return json(404, { error: "not found" })
 }
 
 /** SSE stream: one `data: {json}\n\n` per event; `[DONE]` at the end. */
@@ -171,6 +227,12 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
   const token = config.token
   const sessionResolver = config.sessionResolver
   const directory = config.directory
+  const settings = config.settings
+  const approvals = config.approvals
+  const schedules = config.schedules
+  const memory = config.memory
+  const dagRunner = config.dagRunner
+  const pluginsDir = config.pluginsDir
   const apps = new Map<string, App>()
   /** Sessions this process created (directory-owned; unregistered on stop). */
   const owned = new Set<string>()
@@ -210,6 +272,35 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
         } else {
           return { kind: "remote", entry }
         }
+      }
+    }
+    if (settings) {
+      // Lazy re-attach: the session exists in the DURABLE registry but no App
+      // is attached yet (server restart). Rebuild it from the row so history
+      // stays readable and the conversation can continue after a restart.
+      try {
+        const db = new Database(join(settings.get().dataDir, "events.db"), { readonly: true })
+        let row: { sessionId: string; workspace: string; model?: string; role?: "butler" } | undefined
+        try {
+          const registry = new SessionRegistry(new SqliteEventStore(db))
+          row = (await registry.list()).find((r) => r.sessionId === sessionId)
+        } finally {
+          db.close()
+        }
+        if (row) {
+          // Re-attach keeps the fixed role: a butler session must come back
+          // with its coordinator toolset after a restart, not as a plain chat.
+          const resolved = await resolveApp({ sessionId, workspace: row.workspace, model: row.model, asButler: row.role === "butler" })
+          if (resolved?.app) {
+            if (directory) {
+              directory.register(sessionId, selfUrl())
+              owned.add(sessionId)
+            }
+            return { kind: "local", app: resolved.app }
+          }
+        }
+      } catch {
+        // registry unavailable — fall through to the resolver/miss
       }
     }
     if (sessionResolver) {
@@ -287,7 +378,7 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
     const base = await sessionConfig({ ...create })
     // sessionId must be pinned, else createApp derives a workspace-stable id
     // that differs from the one the caller will use in paths.
-    const app = await createApp({ ...base, sessionId: id, onApprove: config.onApprove })
+    const app = await createApp({ ...base, sessionId: id, onApprove: config.onApprove ?? config.approvals?.gate })
     if (directory) {
       // Register cross-process ownership. register returns the PREVIOUS row:
       // a foreign FRESH row means a sibling owns this id and our pre-check
@@ -323,7 +414,6 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
     // events, and an idle socket would be dropped (Bun default 10s). Comment
     // lines are ignored by every SSE client, so they are safe between events.
     const keepalive = setInterval(() => sse.emit(": keepalive\n\n"), 15_000)
-    keepalive.unref?.()
     const unsubscribe = app.onEvent((event) => {
       sse.emit(`data: ${JSON.stringify(event)}\n\n`)
     })
@@ -366,9 +456,12 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
 
       const url = new URL(req.url)
       const parts = url.pathname.split("/").filter(Boolean)
-      if (parts[0] !== "v1") return json(404, { error: "not found" })
-
       const method = req.method
+      // The built client UI (SPA) — one origin with the API.
+      if (parts[0] !== "v1") {
+        if (config.uiDir && method === "GET") return serveStatic(config.uiDir, url.pathname)
+        return json(404, { error: "not found" })
+      }
 
       // GET /v1/health
       if (method === "GET" && parts.length === 2 && parts[1] === "health") {
@@ -441,14 +534,29 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
         return json(200, { self: selfUrl(), live: directory?.entries() ?? [] })
       }
 
-      // GET /v1/sessions
+      // GET /v1/sessions — the DURABLE registry (survives restarts) when a
+      // settings surface gives us the dataDir; otherwise the in-memory apps.
       if (method === "GET" && parts.length === 2 && parts[1] === "sessions") {
         const ws = url.searchParams.get("workspace") ?? undefined
         const st = url.searchParams.get("status") ?? undefined
         const query: RegistryQuery = ws || st ? { ...(ws ? { workspace: ws } : {}), ...(st ? { status: st as RegistryQuery["status"] } : {}) } : {}
+        if (settings) {
+          try {
+            const db = new Database(join(settings.get().dataDir, "events.db"), { readonly: true })
+            try {
+              const store = new SqliteEventStore(db)
+              const registry = new SessionRegistry(store)
+              const rows = await registry.list(query)
+              return json(200, rows)
+            } finally {
+              db.close()
+            }
+          } catch {
+            // no events.db yet — fall through to the in-memory view
+          }
+        }
         const rows: SessionRow[] = []
         for (const app of apps.values()) rows.push(...(await app.listSessions(query)))
-        // de-dup by sessionId (same session can appear once per App but Apps are 1:1)
         const seen = new Set<string>()
         return json(200, rows.filter((r) => !seen.has(r.sessionId) && seen.add(r.sessionId)))
       }
@@ -470,6 +578,332 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
         return json(200, events)
       }
 
+      // --- client-facing surfaces (settings / models / approvals / usage / schedules) ---
+
+      // GET /v1/memory?q= — the client's memory browser.
+      if (method === "GET" && parts.length === 2 && parts[1] === "memory") {
+        if (!memory) return json(404, { error: "no memory store configured" })
+        const q = url.searchParams.get("q") ?? ""
+        const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit") ?? 50)))
+        const rows: MemoryRecord[] = await memory.search(q, limit)
+        return json(200, { memories: rows })
+      }
+
+      // DELETE /v1/memory/:id — remove one memory.
+      if (method === "DELETE" && parts.length === 3 && parts[1] === "memory") {
+        if (!memory) return json(404, { error: "no memory store configured" })
+        if (!memory.delete) return json(501, { error: "memory store does not support delete" })
+        await memory.delete(parts[2]!)
+        return json(200, { removed: true })
+      }
+
+      // --- 编排 (DAG) ---
+      // POST /v1/dag {spec, workspace?, todoSessionId?} — declare + run (fire-and-forget).
+      if (method === "POST" && parts.length === 2 && parts[1] === "dag") {
+        if (!dagRunner) return json(404, { error: "no dag runner configured" })
+        const parsed = await readJsonOr400<{ spec?: DAGSpec; workspace?: string; todoSessionId?: string }>(req)
+        if ("error" in parsed) return json(400, parsed)
+        if (!parsed.spec || typeof parsed.spec !== "object" || !parsed.spec.nodes || Object.keys(parsed.spec.nodes).length === 0) return json(400, { error: "spec.nodes is required (at least one node)" })
+        try {
+          const { dagId } = await dagRunner.run(parsed.spec, { workspace: parsed.workspace, todoSessionId: parsed.todoSessionId })
+          return json(201, { dagId })
+        } catch (e) {
+          return json(400, { error: e instanceof Error ? e.message : String(e) })
+        }
+      }
+
+      // GET /v1/dags — all declared DAGs (durable fold).
+      if (method === "GET" && parts.length === 2 && parts[1] === "dags") {
+        if (!dagRunner) return json(404, { error: "no dag runner configured" })
+        return json(200, { dags: await dagRunner.list() })
+      }
+
+      // GET /v1/dag/:id — node statuses for one DAG.
+      if (method === "GET" && parts.length === 3 && parts[1] === "dag") {
+        if (!dagRunner) return json(404, { error: "no dag runner configured" })
+        const st = await dagRunner.status(parts[2]!)
+        return st ? json(200, st) : json(404, { error: "unknown dag id" })
+      }
+
+      // GET /v1/session/:id/goal — folded goal + persisted usage.
+      if (method === "GET" && parts.length === 4 && parts[3] === "goal") {
+        const found = await findSession(parts[2]!)
+        if (found.kind === "missing") return json(404, { error: found.error })
+        const events = (found.kind === "local" ? await found.app.events.read(parts[2]!) : await (await fetch(`${found.entry.endpoint}/v1/session/${parts[2]!}/events`, { headers: token ? { authorization: `Bearer ${token}` } : {} })).json()) as StoredEvent[]
+        const goal = currentGoal(events)
+        return json(200, { goal: goal ?? null, tokensUsed: foldTokensUsed(events) })
+      }
+
+      // POST /v1/session/:id/goal {objective, tokenBudget?} — durable goal write.
+      if (method === "POST" && parts.length === 4 && parts[3] === "goal") {
+        const found = await findSession(parts[2]!)
+        if (found.kind === "missing") return json(404, { error: found.error })
+        if (found.kind === "remote") return json(501, { error: "goal write on a remote-owned session is not proxied yet" })
+        const parsed = await readJsonOr400<{ objective?: string; tokenBudget?: number }>(req)
+        if ("error" in parsed) return json(400, parsed)
+        const valid = validateGoal(parsed.objective, "active", parsed.tokenBudget)
+        if ("error" in valid) return json(400, { error: valid.error })
+        await found.app.events.append(parts[2]!, "Session.GoalUpdated", { sessionId: parts[2]!, objective: valid.objective, status: "active", ...(valid.tokenBudget !== undefined ? { tokenBudget: valid.tokenBudget } : {}), ts: Date.now() })
+        return json(201, { objective: valid.objective, tokenBudget: valid.tokenBudget ?? null })
+      }
+
+      // GET /v1/session/:id/todos — the current durable task list.
+      if (method === "GET" && parts.length === 4 && parts[3] === "todos") {
+        const found = await findSession(parts[2]!)
+        if (found.kind === "missing") return json(404, { error: found.error })
+        const events = (found.kind === "local" ? await found.app.events.read(parts[2]!) : await (await fetch(`${found.entry.endpoint}/v1/session/${parts[2]!}/events`, { headers: token ? { authorization: `Bearer ${token}` } : {} })).json()) as StoredEvent[]
+        return json(200, { todos: currentTodos(events) })
+      }
+
+      // GET /v1/session/:id/context — visible context size vs the window.
+      if (method === "GET" && parts.length === 4 && parts[3] === "context") {
+        const found = await findSession(parts[2]!)
+        if (found.kind === "missing") return json(404, { error: found.error })
+        const events = (found.kind === "local" ? await found.app.events.read(parts[2]!) : await (await fetch(`${found.entry.endpoint}/v1/session/${parts[2]!}/events`, { headers: token ? { authorization: `Bearer ${token}` } : {} })).json()) as StoredEvent[]
+        const { messages } = projectCompacted(events)
+        const chars = messages.reduce((n, m) => n + JSON.stringify(m).length, 0)
+        const windowTokens = settings?.get().contextWindowTokens
+        return json(200, { chars, estTokens: Math.ceil(chars / 2.5), ...(windowTokens ? { windowTokens, ratio: Math.min(1, Math.ceil(chars / 2.5) / (windowTokens * 0.6)) } : {}) })
+      }
+
+      // POST /v1/memory {content, type?, priority?} — client-side memory write.
+      if (method === "POST" && parts.length === 2 && parts[1] === "memory") {
+        if (!memory) return json(404, { error: "no memory store configured" })
+        const parsed = await readJsonOr400<{ content?: string; type?: string; priority?: number }>(req)
+        if ("error" in parsed) return json(400, parsed)
+        if (!parsed.content?.trim()) return json(400, { error: "content is required" })
+        const rec = await memory.write({ content: parsed.content.trim(), type: (parsed.type as "fact") ?? "fact", priority: parsed.priority ?? 50, sessionId: "client" })
+        return json(201, rec)
+      }
+
+      // POST /v1/session/:id/archive {archived} — archive/unarchive a session.
+      if (method === "POST" && parts.length === 4 && parts[3] === "archive") {
+        const found = await findSession(parts[2]!)
+        if (found.kind === "missing") return json(404, { error: found.error })
+        if (found.kind === "remote") return json(501, { error: "archive on a remote-owned session is not proxied yet" })
+        const parsed = await readJsonOr400<{ archived?: boolean }>(req)
+        if ("error" in parsed) return json(400, parsed)
+        const archived = parsed.archived !== false
+        await found.app.events.append(parts[2]!, "Session.Archived", { sessionId: parts[2]!, archived, ts: Date.now() })
+        return json(200, { archived })
+      }
+
+      // POST /v1/session/:id/title {title} — durable rename (Session.TitleSet).
+      if (method === "POST" && parts.length === 4 && parts[3] === "title") {
+        const found = await findSession(parts[2]!)
+        if (found.kind === "missing") return json(404, { error: found.error })
+        if (found.kind === "remote") return json(501, { error: "rename on a remote-owned session is not proxied yet" })
+        const parsed = await readJsonOr400<{ title?: string }>(req)
+        if ("error" in parsed) return json(400, parsed)
+        const title = parsed.title?.trim()
+        if (!title) return json(400, { error: "title is required" })
+        await found.app.events.append(parts[2]!, "Session.TitleSet", { sessionId: parts[2]!, title, ts: Date.now() })
+        return json(200, { title })
+      }
+
+      // POST /v1/session/:id/fork {atSeq?} — branch at a message boundary
+      // (codex backtrack: append-only fork, never truncate). The child
+      // re-Creates with the SOURCE's workspace (a fork is the same project —
+      // `location: ""` would leave it working blind) and its fixed role.
+      if (method === "POST" && parts.length === 4 && parts[3] === "fork") {
+        const found = await findSession(parts[2]!)
+        if (found.kind === "missing") return json(404, { error: found.error })
+        if (found.kind === "remote") return json(501, { error: "fork of a remote-owned session is not proxied yet" })
+        const parsed = await readJsonOr400<{ atSeq?: number }>(req)
+        if ("error" in parsed) return json(400, parsed)
+        const source = await found.app.events.read(parts[2]!)
+        const atSeq = parsed.atSeq !== undefined ? parsed.atSeq : Number.MAX_SAFE_INTEGER
+        const created = source.find((e) => e.type === "Session.Created")
+        const sourceData = (created?.data ?? {}) as { location?: string; role?: "butler" }
+        const prefix = source.filter((e) => e.seq <= atSeq && e.type !== "Session.Created")
+        if (prefix.length === 0) return json(400, { error: "nothing to fork at that seq" })
+        const newId = crypto.randomUUID()
+        for (const e of prefix) {
+          await found.app.events.append(newId, e.type, e.data)
+        }
+        await found.app.events.append(newId, "Session.Created", {
+          id: newId,
+          location: sourceData.location ?? "",
+          createdAt: Date.now(),
+          ...(sourceData.role ? { role: sourceData.role } : {}),
+        })
+        return json(201, { sessionId: newId, forkedFrom: parts[2]!, atSeq: Math.min(atSeq, prefix[prefix.length - 1]!.seq) })
+      }
+
+      // GET/POST /v1/session/:id/policy — read or change this session's
+      // permission level (strict | readonly | trusted). The change is durable
+      // (Session.PolicyChanged) and effective from the next prompt.
+      if (parts.length === 4 && parts[3] === "policy" && (method === "GET" || method === "POST")) {
+        const found = await findSession(parts[2]!)
+        if (found.kind === "missing") return json(404, { error: found.error })
+        if (found.kind === "remote") return json(501, { error: "policy on a remote-owned session is not proxied yet" })
+        if (method === "GET") return json(200, { policy: found.app.policy() })
+        const parsed = await readJsonOr400<{ policy?: string }>(req)
+        if ("error" in parsed) return json(400, parsed)
+        const policy = parsed.policy
+        if (policy !== "strict" && policy !== "readonly" && policy !== "trusted") return json(400, { error: "policy must be strict | readonly | trusted" })
+        await found.app.setPolicy(policy)
+        return json(200, { policy })
+      }
+
+      // GET /v1/fs?path=&workspace= — sandboxed one-level listing.
+      if (method === "GET" && parts.length === 2 && parts[1] === "fs") {
+        if (!settings) return json(404, { error: "no settings controller configured" })
+        const ws = url.searchParams.get("workspace") ?? settings.get().workspace
+        const rel = url.searchParams.get("path") ?? "."
+        const rootAbs = resolve(ws)
+        const targetAbs = resolve(ws, rel)
+        if (targetAbs !== rootAbs && !targetAbs.startsWith(rootAbs + sep)) return json(403, { error: "path escapes the workspace" })
+        try {
+          const dir = await readdir(targetAbs, { withFileTypes: true })
+          const entries = []
+          for (const d of dir) {
+            if (d.name.startsWith(".") || d.name === "node_modules") continue
+            entries.push({ name: d.name, dir: d.isDirectory() })
+          }
+          return json(200, { path: rel, entries: entries.sort((a, b) => (a.dir === b.dir ? a.name.localeCompare(b.name) : a.dir ? -1 : 1)) })
+        } catch {
+          return json(200, { path: rel, entries: [] })
+        }
+      }
+
+      // GET /v1/skills — the pluginsDir skills catalog (level 1 + body on demand).
+      if (method === "GET" && parts.length === 2 && parts[1] === "skills") {
+        if (!pluginsDir) return json(404, { error: "no pluginsDir configured" })
+        const name = url.searchParams.get("name")
+        const skills = await discoverSkills(pluginsDir)
+        if (name) {
+          const hit = skills.find((sk) => sk.name === name)
+          return hit ? json(200, hit) : json(404, { error: "unknown skill" })
+        }
+        return json(200, { skills: skills.map((sk) => ({ name: sk.name, description: sk.description, path: sk.path })) })
+      }
+
+      // GET /v1/agents — discovered agent roles (name/model/allowedTools).
+      if (method === "GET" && parts.length === 2 && parts[1] === "agents") {
+        if (!pluginsDir) return json(404, { error: "no pluginsDir configured" })
+        const caps = await discoverPlugin(pluginsDir)
+        return json(200, { agents: caps.filter((c) => c.kind === "agent") })
+      }
+
+      // GET /v1/commands — discovered slash commands (name/description only).
+      if (method === "GET" && parts.length === 2 && parts[1] === "commands") {
+        if (!pluginsDir) return json(404, { error: "no pluginsDir configured" })
+        const caps = await discoverPlugin(pluginsDir)
+        return json(200, { commands: caps.filter((c) => c.kind === "command").map((c) => ({ name: c.name, description: c.description })) })
+      }
+
+      // POST /v1/session/:id/command {text} — run a slash line ("/name args")
+      // through the session's command seam. Returns the expansion text (the
+      // client puts it back into the composer); 404 when not a command.
+      if (method === "POST" && parts.length === 4 && parts[3] === "command") {
+        const found = await findSession(parts[2]!)
+        if (found.kind === "missing") return json(404, { error: found.error })
+        if (found.kind === "remote") return json(501, { error: "commands on a remote-owned session are not proxied yet" })
+        const parsed = await readJsonOr400<{ text?: string }>(req)
+        if ("error" in parsed) return json(400, parsed)
+        if (!parsed.text?.trim()) return json(400, { error: "text is required" })
+        const output = await found.app.runCommand(parsed.text)
+        if (output === undefined) return json(404, { error: `unknown command: ${parsed.text.trim().split(/\s+/)[0]}` })
+        return json(200, { output })
+      }
+
+      // GET /v1/settings — effective settings, secrets redacted.
+      if (method === "GET" && parts.length === 2 && parts[1] === "settings") {
+        if (!settings) return json(404, { error: "no settings controller configured" })
+        return json(200, redactSettings(settings.get()))
+      }
+
+      // PUT /v1/settings — merge a patch into the agent-home config file.
+      if (method === "PUT" && parts.length === 2 && parts[1] === "settings") {
+        if (!settings) return json(404, { error: "no settings controller configured" })
+        const parsed = await readJsonOr400<AgentHomeConfig>(req)
+        if ("error" in parsed) return json(400, parsed)
+        const next = await settings.write(parsed)
+        return json(200, redactSettings(next))
+      }
+
+      // GET /v1/models — the configured provider's available model ids.
+      if (method === "GET" && parts.length === 2 && parts[1] === "models") {
+        if (!settings) return json(404, { error: "no settings controller configured" })
+        const provider: AdapterConfig = settings.get().provider
+        const models = await listModels(provider, config.modelsFetch ?? globalThis.fetch.bind(globalThis))
+        return json(200, { models })
+      }
+
+      // GET /v1/approvals — pending interactive approvals (the client polls).
+      if (method === "GET" && parts.length === 2 && parts[1] === "approvals") {
+        if (!approvals) return json(404, { error: "no approval hub configured" })
+        return json(200, { approvals: approvals.pending() })
+      }
+
+      // POST /v1/approvals/:id {allow} — settle one pending approval.
+      if (method === "POST" && parts.length === 3 && parts[1] === "approvals") {
+        if (!approvals) return json(404, { error: "no approval hub configured" })
+        const parsed = await readJsonOr400<{ allow?: boolean }>(req)
+        if ("error" in parsed) return json(400, parsed)
+        const settled = approvals.resolve(parts[2]!, parsed.allow === true)
+        return json(settled ? 200 : 404, settled ? { settled: true } : { error: "unknown or already-settled approval id" })
+      }
+
+      // GET /v1/usage?days=N — per-day token totals (heatmap data).
+      if (method === "GET" && parts.length === 2 && parts[1] === "usage") {
+        if (!settings) return json(404, { error: "no settings controller configured" })
+        const days = Math.min(365, Math.max(1, Number(url.searchParams.get("days") ?? 30)))
+        try {
+          return json(200, await aggregateUsage(join(settings.get().dataDir, "events.db"), days))
+        } catch (e) {
+          // No events db yet (fresh install) — an empty summary, not an error.
+          return json(200, { days: [], totals: { inputTokens: 0, outputTokens: 0, steps: 0 }, sessions: 0, note: e instanceof Error ? e.message : String(e) })
+        }
+      }
+
+      // GET /v1/schedules — all scheduled prompts.
+      if (method === "GET" && parts.length === 2 && parts[1] === "schedules") {
+        if (!schedules) return json(404, { error: "no scheduler configured" })
+        return json(200, { schedules: await schedules.list() })
+      }
+
+      // POST /v1/schedules — create a scheduled prompt.
+      if (method === "POST" && parts.length === 2 && parts[1] === "schedules") {
+        if (!schedules) return json(404, { error: "no scheduler configured" })
+        const parsed = await readJsonOr400<ScheduleInput>(req)
+        if ("error" in parsed) return json(400, parsed)
+        try {
+          const created: Schedule = await schedules.add(parsed)
+          return json(201, created)
+        } catch (e) {
+          return json(400, { error: e instanceof Error ? e.message : String(e) })
+        }
+      }
+
+      // PATCH /v1/schedules/:id — update (enable/disable, change prompt/cadence).
+      if (method === "PATCH" && parts.length === 3 && parts[1] === "schedules") {
+        if (!schedules) return json(404, { error: "no scheduler configured" })
+        const parsed = await readJsonOr400<Partial<ScheduleInput>>(req)
+        if ("error" in parsed) return json(400, parsed)
+        try {
+          const updated = await schedules.update(parts[2]!, parsed)
+          return updated ? json(200, updated) : json(404, { error: "unknown schedule id" })
+        } catch (e) {
+          return json(400, { error: e instanceof Error ? e.message : String(e) })
+        }
+      }
+
+      // DELETE /v1/schedules/:id
+      if (method === "DELETE" && parts.length === 3 && parts[1] === "schedules") {
+        if (!schedules) return json(404, { error: "no scheduler configured" })
+        const removed = await schedules.remove(parts[2]!)
+        return json(removed ? 200 : 404, removed ? { removed: true } : { error: "unknown schedule id" })
+      }
+
+      // POST /v1/schedules/:id/run — fire one schedule now.
+      if (method === "POST" && parts.length === 4 && parts[1] === "schedules" && parts[3] === "run") {
+        if (!schedules) return json(404, { error: "no scheduler configured" })
+        const ok = await schedules.runNow(parts[2]!)
+        return json(ok ? 200 : 404, ok ? { triggered: true } : { error: "unknown schedule id" })
+      }
+
       return json(404, { error: "not found" })
     },
   })
@@ -487,11 +921,32 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
       // refreshes; a persistently failed heartbeat surfaces via sweep.
     }
   }, 10_000) : undefined
-  heartbeatTimer?.unref?.()
+
+  // Scheduled prompts (定时任务): when a scheduler is wired, the server owns a
+  // 30s tick; each DUE schedule is fired through the scheduler's own `fire`
+  // callback, which the host delegates to handle.admitPrompt (below).
+  let scheduleTimer: ReturnType<typeof setInterval> | undefined
+  if (schedules) {
+    scheduleTimer = setInterval(() => {
+      void schedules.tick().catch(() => {
+        // A transient tick failure (lock, fs) is non-fatal — the next tick retries.
+      })
+    }, 30_000)
+  }
+
+  const admitPrompt = async (sessionId: string, prompt: string): Promise<void> => {
+    const resolved = await resolveApp({ sessionId })
+    const app = resolved?.app
+    if (!app) throw new Error(`cannot attach session "${sessionId}" (no sessionConfig)`)
+    void app.prompt(prompt, "user").catch(() => {
+      // A failed fire is recorded by the scheduler's lastResult bookkeeping.
+    })
+  }
 
   const handle: ServerHandle = {
     baseUrl: `http://${host}:${server.port}`,
     appFor: (id) => apps.get(id),
+    admitPrompt,
     stop: async () => {
       // Interrupt any in-flight prompt BEFORE closing the event store, then
       // wait (bounded) for them to settle — a late settle path would append
@@ -501,6 +956,7 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
       while (inFlight > 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20))
       server.stop()
       if (heartbeatTimer) clearInterval(heartbeatTimer)
+      if (scheduleTimer) clearInterval(scheduleTimer)
       // Release cross-process ownership for everything this process created.
       // Contention on the shared file must not skip the store shutdown below.
       if (directory) {
