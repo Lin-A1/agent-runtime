@@ -64,7 +64,7 @@ export function SchedulesPage(): React.ReactElement {
   return (
     <div className="flex h-full flex-col">
       <PageHeader
-        title="定时任务"
+        title="定时任务" backTo="/settings"
         sub="服务端 tick 循环驱动；到点把提示词作为用户消息准入目标会话（重启不丢）。"
         actions={
           <button className="btn btn-primary" onClick={() => setCreateOpen(true)}>
@@ -76,7 +76,7 @@ export function SchedulesPage(): React.ReactElement {
         <EmptyState className="!py-24" icon={<CalendarClock size={18} />} title="还没有定时任务" hint="设定节奏与目标会话，让 newhorse 按时自动开工。" />
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto p-6">
-          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             {items.map((s) => (
               <div key={s.id} className="card p-4">
                 <div className="flex items-start gap-3">

@@ -7,10 +7,15 @@
  * channels (hasSecret, test-via-inbound). All shapes = SettingsView.
  */
 import { useState } from "react"
+import { useParams } from "react-router-dom"
 import {
+  BarChart3,
   Boxes,
+  CalendarClock,
   Check,
   Cpu,
+  GitBranch,
+  Inbox,
   KeyRound,
   Link2,
   Network,
@@ -21,43 +26,85 @@ import {
   Settings2,
   SlidersHorizontal,
   Smartphone,
+  Sparkles,
   Webhook,
 } from "lucide-react"
 import { api } from "../api/client"
 import type { McpServerSettings, SettingsView } from "../api/types"
 import { useApi } from "../lib/useApi"
 import { AsyncRegion, EmptyState, Label, LoadingState, PageHeader, Segmented, Toggle } from "../components/ui"
+import { UsagePage } from "./Usage"
+import { MemoryPage } from "./Memory"
+import { SchedulesPage } from "./Schedules"
+import { DagsPage } from "./Dags"
+import { SkillsPage } from "./Skills"
+import { LivePage } from "./Live"
 
-type Section = "models" | "integrations" | "behavior" | "system"
+type ConfigSection = "models" | "integrations" | "behavior" | "system"
+type HubSection = "usage" | "schedules" | "dags" | "skills" | "memory" | "live"
+type Section = ConfigSection | HubSection
 
-const NAV: Array<{ id: Section; label: string; icon: React.ReactNode }> = [
+const CONFIG_NAV: Array<{ id: ConfigSection; label: string; icon: React.ReactNode }> = [
   { id: "models", label: "模型与供应商", icon: <Cpu size={14} /> },
   { id: "integrations", label: "集成", icon: <Plug size={14} /> },
   { id: "behavior", label: "行为", icon: <SlidersHorizontal size={14} /> },
   { id: "system", label: "系统", icon: <Settings2 size={14} /> },
 ]
 
-export function SettingsPage(): React.ReactElement {
-  const [section, setSection] = useState<Section>("models")
+// Secondary surfaces live inside the settings hub (the sidebar stays minimal).
+const HUB_NAV: Array<{ id: HubSection; label: string; icon: React.ReactNode }> = [
+  { id: "usage", label: "用量分析", icon: <BarChart3 size={14} /> },
+  { id: "schedules", label: "定时任务", icon: <CalendarClock size={14} /> },
+  { id: "dags", label: "编排", icon: <GitBranch size={14} /> },
+  { id: "skills", label: "技能", icon: <Sparkles size={14} /> },
+  { id: "memory", label: "记忆", icon: <Inbox size={14} /> },
+  { id: "live", label: "运行状态", icon: <Network size={14} /> },
+]
+
+const HUB_PAGES: Record<HubSection, () => React.ReactElement> = {
+  usage: UsagePage,
+  schedules: SchedulesPage,
+  dags: DagsPage,
+  skills: SkillsPage,
+  memory: MemoryPage,
+  live: LivePage,
+}
+
+const HUB_IDS: HubSection[] = ["usage", "schedules", "dags", "skills", "memory", "live"]
+const CONFIG_IDS: ConfigSection[] = ["models", "integrations", "behavior", "system"]
+
+export function SettingsPage({ initial }: { initial?: Section } = {}): React.ReactElement {
+  const { section: routeSection } = useParams()
+  const start: Section = (initial ??
+    (routeSection && (HUB_IDS.includes(routeSection as HubSection) || CONFIG_IDS.includes(routeSection as ConfigSection)) ? routeSection : "models")) as Section
+  const [section, setSection] = useState<Section>(start)
   const settings = useApi<SettingsView>(() => api.settings(), [])
+  const isHub = (s: Section): s is HubSection => (["usage", "schedules", "dags", "skills", "memory", "live"] as string[]).includes(s)
+
   return (
-    <div className="flex h-full flex-col">
-      <PageHeader title="设置" sub="配置保存在工作区引擎（agent-home config.json）；密钥只回显存在性，留空即保持不变。" />
-      <div className="flex min-h-0 flex-1">
-        <nav className="w-[200px] flex-none border-r border-line p-2">
-          {NAV.map((n) => (
-            <button
-              key={n.id}
-              onClick={() => setSection(n.id)}
-              className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-xs text-dim hover:bg-hover hover:text-fg"
-              style={section === n.id ? { background: "var(--hover-2)", color: "var(--txt)" } : undefined}
-            >
-              {n.icon}
-              {n.label}
-            </button>
+    <div className="flex h-full min-h-0">
+      <nav className="z-20 flex-none overflow-x-auto border-b border-line bg-panel p-2 md:h-auto md:w-[212px] md:overflow-y-auto md:overflow-x-hidden md:border-b-0 md:border-r">
+        <div className="flex gap-1 md:flex-col md:gap-0.5">
+          <div className="hidden px-2 pb-1 pt-1.5 text-2xs font-medium uppercase tracking-wide text-ghost md:block">配置</div>
+          {CONFIG_NAV.map((n) => (
+            <NavButton key={n.id} active={section === n.id} icon={n.icon} label={n.label} onClick={() => setSection(n.id)} />
           ))}
-        </nav>
-        <div className="min-w-0 flex-1 overflow-y-auto p-6">
+          <div className="hidden border-t border-line md:mb-1 md:ml-2 md:mt-3 md:block" />
+          <div className="hidden px-2 pb-1 pt-1.5 text-2xs font-medium uppercase tracking-wide text-ghost md:block">数据与能力</div>
+          {HUB_NAV.map((n) => (
+            <NavButton key={n.id} active={section === n.id} icon={n.icon} label={n.label} onClick={() => setSection(n.id)} />
+          ))}
+        </div>
+      </nav>
+
+      {isHub(section) ? (
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">{(() => { const P = HUB_PAGES[section]; return <P /> })()}</div>
+      ) : (
+        <div className="min-h-0 flex-1 overflow-y-auto p-4 md:p-6">
+          <div className="mb-5 hidden md:block">
+            <h1 className="text-lg font-semibold text-fg">设置</h1>
+            <p className="mt-0.5 text-2xs text-faint">配置保存在工作区引擎；密钥只回显存在性，留空即保持不变。</p>
+          </div>
           <AsyncRegion state={settings} empty={<EmptyState title="无配置" />}>
             {(s) => (
               <div className="max-w-[860px]">
@@ -69,8 +116,21 @@ export function SettingsPage(): React.ReactElement {
             )}
           </AsyncRegion>
         </div>
-      </div>
+      )}
     </div>
+  )
+}
+
+function NavButton({ active, icon, label, onClick }: { active: boolean; icon: React.ReactNode; label: string; onClick: () => void }): React.ReactElement {
+  return (
+    <button
+      onClick={onClick}
+      className="flex h-9 flex-none items-center gap-2 whitespace-nowrap rounded-lg px-2.5 text-[13px] text-dim transition-colors hover:bg-hover hover:text-fg"
+      style={active ? { background: "var(--hover-2)", color: "var(--txt)" } : undefined}
+    >
+      {icon}
+      {label}
+    </button>
   )
 }
 

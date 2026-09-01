@@ -18,6 +18,7 @@ export function SkillsPage(): React.ReactElement {
     <div className="flex h-full flex-col">
       <PageHeader
         title="技能"
+        backTo="/settings"
         sub="按需装载的能力包：模型在需要时通过 skill 工具加载正文，平时不占上下文。"
         actions={
           <span className="chip">
@@ -29,7 +30,7 @@ export function SkillsPage(): React.ReactElement {
         <EmptyState className="!py-24" icon={<Sparkles size={18} />} title="没有发现技能" hint="在 agent-home 的 skills 目录或插件包里放置 SKILL.md。" />
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto p-6">
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {skills.map((s) => (
               <button
                 key={s.name}

@@ -45,7 +45,7 @@ export function DagsPage(): React.ReactElement {
   return (
     <div className="flex h-full flex-col">
       <PageHeader
-        title="编排（DAG）"
+        title="编排（DAG）" backTo="/settings"
         sub="提前声明的前驱后继图：运行时拓扑排序 + 就绪队列 + 事件唤醒，无 join 阻塞；每个节点是一次被真驱动的子代理派单。"
         actions={
           <button className="btn btn-primary" onClick={() => setSpecOpen(true)}>

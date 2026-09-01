@@ -4,7 +4,8 @@
  * come from the token table only.
  */
 import { useEffect, useRef, useState, type ReactNode } from "react"
-import { AlertTriangle, ChevronDown, Loader2, RefreshCw, X } from "lucide-react"
+import { useNavigate } from "react-router-dom"
+import { AlertTriangle, ChevronDown, ChevronLeft, Loader2, RefreshCw, X } from "lucide-react"
 import type { SessionStatus } from "../api/types"
 
 // --- four-state blocks (loading / error / empty / work) ---
@@ -217,12 +218,20 @@ export function Chevron({ open }: { open: boolean }): React.ReactElement {
 }
 
 /** Page header for standalone pages: title + optional actions, full width. */
-export function PageHeader({ title, sub, actions }: { title: string; sub?: string; actions?: ReactNode }): React.ReactElement {
+export function PageHeader({ title, sub, actions, backTo }: { title: string; sub?: string; actions?: ReactNode; backTo?: string }): React.ReactElement {
+  const navigate = useNavigate()
   return (
-    <div className="flex flex-wrap items-end justify-between gap-3 border-b border-line px-6 py-4">
-      <div>
-        <h1 className="text-base font-semibold text-fg">{title}</h1>
-        {sub && <p className="mt-0.5 text-xs text-faint">{sub}</p>}
+    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3.5 md:px-6 md:py-4">
+      <div className="flex min-w-0 items-center gap-2">
+        {backTo && (
+          <button className="icon-btn !h-8 !w-8 flex-none" onClick={() => navigate(backTo)} title="返回设置" aria-label="返回设置">
+            <ChevronLeft size={17} />
+          </button>
+        )}
+        <div className="min-w-0">
+          <h1 className="truncate text-base font-semibold text-fg">{title}</h1>
+          {sub && <p className="mt-0.5 truncate text-xs text-faint">{sub}</p>}
+        </div>
       </div>
       {actions && <div className="flex items-center gap-2">{actions}</div>}
     </div>

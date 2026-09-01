@@ -8,21 +8,15 @@ import { useMemo, useState } from "react"
 import { Link, useLocation, useNavigate } from "react-router-dom"
 import {
   Archive,
-  BarChart3,
-  CalendarClock,
   Check,
   ChevronsUpDown,
   Clock,
   FolderGit2,
-  GitBranch,
   HardDrive,
-  Inbox,
-  Network,
   Plus,
   QrCode,
   Search,
   Settings as SettingsIcon,
-  Sparkles,
   SunMoon,
 } from "lucide-react"
 import { api } from "../api/client"
@@ -86,33 +80,34 @@ export function Sidebar({ onOpenRemote }: { onOpenRemote?: () => void } = {}): R
 
   return (
     <aside className="flex h-full w-[248px] flex-none flex-col border-r border-line bg-side">
-      {/* workspace identity */}
-      <div className="px-3 pt-3">
+      {/* workspace identity — compact, like a chat-client project switcher */}
+      <div className="relative px-3 pt-3">
         <Dropdown
-          width={280}
+          width={256}
           trigger={
-            <button className="flex w-full items-center gap-2.5 rounded-lg border border-line bg-panel px-2.5 py-2 text-left hover:border-linestrong">
-              <FolderGit2 size={16} className="flex-none text-dim" />
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm font-medium text-fg">newhorse</span>
-                <span className="block truncate font-mono text-2xs text-faint">G:\Code\Agents\Custom\newhorse</span>
-              </span>
-              <ChevronsUpDown size={14} className="flex-none text-faint" />
+            <button className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-hover">
+              <FolderGit2 size={17} className="flex-none text-dim" />
+              <span className="min-w-0 flex-1 truncate text-[15px] font-semibold text-fg">newhorse</span>
+              <ChevronsUpDown size={14} className="flex-none text-ghost" />
             </button>
           }
         >
           {(close) => (
             <>
-              <div className="px-2 pb-1 pt-1.5 text-2xs font-medium uppercase tracking-wide text-faint">切换工作区</div>
+              <div className="px-2 pb-1 pt-1.5 text-2xs font-medium uppercase tracking-wide text-ghost">当前工作区</div>
+              <div className="mx-1 mb-1 rounded-md bg-bg2 px-2 py-1.5">
+                <div className="truncate font-mono text-2xs text-faint">G:\Code\Agents\Custom\newhorse</div>
+              </div>
+              <div className="px-2 pb-1 pt-1 text-2xs font-medium uppercase tracking-wide text-ghost">切换工作区</div>
               {WORKSPACES.map((w) => (
                 <MenuItem
                   key={w.path}
-                  icon={w.name === "newhorse" ? <Check size={14} className="text-accent" /> : <span className="w-[14px]" />}
+                  icon={w.name === "newhorse" ? <Check size={14} className="text-fg" /> : <span className="w-[14px]" />}
                   onClick={() => close()}
                 >
                   <span className="min-w-0">
-                    <span className="block truncate text-sm">{w.name}</span>
-                    <span className="block truncate font-mono text-2xs text-faint">{w.path}</span>
+                    <span className="block truncate text-[13px]">{w.name}</span>
+                    <span className="block truncate font-mono text-2xs text-ghost">{w.path}</span>
                   </span>
                 </MenuItem>
               ))}
@@ -194,31 +189,11 @@ export function Sidebar({ onOpenRemote }: { onOpenRemote?: () => void } = {}): R
         )}
       </nav>
 
-      {/* page nav */}
+      {/* footer: settings is the hub for usage/schedules/dags/skills/memory/status */}
       <div className="border-t border-line px-2 py-2">
-        <NavLink to="/usage" icon={<BarChart3 size={14} />} label="用量分析" active={location.pathname === "/usage"} />
-        <NavLink to="/schedules" icon={<CalendarClock size={14} />} label="定时任务" active={location.pathname === "/schedules"} />
-        <NavLink to="/dags" icon={<GitBranch size={14} />} label="编排" active={location.pathname === "/dags"} />
-        <NavLink to="/skills" icon={<Sparkles size={14} />} label="技能" active={location.pathname === "/skills"} />
-        <NavLink to="/memory" icon={<Inbox size={14} />} label="记忆" active={location.pathname === "/memory"} />
-        <NavLink to="/live" icon={<Network size={14} />} label="运行时目录" active={location.pathname === "/live"} />
-      </div>
-
-      {/* footer: usage + settings + theme — quiet, borderless like a chat client rail */}
-      <div className="border-t border-line px-2 py-2">
-        <Link
-          to="/usage"
-          className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-dim transition-colors hover:bg-hover hover:text-fg"
-        >
-          <BarChart3 size={15} className="flex-none text-faint" />
-          <span className="min-w-0 flex-1">
-            <span className="block text-xs">近 30 天用量</span>
-            <span className="block text-2xs text-ghost">4.2M tokens · ¥18.6</span>
-          </span>
-        </Link>
         <Link
           to="/settings"
-          className="mt-0.5 flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-dim transition-colors hover:bg-hover hover:text-fg"
+          className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-dim transition-colors hover:bg-hover hover:text-fg"
         >
           <SettingsIcon size={15} className="flex-none text-faint" />
           <span className="text-xs">设置</span>
@@ -259,19 +234,6 @@ function FreeTaskRow({ row, active, onOpen }: { row: SessionRow; active: boolean
         <span className="mt-0.5 block text-2xs text-ghost">{relativeTime(row.updatedAt)}</span>
       </span>
     </button>
-  )
-}
-
-function NavLink({ to, icon, label, active }: { to: string; icon: React.ReactNode; label: string; active: boolean }): React.ReactElement {
-  return (
-    <Link
-      to={to}
-      className="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-xs text-dim hover:bg-hover hover:text-fg"
-      style={active ? { background: "var(--hover-2)", color: "var(--txt)" } : undefined}
-    >
-      {icon}
-      {label}
-    </Link>
   )
 }
 

@@ -14,7 +14,7 @@ export function LivePage(): React.ReactElement {
   const live = useApi<LiveView>(() => api.live(), [])
   return (
     <div className="flex h-full flex-col">
-      <PageHeader title="运行时目录" sub="跨进程会话注册：多个运行时并存时，每个会话由哪个 endpoint 持有（心跳保活）。" />
+      <PageHeader title="运行状态" sub="跨进程会话注册：多个运行时并存时，每个会话由哪个 endpoint / 进程持有，心跳是否新鲜。" backTo="/settings" />
       <AsyncRegion
         state={live}
         emptyIf={(d) => d.live.length === 0}

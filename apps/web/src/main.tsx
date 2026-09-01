@@ -6,12 +6,6 @@ import { AppShell } from "./components/AppShell"
 import { Cover } from "./pages/Cover"
 import { SessionPage } from "./pages/Session"
 import { SettingsPage } from "./pages/Settings"
-import { UsagePage } from "./pages/Usage"
-import { MemoryPage } from "./pages/Memory"
-import { SchedulesPage } from "./pages/Schedules"
-import { DagsPage } from "./pages/Dags"
-import { LivePage } from "./pages/Live"
-import { SkillsPage } from "./pages/Skills"
 import { NotFound } from "./pages/NotFound"
 
 // Hash routing keeps the built bundle servable from any origin/sub-path by the
@@ -23,13 +17,17 @@ const router = createHashRouter([
     children: [
       { index: true, element: <Cover /> },
       { path: "session/:id", element: <SessionPage /> },
+      // Settings is the hub for config AND the secondary surfaces
+      // (usage / schedules / dags / skills / memory / live); both nested
+      // /settings/usage and flat /usage deep links map to the right section.
       { path: "settings", element: <SettingsPage /> },
-      { path: "usage", element: <UsagePage /> },
-      { path: "memory", element: <MemoryPage /> },
-      { path: "schedules", element: <SchedulesPage /> },
-      { path: "dags", element: <DagsPage /> },
-      { path: "skills", element: <SkillsPage /> },
-      { path: "live", element: <LivePage /> },
+      { path: "settings/:section", element: <SettingsPage /> },
+      { path: "usage", element: <SettingsPage initial="usage" /> },
+      { path: "memory", element: <SettingsPage initial="memory" /> },
+      { path: "schedules", element: <SettingsPage initial="schedules" /> },
+      { path: "dags", element: <SettingsPage initial="dags" /> },
+      { path: "skills", element: <SettingsPage initial="skills" /> },
+      { path: "live", element: <SettingsPage initial="live" /> },
       { path: "*", element: <NotFound /> },
     ],
   },

@@ -30,13 +30,13 @@ export function Cover(): React.ReactElement {
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto flex min-h-full w-full max-w-[760px] flex-col px-6 pb-16 pt-[7vh]">
+      <div className="mx-auto flex min-h-full w-full max-w-[760px] flex-col px-5 pb-12 pt-[5vh] md:px-6 md:pb-16 md:pt-[7vh]">
         {/* hero: ball in orbit ring */}
         <div className="flex justify-center">
           <OrbitBall mood={focused ? "listening" : "idle"} />
         </div>
 
-        <h1 className="mt-7 text-center text-[30px] font-bold tracking-tight text-fg">有什么可以帮你？</h1>
+        <h1 className="mt-6 text-center text-[24px] font-bold tracking-tight text-fg md:mt-7 md:text-[30px]">有什么可以帮你？</h1>
         <p className="mt-2.5 text-center text-[15px] text-faint">把任务交给 newhorse，它会自己读文件、跑工具、拆分子任务</p>
 
         <div
@@ -93,28 +93,31 @@ export function Cover(): React.ReactElement {
  *  satellite that slowly orbits. */
 function OrbitBall({ mood }: { mood: "idle" | "listening" }): React.ReactElement {
   return (
-    <div className="relative" style={{ width: 230, height: 230 }}>
+    <div className="relative h-[168px] w-[168px] md:h-[230px] md:w-[230px]">
       <svg viewBox="0 0 230 230" className="absolute inset-0 h-full w-full">
-        {/* faint dotted ring (round caps + tiny dashes read as dots) */}
+        {/* dotted orbit ring — visible in both themes: neutral dots on the
+            surface with a soft accent-tinted glow */}
         <circle
           cx="115"
           cy="115"
           r="92"
           fill="none"
-          stroke="var(--txt-ghost)"
-          strokeWidth="1.6"
-          strokeDasharray="0.1 9.5"
+          stroke="var(--txt-dim)"
+          strokeWidth="2.4"
+          strokeDasharray="0.1 11"
           strokeLinecap="round"
-          opacity="0.45"
+          opacity="0.55"
         />
         {/* orbiting satellite */}
         <g className="orbit-spin">
-          <circle cx="27" cy="115" r="4.5" fill="var(--txt-dim)" />
-          <circle cx="27" cy="115" r="9" fill="var(--txt-dim)" opacity="0.1" />
+          <circle cx="27" cy="115" r="10" fill="var(--accent)" opacity="0.14" />
+          <circle cx="27" cy="115" r="4.5" fill="var(--accent)" />
         </g>
       </svg>
       <div className="absolute inset-0 flex items-center justify-center">
-        <EmotionBall mood={mood} size={104} interactive />
+        <div className="scale-[0.8] md:scale-100">
+          <EmotionBall mood={mood} size={104} interactive />
+        </div>
       </div>
     </div>
   )

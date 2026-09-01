@@ -40,7 +40,7 @@ export function UsagePage(): React.ReactElement {
   return (
     <div className="flex h-full flex-col">
       <PageHeader
-        title="用量分析"
+        title="用量分析" backTo="/settings"
         sub="按天聚合自事件日志（Session.ModelCalled）；成本按当前供应商计价估算。"
         actions={
           <Segmented
@@ -61,7 +61,7 @@ export function UsagePage(): React.ReactElement {
       >
         {(u) => (
           <div className="min-h-0 flex-1 overflow-y-auto p-6">
-            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <StatCard icon={<TrendingUp size={15} />} label="总 tokens" value={fmtTokens(u.totals.inputTokens + u.totals.outputTokens)} sub={`输入 ${fmtTokens(u.totals.inputTokens)} · 输出 ${fmtTokens(u.totals.outputTokens)}`} />
               <StatCard icon={<Coins size={15} />} label="估算成本" value={`¥${u.totals.cost.toFixed(2)}`} sub="按供应商单价折算" />
               <StatCard icon={<Footprints size={15} />} label="工具步数" value={String(u.totals.steps)} sub={`${u.sessions} 个会话`} />
@@ -78,7 +78,7 @@ export function UsagePage(): React.ReactElement {
               <p className="mt-2 text-2xs text-faint">{peakSummary(u)}</p>
             </section>
 
-            <div className="mt-5 grid grid-cols-1 gap-5 lg:grid-cols-2">
+            <div className="mt-5 grid grid-cols-1 gap-5 md:grid-cols-2">
               {/* session ranking */}
               <section className="card overflow-hidden">
                 <h2 className="border-b border-line px-4 py-2.5 text-sm font-semibold text-fg">会话排行</h2>

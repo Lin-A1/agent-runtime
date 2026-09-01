@@ -49,7 +49,7 @@ export function MemoryPage(): React.ReactElement {
   return (
     <div className="flex h-full flex-col">
       <PageHeader
-        title="记忆"
+        title="记忆" backTo="/settings"
         sub="事件溯源的语义记忆条目库（FTS5 × cosine RRF 混合检索）；向量索引是可插拔 provider。"
         actions={
           <button className="btn btn-primary" onClick={() => setWriteOpen(true)}>
@@ -73,7 +73,7 @@ export function MemoryPage(): React.ReactElement {
         />
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto p-6">
-          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             {filtered.map((m) => (
               <div key={m.id} className="card group p-4">
                 <div className="flex items-center gap-2">
