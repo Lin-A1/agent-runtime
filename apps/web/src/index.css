@@ -634,12 +634,12 @@ select {
     transform: rotate(360deg);
   }
 }
-/* The satellite <g> is centered on the circle's centre via a transform, so
-   rotate around that group origin (50%/50% of the svg box). */
+/* Rotate the satellite around the SVG centre (the ball), not its own centre.
+   viewBox is 230×230 so the centre is 115,115. */
 .orbit-spin {
   animation: orbit 26s linear infinite;
-  transform-origin: center;
-  transform-box: fill-box;
+  transform-origin: 115px 115px;
+  transform-box: view-box;
 }
 
 /* heatmap cell (usage) */

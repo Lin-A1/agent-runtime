@@ -86,10 +86,10 @@ export function SessionPage(): React.ReactElement {
             </div>
             <div className="mt-0.5 flex items-center gap-2 font-mono text-2xs text-faint">
               <span className="truncate">{session?.model ?? "—"}</span>
-              <span>·</span>
-              <span className="truncate">{id}</span>
+              <span className="hidden sm:inline">·</span>
+              <span className="hidden truncate sm:inline">{id}</span>
               <button
-                className="text-ghost hover:text-dim"
+                className="hidden text-ghost hover:text-dim sm:inline-flex"
                 title="复制会话 ID"
                 onClick={() => void navigator.clipboard?.writeText(id).catch(() => {})}
               >
@@ -98,36 +98,45 @@ export function SessionPage(): React.ReactElement {
             </div>
           </div>
 
-          <Segmented
-            size="xs"
-            value={policy}
-            onChange={setPolicy}
-            options={[
-              { value: "strict", label: POLICY_LABEL.strict, title: "每次文件改动前询问" },
-              { value: "readonly", label: POLICY_LABEL.readonly, title: "只读检查，先出计划" },
-              { value: "trusted", label: POLICY_LABEL.trusted, title: "更少确认，自动编辑与执行" },
-            ]}
-          />
-          <button className="icon-btn" title="从当前位置回退分叉（fork 继承工作区与角色）">
-            <GitFork size={15} />
-          </button>
-          <button className="icon-btn" title="重载会话（从事件日志重折）" onClick={events.retry}>
-            <RefreshCw size={15} />
-          </button>
-          <button className="icon-btn" title={paneOpen ? "收起侧面板" : "展开侧面板"} onClick={() => setPaneOpen((v) => !v)}>
-            <PanelRightOpen size={15} style={{ transform: paneOpen ? undefined : "scaleX(-1)" }} />
+          {/* policy + secondary actions: desktop only — mobile keeps a single
+              sheet toggle, the rest moves into the desktop rail/menu */}
+          <div className="hidden items-center md:flex">
+            <Segmented
+              size="xs"
+              value={policy}
+              onChange={setPolicy}
+              options={[
+                { value: "strict", label: POLICY_LABEL.strict, title: "每次文件改动前询问" },
+                { value: "readonly", label: POLICY_LABEL.readonly, title: "只读检查，先出计划" },
+                { value: "trusted", label: POLICY_LABEL.trusted, title: "更少确认，自动编辑与执行" },
+              ]}
+            />
+            <button className="icon-btn" title="从当前位置回退分叉（fork 继承工作区与角色）">
+              <GitFork size={15} />
+            </button>
+            <button className="icon-btn" title="重载会话（从事件日志重折）" onClick={events.retry}>
+              <RefreshCw size={15} />
+            </button>
+          </div>
+          <button
+            className="icon-btn !h-9 !w-9 md:!h-auto md:!w-auto"
+            title={paneOpen ? "收起面板" : "展开工具 / 子代理 / 审批面板"}
+            onClick={() => setPaneOpen((v) => !v)}
+          >
+            <PanelRightOpen size={16} style={{ transform: paneOpen ? undefined : "scaleX(-1)" }} />
           </button>
         </header>
 
-        {/* context ratio strip — quiet, neutral fill */}
+        {/* context ratio strip — quiet, neutral fill; token count hidden on mobile */}
         {contextView.data && (
-          <div className="flex flex-none items-center gap-2 border-b border-line px-5 py-1.5">
-            <Shield size={11} className="text-ghost" />
-            <div className="h-1 w-24 overflow-hidden rounded-full bg-bg2">
+          <div className="flex flex-none items-center gap-2 border-b border-line px-4 py-1.5 md:px-5">
+            <Shield size={11} className="flex-none text-ghost" />
+            <div className="h-1 w-16 overflow-hidden rounded-full bg-bg2 md:w-24">
               <div className="h-full rounded-full" style={{ width: `${(contextView.data.ratio ?? 0) * 100}%`, background: "var(--txt-ghost)" }} />
             </div>
             <span className="font-mono text-2xs text-ghost">
-              上下文 {((contextView.data.ratio ?? 0) * 100).toFixed(1)}% · {contextView.data.estTokens.toLocaleString()} tokens
+              上下文 {((contextView.data.ratio ?? 0) * 100).toFixed(0)}%
+              <span className="hidden sm:inline"> · {contextView.data.estTokens.toLocaleString()} tokens</span>
             </span>
           </div>
         )}
@@ -151,13 +160,15 @@ export function SessionPage(): React.ReactElement {
         </div>
 
         {/* dock: todos + composer */}
-        <div className="flex-none border-t border-line bg-bg px-5 py-3">
+        <div className="flex-none border-t border-line bg-bg px-3 py-2.5 md:px-5 md:py-3">
           <div className="mx-auto w-full max-w-[860px]">
-            <div className="mb-2">
+            {/* todos collapsed by default on mobile to leave room for input */}
+            <div className="mb-2 hidden sm:block">
               <TodoDock todos={todos} goal={goal.data?.goal ?? null} />
             </div>
-            <Composer busy={busy} queuedCount={busy ? 0 : 0} onInterrupt={() => void api.interrupt(id)} placeholder={busy ? "回合进行中——发送将作为追加（steer），下一个安全边界晋升" : "给 newhorse 发任务…"} />
-            <div className="mt-1.5 flex items-center justify-end px-1 text-2xs text-ghost">
+            <Composer busy={busy} onInterrupt={() => void api.interrupt(id)} placeholder={busy ? "回合进行中——发送将作为追加（steer）" : "给 newhorse 发任务…"} />
+            {/* kbd/shortcut hint: desktop only (saves vertical space on mobile) */}
+            <div className="mt-1.5 hidden items-center justify-end px-1 text-2xs text-ghost md:flex">
               <span>策略：{POLICY_LABEL[policy]} · <span className="kbd">Ctrl</span>+<span className="kbd">K</span> 命令面板</span>
             </div>
           </div>

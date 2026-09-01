@@ -180,9 +180,9 @@ export function Composer({ variant = "session", busy = false, queuedCount = 0, a
             >
               <AtSign size={16} />
             </button>
-            <button className="ml-1 flex items-center gap-1.5 rounded-full px-2 py-1.5 text-xs text-dim transition-colors hover:bg-hover hover:text-fg" title="切换模型">
-              <span className="font-mono text-2xs">{model}</span>
-              <ChevronDown size={12} className="text-faint" />
+            <button className="ml-1 hidden min-w-0 items-center gap-1.5 rounded-full px-2 py-1.5 text-xs text-dim transition-colors hover:bg-hover hover:text-fg min-[420px]:flex" title="切换模型">
+              <span className="max-w-[120px] truncate font-mono text-2xs">{model}</span>
+              <ChevronDown size={12} className="flex-none text-faint" />
             </button>
             {busy && (
               <span className="ml-1.5 flex items-center gap-1.5 text-2xs text-warn">

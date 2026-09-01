@@ -82,7 +82,7 @@ export function SettingsPage({ initial }: { initial?: Section } = {}): React.Rea
   const isHub = (s: Section): s is HubSection => (["usage", "schedules", "dags", "skills", "memory", "live"] as string[]).includes(s)
 
   return (
-    <div className="flex h-full min-h-0">
+    <div className="flex h-full min-h-0 flex-col md:flex-row">
       <nav className="z-20 flex-none overflow-x-auto border-b border-line bg-panel p-2 md:h-auto md:w-[212px] md:overflow-y-auto md:overflow-x-hidden md:border-b-0 md:border-r">
         <div className="flex gap-1 md:flex-col md:gap-0.5">
           <div className="hidden px-2 pb-1 pt-1.5 text-2xs font-medium uppercase tracking-wide text-ghost md:block">配置</div>
@@ -155,13 +155,13 @@ function ModelsSection({ s }: { s: SettingsView }): React.ReactElement {
         {(s.providers ?? []).map((p) => {
           const active = p.id === activeId
           return (
-            <div key={p.id} className={`card p-4 ${active ? "border-[var(--accent)]" : ""}`} style={active ? { borderColor: "var(--accent)" } : undefined}>
+            <div key={p.id} className="card p-4" style={active ? { borderColor: "var(--line-strong)", background: "var(--hover)" } : undefined}>
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-medium text-fg">{p.name}</span>
                     {active && (
-                      <span className="chip chip-accent !py-0 !text-[10px]">
+                      <span className="chip !py-0 !text-[10px]">
                         <Check size={10} /> 当前
                       </span>
                     )}
