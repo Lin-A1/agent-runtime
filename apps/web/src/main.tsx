@@ -11,6 +11,7 @@ import { MemoryPage } from "./pages/Memory"
 import { SchedulesPage } from "./pages/Schedules"
 import { DagsPage } from "./pages/Dags"
 import { LivePage } from "./pages/Live"
+import { SkillsPage } from "./pages/Skills"
 import { NotFound } from "./pages/NotFound"
 
 // Hash routing keeps the built bundle servable from any origin/sub-path by the
@@ -27,6 +28,7 @@ const router = createHashRouter([
       { path: "memory", element: <MemoryPage /> },
       { path: "schedules", element: <SchedulesPage /> },
       { path: "dags", element: <DagsPage /> },
+      { path: "skills", element: <SkillsPage /> },
       { path: "live", element: <LivePage /> },
       { path: "*", element: <NotFound /> },
     ],

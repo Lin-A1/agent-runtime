@@ -12,7 +12,6 @@ import {
   PanelRightOpen,
   RefreshCw,
   Shield,
-  Square,
   Zap,
 } from "lucide-react"
 import { api } from "../api/client"
@@ -35,7 +34,9 @@ const POLICY_LABEL: Record<PolicyLevel, string> = {
 
 export function SessionPage(): React.ReactElement {
   const { id = BUTLER_NH } = useParams()
-  const [paneOpen, setPaneOpen] = useState(true)
+  // The side pane starts open on desktop, collapsed (a bottom sheet on demand)
+  // on mobile where it would cover the whole conversation.
+  const [paneOpen, setPaneOpen] = useState<boolean>(() => typeof window === "undefined" || window.innerWidth >= 768)
   const [policy, setPolicy] = useState<PolicyLevel>("strict")
 
   const sessions = useApi<SessionRow[]>(() => api.sessions(WS_NH), [])
@@ -156,19 +157,15 @@ export function SessionPage(): React.ReactElement {
               <TodoDock todos={todos} goal={goal.data?.goal ?? null} />
             </div>
             <Composer busy={busy} queuedCount={busy ? 0 : 0} onInterrupt={() => void api.interrupt(id)} placeholder={busy ? "回合进行中——发送将作为追加（steer），下一个安全边界晋升" : "给 newhorse 发任务…"} />
-            <div className="mt-1.5 flex items-center justify-between px-1 text-2xs text-ghost">
-              <span className="flex items-center gap-1.5">
-                {busy && (
-                  <button className="flex items-center gap-1 text-bad hover:underline" onClick={() => void api.interrupt(id)}>
-                    <Square size={10} /> 中断回合
-                  </button>
-                )}
-              </span>
+            <div className="mt-1.5 flex items-center justify-end px-1 text-2xs text-ghost">
               <span>策略：{POLICY_LABEL[policy]} · <span className="kbd">Ctrl</span>+<span className="kbd">K</span> 命令面板</span>
             </div>
           </div>
         </div>
       </div>
+
+      {/* mobile scrim for the bottom sheet */}
+      {paneOpen && <div className="fixed inset-0 z-30 md:hidden" style={{ background: "var(--scrim)" }} onClick={() => setPaneOpen(false)} />}
 
       {/* right sidePane */}
       {paneOpen && (

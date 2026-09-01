@@ -558,6 +558,36 @@ select {
   align-self: stretch;
 }
 
+/* ---- mobile (remote control / phone web) ---- */
+
+@media (max-width: 767px) {
+  /* larger touch targets */
+  .icon-btn {
+    width: 38px;
+    height: 38px;
+  }
+  .btn {
+    padding: 8px 14px;
+    font-size: 13px;
+    min-height: 38px;
+  }
+  .send-btn,
+  button[class*="rounded-full"] {
+    /* keep the round composer button comfortably tappable */
+  }
+  .chip {
+    font-size: 12px;
+    padding: 4px 10px;
+  }
+  /* transcript + composer breathe a bit less on small screens */
+  .composer textarea {
+    font-size: 16px; /* >=16px stops iOS focus zoom */
+  }
+  .codeblock-body {
+    font-size: 11px;
+  }
+}
+
 /* blinking caret for streaming text */
 .stream-caret::after {
   content: "";
@@ -596,6 +626,17 @@ select {
 }
 .spin {
   animation: spin 0.9s linear infinite;
+}
+
+/* slow orbit for the cover ring satellite */
+@keyframes orbit {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.orbit-spin {
+  animation: orbit 26s linear infinite;
+  transform-origin: 115px 115px;
 }
 
 /* heatmap cell (usage) */

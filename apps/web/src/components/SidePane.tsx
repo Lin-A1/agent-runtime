@@ -63,8 +63,11 @@ export function SidePane({
 }): React.ReactElement {
   const [tab, setTab] = useState<Tab>("subagents")
   return (
-    <aside className="flex h-full w-[340px] flex-none flex-col border-l border-line bg-panel">
-      <div className="flex items-center gap-1 border-b border-line px-2 py-1.5">
+    <aside className="fixed inset-x-0 bottom-0 z-40 flex h-[74vh] w-full flex-col rounded-t-2xl border-t border-line bg-panel shadow-overlay md:static md:z-auto md:h-full md:w-[340px] md:flex-none md:rounded-none md:border-l md:border-t-0 md:shadow-none">
+      <div className="flex items-center justify-center md:hidden" aria-hidden>
+        <span className="mt-2 h-1 w-10 rounded-full bg-line-strong" />
+      </div>
+      <div className="flex items-center gap-1 border-b border-line px-2 py-2 md:py-1.5">
         <div className="flex flex-1 items-center gap-0.5 overflow-x-auto">
           {TABS.map((t) => (
             <button

@@ -89,24 +89,29 @@ export function Cover(): React.ReactElement {
   )
 }
 
-/** Small emotion ball centered inside a dashed orbit ring with a satellite. */
+/** Small emotion ball centered inside a faint dotted orbit ring with a
+ *  satellite that slowly orbits. */
 function OrbitBall({ mood }: { mood: "idle" | "listening" }): React.ReactElement {
   return (
     <div className="relative" style={{ width: 230, height: 230 }}>
       <svg viewBox="0 0 230 230" className="absolute inset-0 h-full w-full">
+        {/* faint dotted ring (round caps + tiny dashes read as dots) */}
         <circle
           cx="115"
           cy="115"
-          r="96"
+          r="92"
           fill="none"
-          stroke="var(--line-strong)"
-          strokeWidth="1.4"
-          strokeDasharray="1.5 8"
+          stroke="var(--txt-ghost)"
+          strokeWidth="1.6"
+          strokeDasharray="0.1 9.5"
           strokeLinecap="round"
+          opacity="0.45"
         />
-        {/* satellite dot on the ring, lower-left — neutral, not accent */}
-        <circle cx="33" cy="148" r="4" fill="var(--txt-dim)" />
-        <circle cx="33" cy="148" r="7.5" fill="var(--txt-dim)" opacity="0.14" />
+        {/* orbiting satellite */}
+        <g className="orbit-spin">
+          <circle cx="27" cy="115" r="4.5" fill="var(--txt-dim)" />
+          <circle cx="27" cy="115" r="9" fill="var(--txt-dim)" opacity="0.1" />
+        </g>
       </svg>
       <div className="absolute inset-0 flex items-center justify-center">
         <EmotionBall mood={mood} size={104} interactive />

@@ -233,5 +233,37 @@ export function buildSessions(): SessionRow[] {
       updatedAt: hoursAgo(29),
       tokensUsed: 14_900,
     },
+
+    // --- free tasks (no project / workspace) ---
+    {
+      sessionId: "sess-free-1",
+      workspace: "",
+      title: "查看 C 盘根目录文件情况",
+      status: "settled",
+      model: "glm-4.6-flash",
+      createdAt: ago(8),
+      updatedAt: ago(4),
+      tokensUsed: 1_800,
+    },
+    {
+      sessionId: "sess-free-2",
+      workspace: "",
+      title: "同步本地 .agents/skills 前端说明",
+      status: "active",
+      model: "glm-4.6-flash",
+      createdAt: hoursAgo(1.5),
+      updatedAt: ago(25),
+      tokensUsed: 3_200,
+    },
+    {
+      sessionId: "sess-free-3",
+      workspace: "",
+      title: "收集 github 热点仓库以及 AI 日报",
+      status: "settled",
+      model: "glm-4.6-flash",
+      createdAt: hoursAgo(16),
+      updatedAt: hoursAgo(16),
+      tokensUsed: 7_600,
+    },
   ]
 }

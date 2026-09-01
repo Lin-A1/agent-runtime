@@ -12,14 +12,17 @@ import {
   CalendarClock,
   Check,
   ChevronsUpDown,
+  Clock,
   FolderGit2,
   GitBranch,
   HardDrive,
   Inbox,
   Network,
   Plus,
+  QrCode,
   Search,
   Settings as SettingsIcon,
+  Sparkles,
   SunMoon,
 } from "lucide-react"
 import { api } from "../api/client"
@@ -47,7 +50,7 @@ function groupOf(ts: number): GroupKey {
 }
 const GROUP_ORDER: GroupKey[] = ["今天", "昨天", "本周", "上周", "本月", "更早"]
 
-export function Sidebar(): React.ReactElement {
+export function Sidebar({ onOpenRemote }: { onOpenRemote?: () => void } = {}): React.ReactElement {
   const navigate = useNavigate()
   const location = useLocation()
   const { toggle, theme } = useTheme()
@@ -55,10 +58,15 @@ export function Sidebar(): React.ReactElement {
   const [query, setQuery] = useState("")
   const [showArchived, setShowArchived] = useState(false)
 
-  const { resident, groups, archived } = useMemo(() => {
+  const { resident, groups, archived, freeTasks } = useMemo(() => {
     const rows = sessions.data ?? []
-    const resident = rows.find((r) => r.role === "butler" && !r.archived)
-    const rest = rows.filter((r) => r.role !== "butler")
+    // Free tasks = not bound to any project workspace (项目 vs 任务 split).
+    const projectRows = rows.filter((r) => r.workspace && r.workspace !== "")
+    const freeTasks = rows
+      .filter((r) => !r.workspace && !r.archived)
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+    const resident = projectRows.find((r) => r.role === "butler" && !r.archived)
+    const rest = projectRows.filter((r) => r.role !== "butler")
     const groups = new Map<GroupKey, SessionRow[]>()
     const archived: SessionRow[] = []
     for (const r of rest) {
@@ -70,7 +78,7 @@ export function Sidebar(): React.ReactElement {
       groups.set(g, [...(groups.get(g) ?? []), r])
     }
     for (const list of groups.values()) list.sort((a, b) => b.updatedAt - a.updatedAt)
-    return { resident, groups, archived }
+    return { resident, groups, archived, freeTasks }
   }, [sessions.data])
 
   const q = query.trim().toLowerCase()
@@ -141,13 +149,8 @@ export function Sidebar(): React.ReactElement {
         </div>
       </div>
 
-      {/* session list */}
+      {/* session list: projects (workspace-bound) vs free tasks */}
       <nav className="mt-2 flex-1 overflow-y-auto px-2 pb-2">
-        {sessions.loading && (
-          <div className="flex justify-center py-8">
-            <Spinner size={15} />
-          </div>
-        )}
         {resident && (
           <SessionRowView row={resident} active={location.pathname === `/session/${resident.sessionId}`} pinned onOpen={() => navigate(`/session/${resident.sessionId}`)} />
         )}
@@ -157,7 +160,7 @@ export function Sidebar(): React.ReactElement {
           if (!list.length) return null
           return (
             <div key={g} className="mt-2">
-              <div className="px-2 pb-1 text-2xs font-medium uppercase tracking-wide text-faint">{g}</div>
+              <div className="px-2 pb-1 text-2xs font-medium uppercase tracking-wide text-ghost">{g}</div>
               {list.map((r) => (
                 <SessionRowView key={r.sessionId} row={r} active={location.pathname === `/session/${r.sessionId}`} onOpen={() => navigate(`/session/${r.sessionId}`)} />
               ))}
@@ -168,7 +171,7 @@ export function Sidebar(): React.ReactElement {
         {!q && archived.length > 0 && (
           <div className="mt-2">
             <button
-              className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-2xs font-medium uppercase tracking-wide text-faint hover:text-dim"
+              className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-2xs font-medium uppercase tracking-wide text-ghost hover:text-dim"
               onClick={() => setShowArchived((v) => !v)}
             >
               <Archive size={12} /> 归档（{archived.length}）
@@ -179,8 +182,15 @@ export function Sidebar(): React.ReactElement {
               ))}
           </div>
         )}
-        {sessions.data && !sessions.loading && groups.size === 0 && !resident && (
-          <div className="px-2 py-6 text-center text-2xs text-faint">暂无会话</div>
+
+        {/* 任务 — free-floating, not tied to a project */}
+        {freeTasks.filter(match).length > 0 && (
+          <div className="mt-3">
+            <div className="px-2 pb-1 text-2xs font-medium uppercase tracking-wide text-ghost">任务</div>
+            {freeTasks.filter(match).map((r) => (
+              <FreeTaskRow key={r.sessionId} row={r} active={location.pathname === `/session/${r.sessionId}`} onOpen={() => navigate(`/session/${r.sessionId}`)} />
+            ))}
+          </div>
         )}
       </nav>
 
@@ -189,6 +199,7 @@ export function Sidebar(): React.ReactElement {
         <NavLink to="/usage" icon={<BarChart3 size={14} />} label="用量分析" active={location.pathname === "/usage"} />
         <NavLink to="/schedules" icon={<CalendarClock size={14} />} label="定时任务" active={location.pathname === "/schedules"} />
         <NavLink to="/dags" icon={<GitBranch size={14} />} label="编排" active={location.pathname === "/dags"} />
+        <NavLink to="/skills" icon={<Sparkles size={14} />} label="技能" active={location.pathname === "/skills"} />
         <NavLink to="/memory" icon={<Inbox size={14} />} label="记忆" active={location.pathname === "/memory"} />
         <NavLink to="/live" icon={<Network size={14} />} label="运行时目录" active={location.pathname === "/live"} />
       </div>
@@ -213,6 +224,14 @@ export function Sidebar(): React.ReactElement {
           <span className="text-xs">设置</span>
         </Link>
         <button
+          onClick={onOpenRemote}
+          className="mt-0.5 flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-dim transition-colors hover:bg-hover hover:text-fg"
+          title="手机/其他设备扫码或复制链接远程访问"
+        >
+          <QrCode size={15} className="flex-none text-faint" />
+          <span className="text-xs">手机 / 远程访问</span>
+        </button>
+        <button
           className="mt-0.5 flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-dim transition-colors hover:bg-hover hover:text-fg"
           title={theme === "dark" ? "切换到浅色" : "切换到深色"}
           onClick={toggle}
@@ -222,6 +241,24 @@ export function Sidebar(): React.ReactElement {
         </button>
       </div>
     </aside>
+  )
+}
+
+function FreeTaskRow({ row, active, onOpen }: { row: SessionRow; active: boolean; onOpen: () => void }): React.ReactElement {
+  return (
+    <button
+      onClick={onOpen}
+      className="group flex w-full items-start gap-2.5 rounded-lg px-2 py-2 text-left hover:bg-hover"
+      style={active ? { background: "var(--hover-2)" } : undefined}
+    >
+      <Clock size={14} className="mt-0.5 flex-none text-ghost" />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-[13px] text-dim group-hover:text-fg" style={active ? { color: "var(--txt)" } : undefined}>
+          {prettyTitle(row.title, "未命名任务")}
+        </span>
+        <span className="mt-0.5 block text-2xs text-ghost">{relativeTime(row.updatedAt)}</span>
+      </span>
+    </button>
   )
 }
 
