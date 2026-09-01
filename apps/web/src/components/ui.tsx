@@ -92,14 +92,14 @@ export function Toggle({ checked, onChange, disabled }: { checked: boolean; onCh
       onClick={() => onChange?.(!checked)}
       className="relative h-[18px] w-[32px] flex-none rounded-full border transition-colors"
       style={{
-        background: checked ? "var(--accent)" : "var(--bg2)",
-        borderColor: checked ? "var(--accent)" : "var(--line-strong)",
+        background: checked ? "var(--txt)" : "var(--bg2)",
+        borderColor: checked ? "var(--txt)" : "var(--line-strong)",
         opacity: disabled ? 0.45 : 1,
       }}
     >
       <span
-        className="absolute top-[2px] h-[12px] w-[12px] rounded-full bg-white transition-all"
-        style={{ left: checked ? 16 : 3 }}
+        className="absolute top-[2px] h-[12px] w-[12px] rounded-full transition-all"
+        style={{ left: checked ? 16 : 3, background: checked ? "var(--bg)" : "var(--txt-faint)" }}
       />
     </button>
   )
@@ -221,7 +221,7 @@ export function Chevron({ open }: { open: boolean }): React.ReactElement {
 export function PageHeader({ title, sub, actions, backTo }: { title: string; sub?: string; actions?: ReactNode; backTo?: string }): React.ReactElement {
   const navigate = useNavigate()
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3.5 md:px-6 md:py-4">
+    <div className="page-header flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3.5 md:px-6 md:py-4">
       <div className="flex min-w-0 items-center gap-2">
         {backTo && (
           <button className="icon-btn !h-8 !w-8 flex-none" onClick={() => navigate(backTo)} title="返回设置" aria-label="返回设置">

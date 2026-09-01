@@ -21,9 +21,9 @@ export function LivePage(): React.ReactElement {
         empty={<EmptyState className="!py-24" icon={<Network size={18} />} title="没有在线运行时" hint="启动一个 server 进程后，它持有的会话会出现在这里。" />}
       >
         {(d) => (
-          <div className="min-h-0 flex-1 overflow-y-auto p-6">
-            <div className="card overflow-hidden">
-              <div className="grid grid-cols-[1fr_1.4fr_80px_120px] gap-3 border-b border-line bg-bg2 px-4 py-2 text-2xs font-medium uppercase tracking-wide text-faint">
+          <div className="min-h-0 flex-1 overflow-y-auto p-4 md:p-6">
+            <div className="card overflow-x-auto">
+              <div className="grid min-w-[560px] grid-cols-[1fr_1.4fr_80px_120px] gap-3 border-b border-line bg-bg2 px-4 py-2 text-2xs font-medium uppercase tracking-wide text-faint">
                 <span>会话</span>
                 <span>Endpoint</span>
                 <span>PID</span>
@@ -32,7 +32,7 @@ export function LivePage(): React.ReactElement {
               {d.live.map((e) => {
                 const fresh = Date.now() - e.heartbeatAt < 30_000
                 return (
-                  <div key={`${e.endpoint}-${e.sessionId}`} className="grid grid-cols-[1fr_1.4fr_80px_120px] items-center gap-3 border-b border-line px-4 py-2.5 last:border-b-0 hover:bg-hover">
+                  <div key={`${e.endpoint}-${e.sessionId}`} className="grid min-w-[560px] grid-cols-[1fr_1.4fr_80px_120px] items-center gap-3 border-b border-line px-4 py-2.5 last:border-b-0 hover:bg-hover">
                     <span className="truncate font-mono text-2xs text-fg">{e.sessionId}</span>
                     <span className="truncate font-mono text-2xs text-dim">{e.endpoint}</span>
                     <span className="font-mono text-2xs text-faint">{e.pid}</span>
@@ -44,7 +44,7 @@ export function LivePage(): React.ReactElement {
                 )
               })}
             </div>
-            <p className="mt-3 text-2xs text-faint">本进程：<span className="font-mono">{d.self}</span> · 注册数据跨进程共享（SQLite），心跳过期的条目会被清扫。</p>
+            <p className="mt-3 break-all text-2xs text-faint">本进程：<span className="font-mono">{d.self}</span> · 注册数据跨进程共享（SQLite），心跳过期的条目会被清扫。</p>
           </div>
         )}
       </AsyncRegion>

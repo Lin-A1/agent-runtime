@@ -98,7 +98,7 @@ export function SettingsPage({ initial }: { initial?: Section } = {}): React.Rea
       </nav>
 
       {isHub(section) ? (
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col">{(() => { const P = HUB_PAGES[section]; return <P /> })()}</div>
+        <div className="hub-embedded flex min-h-0 min-w-0 flex-1 flex-col">{(() => { const P = HUB_PAGES[section]; return <P /> })()}</div>
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto p-4 md:p-6">
           <div className="mb-5 hidden md:block">

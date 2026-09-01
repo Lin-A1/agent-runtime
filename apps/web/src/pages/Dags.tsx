@@ -59,34 +59,35 @@ export function DagsPage(): React.ReactElement {
         empty={<EmptyState className="!py-24" icon={<GitBranch size={18} />} title="还没有声明式编排" hint="提交一个 DAG spec（nodes + dependsOn），或让模型在回合中用 declare_dag 自行声明。" />}
       >
         {(list) => (
-          <div className="grid min-h-0 flex-1 grid-cols-1 gap-0 overflow-hidden lg:grid-cols-[320px_1fr]">
+          <div className="grid min-h-0 flex-1 grid-cols-1 gap-0 overflow-y-auto lg:grid-cols-[320px_1fr] lg:overflow-hidden">
             {/* list */}
-            <div className="overflow-y-auto border-r border-line p-3">
+            <div className="overflow-y-auto border-b border-line p-3 lg:border-b-0 lg:border-r">
               {list.map((d) => {
                 const done = d.nodes.filter((n) => n.state === "succeeded").length
                 const active = d.nodes.some((n) => n.state === "running")
+                const isSel = selected?.dagId === d.dagId
                 return (
                   <button
                     key={d.dagId}
                     onClick={() => setSelectedId(d.dagId)}
                     className="mb-2 w-full rounded-lg border p-3 text-left transition-colors"
                     style={{
-                      borderColor: selected?.dagId === d.dagId ? "var(--accent)" : "var(--line)",
-                      background: selected?.dagId === d.dagId ? "var(--hover)" : "var(--card)",
+                      borderColor: isSel ? "var(--line-strong)" : "var(--line)",
+                      background: isSel ? "var(--hover)" : "var(--card)",
                     }}
                   >
                     <div className="flex items-center gap-2">
-                      <span className={`dot ${active ? "dot-active" : d.done ? "dot-settled" : "dot-error"}`} />
-                      <span className="flex-1 truncate font-mono text-xs text-fg">{d.dagId}</span>
+                      <span className={`dot flex-none ${active ? "dot-active" : d.done ? "dot-settled" : "dot-error"}`} />
+                      <span className="min-w-0 flex-1 truncate font-mono text-xs text-fg">{d.dagId}</span>
                     </div>
-                    <div className="mt-1.5 flex items-center gap-2 text-2xs text-faint">
+                    <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-2xs text-faint">
                       <span>{done}/{d.nodes.length} 节点完成</span>
-                      <span>·</span>
+                      <span className="hidden sm:inline">·</span>
                       <span>{d.done ? "已完成" : "运行中"}</span>
                       {d.startedAt && (
                         <>
-                          <span>·</span>
-                          <span>{relativeTime(d.startedAt)}</span>
+                          <span className="hidden sm:inline">·</span>
+                          <span className="hidden sm:inline">{relativeTime(d.startedAt)}</span>
                         </>
                       )}
                     </div>

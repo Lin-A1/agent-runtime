@@ -575,6 +575,19 @@ select {
   }
 }
 
+/* hub pages embedded inside settings: they share the settings nav, so hide
+   their own big page header (title/sub/actions row) to avoid duplication */
+.hub-embedded .page-header {
+  display: none;
+}
+.hub-embedded .page-header + * {
+  padding-top: 0;
+}
+/* give embedded content a little breathing room under the section chips */
+.hub-embedded > * {
+  padding-top: 0.5rem;
+}
+
 /* ---- mobile (remote control / phone web) ---- */
 @media (max-width: 767px) {
   /* larger touch targets */

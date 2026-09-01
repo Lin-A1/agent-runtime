@@ -60,7 +60,7 @@ export function UsagePage(): React.ReactElement {
         empty={<EmptyState className="!py-24" icon={<Activity size={18} />} title="近 30 天没有用量" hint="发起一次对话后，token 与成本会在这里按天聚合。" />}
       >
         {(u) => (
-          <div className="min-h-0 flex-1 overflow-y-auto p-6">
+          <div className="min-h-0 flex-1 overflow-y-auto p-4 md:p-6">
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <StatCard icon={<TrendingUp size={15} />} label="总 tokens" value={fmtTokens(u.totals.inputTokens + u.totals.outputTokens)} sub={`输入 ${fmtTokens(u.totals.inputTokens)} · 输出 ${fmtTokens(u.totals.outputTokens)}`} />
               <StatCard icon={<Coins size={15} />} label="估算成本" value={`¥${u.totals.cost.toFixed(2)}`} sub="按供应商单价折算" />
@@ -112,7 +112,7 @@ export function UsagePage(): React.ReactElement {
                           <span className="text-faint">{fmtTokens(v.in + v.out)}</span>
                         </div>
                         <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-bg2">
-                          <div className="h-full rounded-full bg-accent" style={{ width: `${ratio * 100}%` }} />
+                          <div className="h-full rounded-full" style={{ width: `${ratio * 100}%`, background: "var(--txt-dim)" }} />
                         </div>
                       </div>
                     )
@@ -171,7 +171,7 @@ function Heatmap({ days }: { days: UsageSummary["days"] }): React.ReactElement {
       {days.map((d) => {
         const v = d.inputTokens + d.outputTokens
         const level = v === 0 ? 0 : v / max > 0.75 ? 4 : v / max > 0.5 ? 3 : v / max > 0.25 ? 2 : 1
-        const bg = ["var(--bg2)", "rgba(14,165,233,0.25)", "rgba(14,165,233,0.45)", "rgba(14,165,233,0.7)", "var(--accent)"][level]
+        const bg = ["var(--bg2)", "rgba(148,158,178,0.22)", "rgba(148,158,178,0.42)", "rgba(148,158,178,0.68)", "var(--txt-dim)"][level]
         return (
           <div
             key={d.day}
@@ -189,7 +189,7 @@ function HeatLegend(): React.ReactElement {
   return (
     <div className="flex items-center gap-1 text-2xs text-faint">
       少
-      {["var(--bg2)", "rgba(14,165,233,0.25)", "rgba(14,165,233,0.45)", "rgba(14,165,233,0.7)", "var(--accent)"].map((c) => (
+      {["var(--bg2)", "rgba(148,158,178,0.22)", "rgba(148,158,178,0.42)", "rgba(148,158,178,0.68)", "var(--txt-dim)"].map((c) => (
         <span key={c} className="h-2.5 w-2.5 rounded-[3px]" style={{ background: c }} />
       ))}
       多

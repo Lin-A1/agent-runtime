@@ -29,7 +29,7 @@ export function SkillsPage(): React.ReactElement {
       {skills.length === 0 ? (
         <EmptyState className="!py-24" icon={<Sparkles size={18} />} title="没有发现技能" hint="在 agent-home 的 skills 目录或插件包里放置 SKILL.md。" />
       ) : (
-        <div className="min-h-0 flex-1 overflow-y-auto p-6">
+        <div className="min-h-0 flex-1 overflow-y-auto p-4 md:p-6">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {skills.map((s) => (
               <button

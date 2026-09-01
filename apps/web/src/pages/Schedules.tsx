@@ -75,7 +75,7 @@ export function SchedulesPage(): React.ReactElement {
       {items.length === 0 ? (
         <EmptyState className="!py-24" icon={<CalendarClock size={18} />} title="还没有定时任务" hint="设定节奏与目标会话，让 newhorse 按时自动开工。" />
       ) : (
-        <div className="min-h-0 flex-1 overflow-y-auto p-6">
+        <div className="min-h-0 flex-1 overflow-y-auto p-4 md:p-6">
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             {items.map((s) => (
               <div key={s.id} className="card p-4">
@@ -101,12 +101,12 @@ export function SchedulesPage(): React.ReactElement {
                       → {s.sessionId}
                     </button>
                     {s.lastResult === "error" && s.lastError && <p className="mt-1.5 rounded-md bg-bg2 p-2 text-2xs leading-relaxed text-bad">{s.lastError}</p>}
-                    <div className="mt-3 flex items-center gap-2 border-t border-line pt-2.5">
+                    <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-2 border-t border-line pt-2.5">
                       <button className="flex items-center gap-1.5 text-2xs text-faint" onClick={() => toggle(s.id)}>
                         <Toggle checked={s.enabled} />
                         {s.enabled ? "已启用" : "已停用"}
                       </button>
-                      <span className="text-2xs text-ghost">{s.lastRunAt ? `上次运行 ${relativeTime(s.lastRunAt)}` : "尚未运行"}</span>
+                      <span className="w-full text-2xs text-ghost md:w-auto">{s.lastRunAt ? `上次运行 ${relativeTime(s.lastRunAt)}` : "尚未运行"}</span>
                       <div className="ml-auto flex items-center gap-1">
                         <button className="btn !py-1 text-2xs" title="立即执行" onClick={() => runNow(s.id)}>
                           <Play size={11} /> 运行

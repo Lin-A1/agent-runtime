@@ -72,7 +72,7 @@ export function MemoryPage(): React.ReactElement {
           hint={q ? "换个关键词，或清空搜索。" : "开启行为设置里的自动抽取后，对话会沉淀为记忆；也可以手动写入。"}
         />
       ) : (
-        <div className="min-h-0 flex-1 overflow-y-auto p-6">
+        <div className="min-h-0 flex-1 overflow-y-auto p-4 md:p-6">
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             {filtered.map((m) => (
               <div key={m.id} className="card group p-4">
