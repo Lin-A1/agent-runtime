@@ -67,7 +67,6 @@
       "dependencies": {
         "@newhorse/core": "workspace:*",
         "@newhorse/llm": "workspace:*",
-        "@newhorse/mcp": "workspace:*",
         "@newhorse/memory": "workspace:*",
         "@newhorse/plugin": "workspace:*",
         "@newhorse/schema": "workspace:*",
