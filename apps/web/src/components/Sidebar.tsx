@@ -13,6 +13,7 @@ import {
   Clock,
   FolderGit2,
   HardDrive,
+  PanelLeftOpen,
   Plus,
   QrCode,
   Search,
@@ -44,7 +45,7 @@ function groupOf(ts: number): GroupKey {
 }
 const GROUP_ORDER: GroupKey[] = ["今天", "昨天", "本周", "上周", "本月", "更早"]
 
-export function Sidebar({ onOpenRemote }: { onOpenRemote?: () => void } = {}): React.ReactElement {
+export function Sidebar({ onOpenRemote, collapsed, onToggleCollapse }: { onOpenRemote?: () => void; collapsed?: boolean; onToggleCollapse?: () => void } = {}): React.ReactElement {
   const navigate = useNavigate()
   const location = useLocation()
   const { toggle, theme } = useTheme()
@@ -75,6 +76,10 @@ export function Sidebar({ onOpenRemote }: { onOpenRemote?: () => void } = {}): R
     return { resident, groups, archived, freeTasks }
   }, [sessions.data])
 
+  if (collapsed) {
+    return <CollapsedRail onOpenRemote={onOpenRemote} onExpand={onToggleCollapse} onHome={() => navigate("/")} onSettings={() => navigate("/settings")} />
+  }
+
   const q = query.trim().toLowerCase()
   const match = (r: SessionRow): boolean => !q || (r.title ?? "").toLowerCase().includes(q) || r.sessionId.toLowerCase().includes(q)
 
@@ -82,6 +87,13 @@ export function Sidebar({ onOpenRemote }: { onOpenRemote?: () => void } = {}): R
     <aside className="flex h-full w-[248px] flex-none flex-col border-r border-line bg-side">
       {/* workspace identity — compact, like a chat-client project switcher */}
       <div className="relative px-3 pt-3">
+        <button
+          onClick={onToggleCollapse}
+          className="icon-btn absolute -right-0.5 top-3 z-10 !h-7 !w-7 opacity-60 hover:opacity-100"
+          title="折叠侧栏"
+        >
+          <PanelLeftOpen size={15} style={{ transform: "scaleX(-1)" }} />
+        </button>
         <Dropdown
           width={256}
           trigger={
@@ -274,5 +286,34 @@ function SessionRowView({
         </span>
       </span>
     </button>
+  )
+}
+
+/** Collapsed rail: icon-only strip for maximum workspace width. */
+function CollapsedRail({ onExpand, onHome, onSettings, onOpenRemote }: { onExpand?: () => void; onHome?: () => void; onSettings?: () => void; onOpenRemote?: () => void }): React.ReactElement {
+  const theme = useTheme()
+  return (
+    <aside className="flex h-full w-[60px] flex-none flex-col items-center gap-1 border-r border-line bg-side py-3">
+      <button className="icon-btn !h-10 !w-10" title="展开侧栏" onClick={onExpand}>
+        <PanelLeftOpen size={18} />
+      </button>
+      <button className="icon-btn !h-10 !w-10" title="新任务 / 封面" onClick={onHome}>
+        <Plus size={18} />
+      </button>
+      <div className="mt-1 flex flex-1 flex-col items-center gap-1">
+        <EmotionBall mood="idle" size={34} lite />
+      </div>
+      <div className="flex flex-col items-center gap-0.5">
+        <button className="icon-btn !h-10 !w-10" title="设置" onClick={onSettings}>
+          <SettingsIcon size={17} />
+        </button>
+        <button className="icon-btn !h-10 !w-10" title="手机 / 远程访问" onClick={onOpenRemote}>
+          <QrCode size={17} />
+        </button>
+        <button className="icon-btn !h-10 !w-10" title={theme.theme === "dark" ? "切换到浅色" : "切换到深色"} onClick={theme.toggle}>
+          <SunMoon size={17} />
+        </button>
+      </div>
+    </aside>
   )
 }

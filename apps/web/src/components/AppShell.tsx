@@ -45,6 +45,7 @@ export function AppShell(): React.ReactElement {
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [remoteOpen, setRemoteOpen] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const [railCollapsed, setRailCollapsed] = useState(false)
   const location = useLocation()
 
   useEffect(() => {
@@ -75,7 +76,7 @@ export function AppShell(): React.ReactElement {
 
       {/* desktop rail */}
       <div className="hidden md:flex">
-        <Sidebar onOpenRemote={() => setRemoteOpen(true)} />
+        <Sidebar collapsed={railCollapsed} onToggleCollapse={() => setRailCollapsed((v) => !v)} onOpenRemote={() => setRemoteOpen(true)} />
       </div>
 
       {/* mobile drawer */}

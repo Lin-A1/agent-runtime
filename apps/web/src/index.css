@@ -105,7 +105,10 @@ body,
 #root {
   height: 100%;
 }
-
+/* dynamic viewport height: avoids the mobile address-bar double scrollbar */
+html {
+  height: 100dvh;
+}
 body {
   margin: 0;
   background: var(--bg);
@@ -114,6 +117,11 @@ body {
   font-size: 14px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+}
+#root {
+  height: 100dvh;
+  overflow: hidden;
 }
 
 ::selection {
@@ -558,8 +566,16 @@ select {
   align-self: stretch;
 }
 
-/* ---- mobile (remote control / phone web) ---- */
+/* ---- right sidePane: resizable on desktop via the drag handle ---- */
+@media (min-width: 768px) {
+  aside[data-pane] {
+    width: var(--pane-w, 340px);
+    min-width: 280px;
+    max-width: 640px;
+  }
+}
 
+/* ---- mobile (remote control / phone web) ---- */
 @media (max-width: 767px) {
   /* larger touch targets */
   .icon-btn {

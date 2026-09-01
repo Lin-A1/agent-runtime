@@ -53,6 +53,8 @@ export function SidePane({
   contextView,
   goal,
   onClose,
+  width,
+  onResize,
 }: {
   sessionId: string
   workspace: string
@@ -60,10 +62,45 @@ export function SidePane({
   contextView: ContextView | null
   goal: GoalView | null
   onClose: () => void
+  width?: number
+  onResize?: (w: number) => void
 }): React.ReactElement {
   const [tab, setTab] = useState<Tab>("subagents")
+
+  const startDrag = (e: React.PointerEvent) => {
+    e.preventDefault()
+    const startX = e.clientX
+    const startW = width ?? 340
+    const move = (ev: PointerEvent) => {
+      const next = Math.min(560, Math.max(280, startW + (startX - ev.clientX)))
+      onResize?.(next)
+    }
+    const up = () => {
+      window.removeEventListener("pointermove", move)
+      window.removeEventListener("pointerup", up)
+      document.body.style.cursor = ""
+      document.body.style.userSelect = ""
+    }
+    document.body.style.cursor = "col-resize"
+    document.body.style.userSelect = "none"
+    window.addEventListener("pointermove", move)
+    window.addEventListener("pointerup", up)
+  }
+
   return (
-    <aside className="fixed inset-x-0 bottom-0 z-40 flex h-[74vh] w-full flex-col rounded-t-2xl border-t border-line bg-panel shadow-overlay md:static md:z-auto md:h-full md:w-[340px] md:flex-none md:rounded-none md:border-l md:border-t-0 md:shadow-none">
+    <aside
+      data-pane
+      className="fixed inset-x-0 bottom-0 z-40 flex h-[74vh] w-full flex-col rounded-t-2xl border-t border-line bg-panel shadow-overlay md:relative md:z-auto md:h-full md:shrink-0 md:rounded-none md:border-l md:border-t-0 md:shadow-none"
+      style={{ ["--pane-w" as string]: `${width ?? 340}px` }}
+    >
+      {/* desktop drag handle on the left edge */}
+      <div
+        onPointerDown={startDrag}
+        className="absolute -left-1 top-0 z-50 hidden h-full w-2 cursor-col-resize md:block"
+        title="拖拽调整宽度"
+      >
+        <div className="mx-auto h-full w-px bg-transparent transition-colors hover:bg-accent" />
+      </div>
       <div className="flex items-center justify-center md:hidden" aria-hidden>
         <span className="mt-2 h-1 w-10 rounded-full bg-line-strong" />
       </div>

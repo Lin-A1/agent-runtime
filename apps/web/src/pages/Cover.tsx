@@ -29,26 +29,28 @@ export function Cover(): React.ReactElement {
     .slice(0, 4)
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto flex min-h-full w-full max-w-[760px] flex-col px-5 pb-12 pt-[5vh] md:px-6 md:pb-16 md:pt-[7vh]">
+    // Fixed, non-scrolling welcome on mobile (just ball + composer); the
+    // suggestion/recent sections scroll only on larger screens.
+    <div className="h-full overflow-hidden md:overflow-y-auto">
+      <div className="mx-auto flex h-full w-full max-w-[760px] flex-col px-5 pt-[4vh] md:min-h-full md:px-6 md:pb-16 md:pt-[7vh]">
         {/* hero: ball in orbit ring */}
         <div className="flex justify-center">
           <OrbitBall mood={focused ? "listening" : "idle"} />
         </div>
 
-        <h1 className="mt-6 text-center text-[24px] font-bold tracking-tight text-fg md:mt-7 md:text-[30px]">有什么可以帮你？</h1>
-        <p className="mt-2.5 text-center text-[15px] text-faint">把任务交给 newhorse，它会自己读文件、跑工具、拆分子任务</p>
+        <h1 className="mt-5 text-center text-[23px] font-bold tracking-tight text-fg md:mt-7 md:text-[30px]">有什么可以帮你？</h1>
+        <p className="mt-2 text-center text-[14px] text-faint md:mt-2.5 md:text-[15px]">把任务交给 newhorse，它会自己读文件、跑工具、拆分子任务</p>
 
         <div
-          className="mt-7"
+          className="mt-6 md:mt-7"
           onFocusCapture={() => setFocused(true)}
           onBlurCapture={() => setFocused(false)}
         >
           <Composer variant="cover" autoFocus />
         </div>
 
-        {/* suggestion pills */}
-        <div className="mt-5 flex flex-wrap justify-center gap-2">
+        {/* suggestion pills — desktop only (mobile keeps the cover fixed) */}
+        <div className="mt-5 hidden flex-wrap justify-center gap-2 md:flex">
           {SUGGESTIONS.map((s) => (
             <button
               key={s}
@@ -60,8 +62,8 @@ export function Cover(): React.ReactElement {
           ))}
         </div>
 
-        {/* recent sessions */}
-        <div className="mt-14">
+        {/* recent sessions — desktop only */}
+        <div className="mt-14 hidden md:block">
           <div className="mb-4 flex items-center gap-3">
             <span className="text-[13px] font-medium text-dim">最近会话</span>
             <span className="h-px flex-1 bg-line" />
@@ -93,7 +95,7 @@ export function Cover(): React.ReactElement {
  *  satellite that slowly orbits. */
 function OrbitBall({ mood }: { mood: "idle" | "listening" }): React.ReactElement {
   return (
-    <div className="relative h-[168px] w-[168px] md:h-[230px] md:w-[230px]">
+    <div className="relative h-[150px] w-[150px] md:h-[230px] md:w-[230px]">
       <svg viewBox="0 0 230 230" className="absolute inset-0 h-full w-full">
         {/* dotted orbit ring — visible in both themes: neutral dots on the
             surface with a soft accent-tinted glow */}

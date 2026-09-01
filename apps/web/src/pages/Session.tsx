@@ -37,6 +37,7 @@ export function SessionPage(): React.ReactElement {
   // The side pane starts open on desktop, collapsed (a bottom sheet on demand)
   // on mobile where it would cover the whole conversation.
   const [paneOpen, setPaneOpen] = useState<boolean>(() => typeof window === "undefined" || window.innerWidth >= 768)
+  const [paneWidth, setPaneWidth] = useState(340)
   const [policy, setPolicy] = useState<PolicyLevel>("strict")
 
   const sessions = useApi<SessionRow[]>(() => api.sessions(WS_NH), [])
@@ -187,6 +188,8 @@ export function SessionPage(): React.ReactElement {
           contextView={contextView.data ?? null}
           goal={goal.data?.goal ?? null}
           onClose={() => setPaneOpen(false)}
+          width={paneWidth}
+          onResize={setPaneWidth}
         />
       )}
     </div>
