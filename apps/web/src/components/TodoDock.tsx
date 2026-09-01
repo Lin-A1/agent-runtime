@@ -7,7 +7,6 @@
 import { useState } from "react"
 import { CheckCircle2, ChevronRight, Circle, CircleDot, ListChecks, Target } from "lucide-react"
 import type { GoalView, TodoItem } from "../api/types"
-import { ProgressBar } from "./ui"
 
 export function TodoDock({ todos, goal }: { todos: TodoItem[]; goal: GoalView | null }): React.ReactElement | null {
   const [open, setOpen] = useState(true)
@@ -52,18 +51,22 @@ export function TodoDock({ todos, goal }: { todos: TodoItem[]; goal: GoalView | 
 
 function GoalBar({ goal }: { goal: GoalView }): React.ReactElement {
   const ratio = goal.tokenBudget ? (goal.tokensUsed ?? 0) / goal.tokenBudget : 0
-  const tone = ratio > 0.85 ? "bad" : ratio > 0.6 ? "warn" : "accent"
   const statusText: Record<string, string> = { active: "进行中", paused: "已暂停", blocked: "受阻", complete: "已完成" }
   return (
     <div className="border-b border-line px-3 py-2.5">
       <div className="flex items-center gap-2">
-        <Target size={13} className="flex-none text-accent" />
+        <Target size={13} className="flex-none text-faint" />
         <span className="flex-1 truncate text-xs font-medium text-fg">{goal.objective}</span>
         <span className="chip !py-0 !text-[10px]">{statusText[goal.status] ?? goal.status}</span>
       </div>
       {goal.tokenBudget ? (
         <div className="mt-2 flex items-center gap-2">
-          <ProgressBar ratio={ratio} tone={tone} className="flex-1" />
+          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-bg2">
+            <div
+              className="h-full rounded-full transition-all"
+              style={{ width: `${Math.min(100, ratio * 100)}%`, background: ratio > 0.85 ? "var(--bad)" : ratio > 0.6 ? "var(--warn)" : "var(--txt-ghost)" }}
+            />
+          </div>
           <span className="flex-none font-mono text-2xs text-faint">
             {Math.round((goal.tokensUsed ?? 0) / 1000)}k / {Math.round(goal.tokenBudget / 1000)}k
           </span>

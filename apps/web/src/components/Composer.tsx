@@ -84,8 +84,8 @@ export function Composer({ variant = "session", busy = false, queuedCount = 0, a
       )}
 
       <div
-        className="overflow-hidden border bg-panel shadow-[0_2px_10px_rgba(0,0,0,0.18)] transition-colors"
-        style={{ borderRadius: 20, borderColor: busy ? "var(--line)" : "var(--line-strong)" }}
+        className="overflow-hidden border bg-panel transition-colors focus-within:border-linestrong"
+        style={{ borderRadius: 22, borderColor: "var(--line)" }}
       >
         {images.length > 0 && (
           <div className="flex flex-wrap gap-2 px-4 pt-3.5">
@@ -180,8 +180,7 @@ export function Composer({ variant = "session", busy = false, queuedCount = 0, a
             >
               <AtSign size={16} />
             </button>
-            <button className="ml-1 flex items-center gap-1.5 rounded-full border border-line bg-bg2 py-1.5 pl-2.5 pr-2 text-xs text-dim transition-colors hover:border-linestrong hover:text-fg" title="切换模型">
-              <span className="h-1.5 w-1.5 rounded-full bg-ok" />
+            <button className="ml-1 flex items-center gap-1.5 rounded-full px-2 py-1.5 text-xs text-dim transition-colors hover:bg-hover hover:text-fg" title="切换模型">
               <span className="font-mono text-2xs">{model}</span>
               <ChevronDown size={12} className="text-faint" />
             </button>
@@ -199,12 +198,15 @@ export function Composer({ variant = "session", busy = false, queuedCount = 0, a
               title="中断回合（SSE 断开即触发 interrupt）"
               onClick={onInterrupt}
             >
-              <Square size={14} fill="currentColor" />
+              <Square size={13} fill="currentColor" />
             </button>
           ) : (
             <button
-              className="flex h-9 w-9 flex-none items-center justify-center rounded-full text-white transition-all disabled:opacity-40"
-              style={{ background: "var(--accent)" }}
+              className="flex h-9 w-9 flex-none items-center justify-center rounded-full transition-colors"
+              style={{
+                background: (text.trim() || images.length > 0) ? "var(--txt)" : "var(--hover-2)",
+                color: (text.trim() || images.length > 0) ? "var(--bg)" : "var(--txt-faint)",
+              }}
               title="发送到常驻 newhorse 会话"
               onClick={submit}
               disabled={!text.trim() && images.length === 0}

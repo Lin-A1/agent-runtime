@@ -118,14 +118,14 @@ export function SessionPage(): React.ReactElement {
           </button>
         </header>
 
-        {/* context ratio strip */}
+        {/* context ratio strip — quiet, neutral fill */}
         {contextView.data && (
-          <div className="flex flex-none items-center gap-2 border-b border-line bg-bg2 px-5 py-1">
-            <Shield size={11} className="text-faint" />
-            <div className="h-1 w-24 overflow-hidden rounded-full bg-line">
-              <div className="h-full rounded-full bg-accent" style={{ width: `${(contextView.data.ratio ?? 0) * 100}%` }} />
+          <div className="flex flex-none items-center gap-2 border-b border-line px-5 py-1.5">
+            <Shield size={11} className="text-ghost" />
+            <div className="h-1 w-24 overflow-hidden rounded-full bg-bg2">
+              <div className="h-full rounded-full" style={{ width: `${(contextView.data.ratio ?? 0) * 100}%`, background: "var(--txt-ghost)" }} />
             </div>
-            <span className="font-mono text-2xs text-faint">
+            <span className="font-mono text-2xs text-ghost">
               上下文 {((contextView.data.ratio ?? 0) * 100).toFixed(1)}% · {contextView.data.estTokens.toLocaleString()} tokens
             </span>
           </div>

@@ -122,8 +122,11 @@ export function Sidebar(): React.ReactElement {
 
       {/* new task + search */}
       <div className="flex items-center gap-1.5 px-3 pt-3">
-        <button className="btn btn-primary flex-1 justify-center" onClick={() => navigate("/")}>
-          <Plus size={14} /> 新任务
+        <button
+          className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-dim transition-colors hover:bg-hover hover:text-fg"
+          onClick={() => navigate("/")}
+        >
+          <Plus size={16} /> 新任务
         </button>
       </div>
       <div className="px-3 pt-2">
@@ -190,24 +193,33 @@ export function Sidebar(): React.ReactElement {
         <NavLink to="/live" icon={<Network size={14} />} label="运行时目录" active={location.pathname === "/live"} />
       </div>
 
-      {/* footer: usage mini + settings + theme */}
-      <div className="border-t border-line p-3">
-        <Link to="/usage" className="block rounded-lg border border-line bg-panel px-3 py-2 hover:border-linestrong">
-          <div className="flex items-center justify-between">
-            <span className="text-2xs text-faint">近 30 天用量</span>
-            <BarChart3 size={12} className="text-faint" />
-          </div>
-          <div className="mt-1 text-sm font-semibold text-fg">4.2M tokens</div>
-          <div className="text-2xs text-faint">¥18.6 · 12 个会话</div>
+      {/* footer: usage + settings + theme — quiet, borderless like a chat client rail */}
+      <div className="border-t border-line px-2 py-2">
+        <Link
+          to="/usage"
+          className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-dim transition-colors hover:bg-hover hover:text-fg"
+        >
+          <BarChart3 size={15} className="flex-none text-faint" />
+          <span className="min-w-0 flex-1">
+            <span className="block text-xs">近 30 天用量</span>
+            <span className="block text-2xs text-ghost">4.2M tokens · ¥18.6</span>
+          </span>
         </Link>
-        <div className="mt-2 flex items-center gap-1">
-          <Link to="/settings" className="btn flex-1 justify-center">
-            <SettingsIcon size={13} /> 设置
-          </Link>
-          <button className="icon-btn" title={theme === "dark" ? "切换到浅色" : "切换到深色"} onClick={toggle}>
-            <SunMoon size={15} />
-          </button>
-        </div>
+        <Link
+          to="/settings"
+          className="mt-0.5 flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-dim transition-colors hover:bg-hover hover:text-fg"
+        >
+          <SettingsIcon size={15} className="flex-none text-faint" />
+          <span className="text-xs">设置</span>
+        </Link>
+        <button
+          className="mt-0.5 flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-dim transition-colors hover:bg-hover hover:text-fg"
+          title={theme === "dark" ? "切换到浅色" : "切换到深色"}
+          onClick={toggle}
+        >
+          <SunMoon size={15} className="flex-none text-faint" />
+          <span className="text-xs">{theme === "dark" ? "浅色主题" : "深色主题"}</span>
+        </button>
       </div>
     </aside>
   )
@@ -254,14 +266,12 @@ function SessionRowView({
         <StatusDot status={row.status} className="mt-1.5" />
       )}
       <span className="min-w-0 flex-1">
-        <span className={`flex items-center gap-1.5 truncate text-xs ${pinned ? "font-medium text-fg" : "text-dim group-hover:text-fg"}`} style={active ? { color: "var(--txt)" } : undefined}>
-          {prettyTitle(row.title, isButler ? "newhorse 会话" : "未命名会话")}
-          {pinned && <span className="chip !py-0 !text-[10px]">常驻</span>}
+        <span className={`flex items-center gap-1.5 truncate text-[13px] ${pinned ? "font-medium text-fg" : "text-dim group-hover:text-fg"}`} style={active ? { color: "var(--txt)" } : undefined}>
+          {prettyTitle(row.title, isButler ? "newhorse" : "未命名会话")}
         </span>
-        <span className="mt-0.5 flex items-center gap-1.5 text-2xs text-faint">
+        <span className="mt-0.5 flex items-center gap-1.5 text-2xs text-ghost">
           {archived ? <Archive size={10} /> : null}
           <span className="truncate">{isButler ? "常驻会话 · " : ""}{relativeTime(row.updatedAt)}</span>
-          {row.model && <span className="truncate font-mono">· {row.model}</span>}
         </span>
       </span>
     </button>

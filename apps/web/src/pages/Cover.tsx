@@ -8,7 +8,6 @@
  */
 import { useState } from "react"
 import { useNavigate } from "react-router-dom"
-import { Sparkles } from "lucide-react"
 import { api } from "../api/client"
 import type { SessionRow } from "../api/types"
 import { prettyTitle, relativeTime } from "../api/fold"
@@ -49,14 +48,13 @@ export function Cover(): React.ReactElement {
         </div>
 
         {/* suggestion pills */}
-        <div className="mt-5 flex flex-wrap justify-center gap-2.5">
+        <div className="mt-5 flex flex-wrap justify-center gap-2">
           {SUGGESTIONS.map((s) => (
             <button
               key={s}
               onClick={() => navigate("/session/sess-nh-butler")}
-              className="flex items-center gap-1.5 rounded-full border border-line bg-panel px-4 py-2 text-[13px] text-dim transition-colors hover:border-linestrong hover:bg-hover hover:text-fg"
+              className="rounded-full border border-line bg-panel px-4 py-2 text-[13px] text-dim transition-colors hover:border-linestrong hover:text-fg"
             >
-              <Sparkles size={13} className="text-faint" />
               {s}
             </button>
           ))}
@@ -78,13 +76,9 @@ export function Cover(): React.ReactElement {
                 <p className="line-clamp-2 min-h-[40px] text-[15px] font-semibold leading-snug text-fg">
                   {prettyTitle(r.title, "未命名会话", 60)}
                 </p>
-                <div className="mt-3 flex items-center gap-2 text-2xs text-faint">
+                <div className="mt-3 flex items-center gap-2 text-2xs text-ghost">
                   <StatusDot status={r.status} />
                   <span>{relativeTime(r.updatedAt)}</span>
-                  <span className="chip !py-0 !text-[10px]">
-                    <span className="h-1.5 w-1.5 rounded-full bg-ok" />
-                    {r.model ?? "model"}
-                  </span>
                 </div>
               </button>
             ))}
@@ -110,9 +104,9 @@ function OrbitBall({ mood }: { mood: "idle" | "listening" }): React.ReactElement
           strokeDasharray="1.5 8"
           strokeLinecap="round"
         />
-        {/* satellite dot on the ring, lower-left */}
-        <circle cx="33" cy="148" r="4.5" fill="var(--accent-strong)" />
-        <circle cx="33" cy="148" r="8" fill="var(--accent-strong)" opacity="0.18" />
+        {/* satellite dot on the ring, lower-left — neutral, not accent */}
+        <circle cx="33" cy="148" r="4" fill="var(--txt-dim)" />
+        <circle cx="33" cy="148" r="7.5" fill="var(--txt-dim)" opacity="0.14" />
       </svg>
       <div className="absolute inset-0 flex items-center justify-center">
         <EmotionBall mood={mood} size={104} interactive />
