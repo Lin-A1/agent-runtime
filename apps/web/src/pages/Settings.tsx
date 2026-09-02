@@ -138,8 +138,19 @@ function NavButton({ active, icon, label, onClick }: { active: boolean; icon: Re
 
 // --- 1. models & providers (cc-switch) ---
 
+/** Vendor logo-tile branding derived from the provider name/kind. */
+function vendorMeta(p: { name: string; kind: string; baseUrl?: string; model?: string }): { glyph: string; bg: string; fg: string; label: (x: { baseUrl?: string }) => string } {
+  const n = `${p.name} ${p.kind} ${p.baseUrl ?? ""}`.toLowerCase()
+  const label = (x: { baseUrl?: string }) => x.baseUrl?.replace(/^https?:\/\//, "").replace(/\/.*$/, "") || "自定义端点"
+  if (n.includes("anthropic") || n.includes("claude")) return { glyph: "C", bg: "#EFE0D5", fg: "#B4623F", label }
+  if (n.includes("智谱") || n.includes("glm") || n.includes("bigmodel") || n.includes("zhipu")) return { glyph: "GLM", bg: "#E3EDFB", fg: "#1F6FE0", label }
+  if (n.includes("deepseek")) return { glyph: "D", bg: "#E4EAF7", fg: "#2C5FD0", label }
+  if (n.includes("ollama") || n.includes("本地") || n.includes("127.0.0.1") || n.includes("localhost")) return { glyph: "🦙", bg: "#ECEAE3", fg: "#5A5648", label: () => "本地服务" }
+  if (n.includes("openai") || n.includes("gpt")) return { glyph: "G", bg: "#E9F3EC", fg: "#1D8A4D", label }
+  return { glyph: (p.name.slice(0, 1) || "?").toUpperCase(), bg: "var(--bg2)", fg: "var(--txt-dim)", label }
+}
+
 function ModelsSection({ s }: { s: SettingsView }): React.ReactElement {
-  const [editing, setEditing] = useState<string | null>(null)
   const [activeId, setActiveId] = useState<string | undefined>(s.activeProviderId)
   return (
     <div>
@@ -153,61 +164,61 @@ function ModelsSection({ s }: { s: SettingsView }): React.ReactElement {
         </button>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-        {(s.providers ?? []).map((p) => {
+      {/* cc-switch style: one compact row per provider — logo tile, name +
+          endpoint + model summary, key state, and a switch action */}
+      <div className="overflow-hidden rounded-xl border border-line bg-card">
+        {(s.providers ?? []).map((p, i) => {
           const active = p.id === activeId
+          const vendor = vendorMeta(p)
           return (
-            <div key={p.id} className="card p-4" style={active ? { borderColor: "var(--line-strong)", background: "var(--hover)" } : undefined}>
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium text-fg">{p.name}</span>
-                    {active && (
-                      <span className="chip !py-0 !text-[10px]">
-                        <Check size={10} /> 当前
-                      </span>
-                    )}
-                  </div>
-                  <div className="mt-0.5 truncate font-mono text-2xs text-faint">{p.baseUrl || "（未设置端点）"}</div>
-                </div>
-                {!active && (
-                  <button className="btn flex-none !py-1 text-2xs" onClick={() => setActiveId(p.id)}>
-                    切换到此预设
-                  </button>
-                )}
+            <div
+              key={p.id}
+              className={`flex items-center gap-3 px-3.5 py-3 transition-colors ${i > 0 ? "border-t border-line" : ""} ${active ? "bg-hover" : "hover:bg-hover/60"}`}
+            >
+              {/* logo tile */}
+              <div
+                className="flex h-9 w-9 flex-none items-center justify-center rounded-lg border border-line text-[15px] font-bold"
+                style={{ background: vendor.bg, color: vendor.fg }}
+              >
+                {vendor.glyph}
               </div>
 
-              <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-3 text-xs">
-                <div>
-                  <dt className="text-2xs text-ghost">协议</dt>
-                  <dd className="mt-0.5 font-mono text-dim">{p.kind}</dd>
+              {/* name + endpoint */}
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="truncate text-[13px] font-medium text-fg">{p.name}</span>
+                  {active && (
+                    <span className="flex-none rounded-full bg-bg2 px-2 py-0.5 text-[10px] text-dim">
+                      <Check size={10} className="mr-0.5 inline" />
+                      使用中
+                    </span>
+                  )}
                 </div>
-                <div>
-                  <dt className="text-2xs text-ghost">默认模型</dt>
-                  <dd className="mt-0.5 truncate font-mono text-dim">{p.model ?? "—"}</dd>
+                <div className="mt-0.5 flex min-w-0 items-center gap-2 text-2xs text-faint">
+                  <span className="truncate font-mono">{vendor.label(p)}</span>
+                  <span className="hidden flex-none sm:inline">·</span>
+                  <span className="hidden flex-none truncate font-mono sm:inline">{p.model ?? "—"}</span>
                 </div>
-                <div>
-                  <dt className="text-2xs text-ghost">上下文窗口</dt>
-                  <dd className="mt-0.5 font-mono text-dim">{p.contextWindowTokens ? `${(p.contextWindowTokens / 1000).toFixed(0)}k` : "—"}</dd>
-                </div>
-                <div>
-                  <dt className="text-2xs text-ghost">单次输出预算</dt>
-                  <dd className="mt-0.5 font-mono text-dim">{p.maxOutputTokens ? `${(p.maxOutputTokens / 1000).toFixed(0)}k` : "—"}</dd>
-                </div>
-              </dl>
+              </div>
 
-              <div className="mt-4 flex items-center gap-2 border-t border-line pt-4">
-                <KeyRound size={12} className={p.hasApiKey ? "text-ok" : "text-faint"} />
-                <span className="text-xs text-faint">{p.hasApiKey ? `API Key 已配置（${p.apiKeyHint ?? "已存储"}）` : "未配置 API Key"}</span>
-                <button className="btn ml-auto !py-0.5 text-2xs" onClick={() => setEditing(editing === p.id ? null : p.id)}>
-                  {p.hasApiKey ? "更换" : "添加"}
+              {/* key state */}
+              <span className="hidden flex-none items-center gap-1.5 text-2xs text-faint md:flex">
+                <KeyRound size={12} className={p.hasApiKey ? "text-ok" : "text-ghost"} />
+                {p.hasApiKey ? "已配置 Key" : "未配置 Key"}
+              </span>
+
+              {/* actions */}
+              {active ? (
+                <span className="flex h-6 w-6 flex-none items-center justify-center rounded-full text-ok" title="正在使用">
+                  <Check size={15} />
+                </span>
+              ) : (
+                <button
+                  className="btn btn-primary flex-none !py-1 !px-3.5 text-xs"
+                  onClick={() => setActiveId(p.id)}
+                >
+                  切换
                 </button>
-              </div>
-              {editing === p.id && (
-                <div className="mt-2 rounded-md border border-line bg-bg2 p-2.5">
-                  <input className="input" type="password" placeholder="粘贴新 Key（留空保持现有值不变）" />
-                  <p className="mt-1.5 text-2xs text-faint">密钥字段往返不回显；清空请显式提交 null。</p>
-                </div>
               )}
             </div>
           )
