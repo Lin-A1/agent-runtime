@@ -32,7 +32,7 @@ import {
 import { api } from "../api/client"
 import type { McpServerSettings, SettingsView } from "../api/types"
 import { useApi } from "../lib/useApi"
-import { AsyncRegion, EmptyState, Label, LoadingState, PageHeader, Segmented, Toggle } from "../components/ui"
+import { AsyncRegion, EmptyState, Label, LoadingState, Modal, PageHeader, Segmented, Toggle } from "../components/ui"
 import { UsagePage } from "./Usage"
 import { MemoryPage } from "./Memory"
 import { SchedulesPage } from "./Schedules"
@@ -138,20 +138,41 @@ function NavButton({ active, icon, label, onClick }: { active: boolean; icon: Re
 
 // --- 1. models & providers (cc-switch) ---
 
-/** Vendor logo-tile branding derived from the provider name/kind. */
-function vendorMeta(p: { name: string; kind: string; baseUrl?: string; model?: string }): { glyph: string; bg: string; fg: string; label: (x: { baseUrl?: string }) => string } {
+type VendorStyle = { bg: string; fg: string }
+
+/** Brand colour per known vendor; the glyph is always the provider's own
+ *  initial(s) — user-supplied name wins, we only preset the tile colour. */
+function vendorStyle(p: { name: string; kind: string; baseUrl?: string }): VendorStyle {
   const n = `${p.name} ${p.kind} ${p.baseUrl ?? ""}`.toLowerCase()
-  const label = (x: { baseUrl?: string }) => x.baseUrl?.replace(/^https?:\/\//, "").replace(/\/.*$/, "") || "自定义端点"
-  if (n.includes("anthropic") || n.includes("claude")) return { glyph: "C", bg: "#EFE0D5", fg: "#B4623F", label }
-  if (n.includes("智谱") || n.includes("glm") || n.includes("bigmodel") || n.includes("zhipu")) return { glyph: "GLM", bg: "#E3EDFB", fg: "#1F6FE0", label }
-  if (n.includes("deepseek")) return { glyph: "D", bg: "#E4EAF7", fg: "#2C5FD0", label }
-  if (n.includes("ollama") || n.includes("本地") || n.includes("127.0.0.1") || n.includes("localhost")) return { glyph: "🦙", bg: "#ECEAE3", fg: "#5A5648", label: () => "本地服务" }
-  if (n.includes("openai") || n.includes("gpt")) return { glyph: "G", bg: "#E9F3EC", fg: "#1D8A4D", label }
-  return { glyph: (p.name.slice(0, 1) || "?").toUpperCase(), bg: "var(--bg2)", fg: "var(--txt-dim)", label }
+  if (n.includes("anthropic") || n.includes("claude")) return { bg: "#F0E2D6", fg: "#B4623F" }
+  if (n.includes("智谱") || n.includes("glm") || n.includes("bigmodel") || n.includes("zhipu")) return { bg: "#E3EDFB", fg: "#1F6FE0" }
+  if (n.includes("deepseek")) return { bg: "#E4EAF7", fg: "#2C5FD0" }
+  if (n.includes("ollama") || n.includes("本地") || n.includes("127.0.0.1") || n.includes("localhost")) return { bg: "#EDEBE4", fg: "#6B6552" }
+  if (n.includes("openai") || n.includes("gpt")) return { bg: "#E9F3EC", fg: "#1D8A4D" }
+  return { bg: "var(--bg2)", fg: "var(--txt-dim)" }
+}
+
+function vendorGlyph(name: string): string {
+  const trimmed = name.trim()
+  if (!trimmed) return "?"
+  // latin/digit names → up to two leading letters; CJK → first character
+  const m = trimmed.match(/[A-Za-z0-9]/)
+  if (m && /^[A-Za-z0-9 .\-_]+$/.test(trimmed)) {
+    const letters = trimmed.replace(/[^A-Za-z0-9]/g, "")
+    return letters.slice(0, 2).toUpperCase()
+  }
+  return trimmed.slice(0, 1)
+}
+
+function endpointLabel(baseUrl?: string): string {
+  if (!baseUrl) return "自定义端点"
+  if (baseUrl.includes("127.0.0.1") || baseUrl.includes("localhost")) return "本地服务"
+  return baseUrl.replace(/^https?:\/\//, "").replace(/\/.*$/, "")
 }
 
 function ModelsSection({ s }: { s: SettingsView }): React.ReactElement {
   const [activeId, setActiveId] = useState<string | undefined>(s.activeProviderId)
+  const [editing, setEditing] = useState<import("../api/types").ProviderProfile | null>(null)
   return (
     <div>
       <div className="mb-5 flex items-center justify-between">
@@ -169,18 +190,23 @@ function ModelsSection({ s }: { s: SettingsView }): React.ReactElement {
       <div className="overflow-hidden rounded-xl border border-line bg-card">
         {(s.providers ?? []).map((p, i) => {
           const active = p.id === activeId
-          const vendor = vendorMeta(p)
+          const vstyle = vendorStyle(p)
           return (
             <div
               key={p.id}
-              className={`flex items-center gap-3 px-3.5 py-3 transition-colors ${i > 0 ? "border-t border-line" : ""} ${active ? "bg-hover" : "hover:bg-hover/60"}`}
+              role="button"
+              tabIndex={0}
+              onClick={() => setEditing(p)}
+              onKeyDown={(e) => e.key === "Enter" && setEditing(p)}
+              className={`group flex cursor-pointer items-center gap-3 px-3.5 py-3 transition-colors ${i > 0 ? "border-t border-line" : ""} ${active ? "bg-hover" : "hover:bg-hover/60"}`}
             >
-              {/* logo tile */}
+              {/* logo tile — initial(s), brand-tinted */}
               <div
-                className="flex h-9 w-9 flex-none items-center justify-center rounded-lg border border-line text-[15px] font-bold"
-                style={{ background: vendor.bg, color: vendor.fg }}
+                className="flex h-9 w-9 flex-none items-center justify-center rounded-lg text-[14px] font-bold leading-none"
+                style={{ background: vstyle.bg, color: vstyle.fg }}
+                title={p.name}
               >
-                {vendor.glyph}
+                {vendorGlyph(p.name)}
               </div>
 
               {/* name + endpoint */}
@@ -195,7 +221,7 @@ function ModelsSection({ s }: { s: SettingsView }): React.ReactElement {
                   )}
                 </div>
                 <div className="mt-0.5 flex min-w-0 items-center gap-2 text-2xs text-faint">
-                  <span className="truncate font-mono">{vendor.label(p)}</span>
+                  <span className="truncate font-mono">{endpointLabel(p.baseUrl)}</span>
                   <span className="hidden flex-none sm:inline">·</span>
                   <span className="hidden flex-none truncate font-mono sm:inline">{p.model ?? "—"}</span>
                 </div>
@@ -207,15 +233,19 @@ function ModelsSection({ s }: { s: SettingsView }): React.ReactElement {
                 {p.hasApiKey ? "已配置 Key" : "未配置 Key"}
               </span>
 
-              {/* actions */}
+              {/* actions: click row (or the edit affordance) to edit; switch
+                  stays a dedicated button on non-active rows */}
               {active ? (
-                <span className="flex h-6 w-6 flex-none items-center justify-center rounded-full text-ok" title="正在使用">
-                  <Check size={15} />
+                <span className="flex h-7 w-7 flex-none items-center justify-center rounded-full text-ok" title="正在使用 · 点击编辑">
+                  <Check size={16} />
                 </span>
               ) : (
                 <button
                   className="btn btn-primary flex-none !py-1 !px-3.5 text-xs"
-                  onClick={() => setActiveId(p.id)}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setActiveId(p.id)
+                  }}
                 >
                   切换
                 </button>
@@ -225,7 +255,103 @@ function ModelsSection({ s }: { s: SettingsView }): React.ReactElement {
         })}
       </div>
 
+      <ProviderEditor provider={editing} onClose={() => setEditing(null)} onActivate={(id) => setActiveId(id)} />
+
       <ModelCatalogNote />
+    </div>
+  )
+}
+
+/** Provider detail/editor modal (local-only this pass; wiring day maps to
+ *  PUT /v1/settings with key redaction preserved). */
+function ProviderEditor({
+  provider,
+  onClose,
+  onActivate,
+}: {
+  provider: import("../api/types").ProviderProfile | null
+  onClose: () => void
+  onActivate: (id: string) => void
+}): React.ReactElement | null {
+  if (!provider) return null
+  return (
+    <Modal open={!!provider} onClose={onClose} title="编辑供应商" width={520}>
+      <ProviderEditorBody key={provider.id} provider={provider} onActivate={onActivate} onClose={onClose} />
+    </Modal>
+  )
+}
+
+function ProviderEditorBody({
+  provider,
+  onActivate,
+  onClose,
+}: {
+  provider: import("../api/types").ProviderProfile
+  onActivate: (id: string) => void
+  onClose: () => void
+}): React.ReactElement {
+  const [name, setName] = useState(provider.name)
+  const [baseUrl, setBaseUrl] = useState(provider.baseUrl ?? "")
+  const [model, setModel] = useState(provider.model ?? "")
+  const [kind, setKind] = useState(provider.kind)
+  const [apiKey, setApiKey] = useState("")
+  const vstyle = vendorStyle({ name, kind, baseUrl })
+
+  return (
+    <div className="space-y-4">
+      {/* identity: logo tile + name */}
+      <div className="flex items-center gap-3">
+        <div
+          className="flex h-12 w-12 flex-none items-center justify-center rounded-xl text-lg font-bold"
+          style={{ background: vstyle.bg, color: vstyle.fg }}
+        >
+          {vendorGlyph(name)}
+        </div>
+        <div className="flex-1">
+          <label className="label">显示名称（logo 取首字母）</label>
+          <input className="input mt-1" value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：Anthropic 官方" />
+        </div>
+      </div>
+
+      <div>
+        <label className="label">接口协议</label>
+        <select className="input mt-1" value={kind} onChange={(e) => setKind(e.target.value)}>
+          <option value="anthropic">anthropic（Anthropic Messages）</option>
+          <option value="openai">openai（OpenAI 兼容）</option>
+        </select>
+      </div>
+
+      <div>
+        <label className="label">Base URL</label>
+        <input className="input mt-1 font-mono" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://api.anthropic.com" />
+      </div>
+
+      <div>
+        <label className="label">默认模型</label>
+        <input className="input mt-1 font-mono" value={model} onChange={(e) => setModel(e.target.value)} placeholder="claude-sonnet-4-5" />
+      </div>
+
+      <div>
+        <label className="label">API Key</label>
+        <input
+          className="input mt-1 font-mono"
+          type="password"
+          value={apiKey}
+          onChange={(e) => setApiKey(e.target.value)}
+          placeholder={provider.hasApiKey ? `已配置（${provider.apiKeyHint ?? "留空保持不变"}）` : "粘贴 API Key"}
+        />
+        <p className="mt-1.5 text-2xs text-faint">密钥往返不回显；留空表示保持现有值不变。</p>
+      </div>
+
+      <div className="flex items-center justify-between pt-1">
+        <button className="btn" onClick={() => onActivate(provider.id)}>
+          <Check size={13} /> 设为当前供应商
+        </button>
+        <div className="flex gap-2">
+          <button className="btn" onClick={onClose}>取消</button>
+          <button className="btn btn-primary" onClick={onClose}>保存</button>
+        </div>
+      </div>
     </div>
   )
 }
