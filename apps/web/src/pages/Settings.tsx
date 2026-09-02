@@ -28,6 +28,7 @@ import {
   Smartphone,
   Sparkles,
   Webhook,
+  X,
 } from "lucide-react"
 import { api } from "../api/client"
 import type { McpServerSettings, SettingsView } from "../api/types"
@@ -275,7 +276,7 @@ function ProviderEditor({
 }): React.ReactElement | null {
   if (!provider) return null
   return (
-    <Modal open={!!provider} onClose={onClose} title="编辑供应商" width={520}>
+    <Modal open={!!provider} onClose={onClose} title="编辑供应商" width={560}>
       <ProviderEditorBody key={provider.id} provider={provider} onActivate={onActivate} onClose={onClose} />
     </Modal>
   )
@@ -292,10 +293,18 @@ function ProviderEditorBody({
 }): React.ReactElement {
   const [name, setName] = useState(provider.name)
   const [baseUrl, setBaseUrl] = useState(provider.baseUrl ?? "")
-  const [model, setModel] = useState(provider.model ?? "")
   const [kind, setKind] = useState(provider.kind)
   const [apiKey, setApiKey] = useState("")
+  // one provider can serve many models — seed from the capability catalog
+  const seedModels = seedModelsFor(provider)
+  const [rows, setRows] = useState<ModelRow[]>(seedModels)
   const vstyle = vendorStyle({ name, kind, baseUrl })
+
+  const addRow = () => setRows((r) => [...r, { id: `m-${Date.now()}`, mid: "", vision: false, reasoning: false, window: "", def: false }])
+  const patch = (id: string, k: keyof ModelRow, v: unknown) =>
+    setRows((rs) => rs.map((r) => (r.id === id ? { ...r, [k]: v } : r)))
+  const remove = (id: string) => setRows((rs) => rs.filter((r) => r.id !== id))
+  const makeDefault = (id: string) => setRows((rs) => rs.map((r) => ({ ...r, def: r.id === id })))
 
   return (
     <div className="space-y-4">
@@ -313,22 +322,66 @@ function ProviderEditorBody({
         </div>
       </div>
 
-      <div>
-        <label className="label">接口协议</label>
-        <select className="input mt-1" value={kind} onChange={(e) => setKind(e.target.value)}>
-          <option value="anthropic">anthropic（Anthropic Messages）</option>
-          <option value="openai">openai（OpenAI 兼容）</option>
-        </select>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div>
+          <label className="label">接口协议</label>
+          <select className="input mt-1" value={kind} onChange={(e) => setKind(e.target.value)}>
+            <option value="anthropic">anthropic（Anthropic Messages）</option>
+            <option value="openai">openai（OpenAI 兼容）</option>
+          </select>
+        </div>
+        <div>
+          <label className="label">Base URL</label>
+          <input className="input mt-1 font-mono" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://api.anthropic.com" />
+        </div>
       </div>
 
+      {/* models served by this provider */}
       <div>
-        <label className="label">Base URL</label>
-        <input className="input mt-1 font-mono" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://api.anthropic.com" />
-      </div>
-
-      <div>
-        <label className="label">默认模型</label>
-        <input className="input mt-1 font-mono" value={model} onChange={(e) => setModel(e.target.value)} placeholder="claude-sonnet-4-5" />
+        <div className="mb-2 flex items-center justify-between">
+          <label className="label !mb-0">模型（{rows.length}）</label>
+          <button className="btn !py-1 text-2xs" onClick={addRow}>
+            <Plus size={12} /> 添加模型
+          </button>
+        </div>
+        <div className="space-y-2">
+          {rows.map((r) => (
+            <div key={r.id} className="flex items-center gap-2 rounded-lg border border-line bg-bg2 px-2.5 py-2">
+              <button
+                className="flex h-4 w-4 flex-none items-center justify-center rounded-full border text-[10px]"
+                style={r.def ? { borderColor: "var(--txt)", background: "var(--txt)", color: "var(--bg)" } : { borderColor: "var(--line-strong)" }}
+                title="设为默认模型"
+                onClick={() => makeDefault(r.id)}
+              >
+                {r.def && <Check size={10} />}
+              </button>
+              <input
+                className="min-w-0 flex-1 bg-transparent font-mono text-xs text-fg outline-none placeholder:text-ghost"
+                value={r.mid}
+                onChange={(e) => patch(r.id, "mid", e.target.value)}
+                placeholder="模型 ID，如 claude-sonnet-4-5"
+              />
+              <button
+                className={`flex-none rounded-full px-2 py-0.5 text-[10px] ${r.reasoning ? "bg-hover text-fg" : "text-ghost"}`}
+                title="支持推理"
+                onClick={() => patch(r.id, "reasoning", !r.reasoning)}
+              >
+                推理
+              </button>
+              <button
+                className={`flex-none rounded-full px-2 py-0.5 text-[10px] ${r.vision ? "bg-hover text-fg" : "text-ghost"}`}
+                title="支持图像"
+                onClick={() => patch(r.id, "vision", !r.vision)}
+              >
+                视觉
+              </button>
+              <button className="flex-none text-ghost hover:text-bad" title="移除" onClick={() => remove(r.id)}>
+                <X size={13} />
+              </button>
+            </div>
+          ))}
+          {rows.length === 0 && <p className="rounded-lg border border-dashed border-line px-3 py-4 text-center text-2xs text-ghost">还没有模型，点「添加模型」</p>}
+        </div>
       </div>
 
       <div>
@@ -354,6 +407,46 @@ function ProviderEditorBody({
       </div>
     </div>
   )
+}
+
+interface ModelRow {
+  id: string
+  mid: string
+  reasoning: boolean
+  vision: boolean
+  window: string
+  def: boolean
+}
+
+/** Realistic per-vendor model families (hard-coded this pass); the default
+ *  model from the provider is marked and falls into the right family. */
+function seedModelsFor(p: import("../api/types").ProviderProfile): ModelRow[] {
+  const n = `${p.name} ${p.kind} ${p.baseUrl ?? ""}`.toLowerCase()
+  let family: Array<{ mid: string; reasoning: boolean; vision: boolean; window: string }>
+  if (n.includes("anthropic") || n.includes("claude")) {
+    family = [
+      { mid: "claude-opus-4-1", reasoning: true, vision: true, window: "200k" },
+      { mid: "claude-sonnet-4-5", reasoning: true, vision: true, window: "200k" },
+      { mid: "claude-haiku-4-5", reasoning: false, vision: true, window: "200k" },
+    ]
+  } else if (n.includes("智谱") || n.includes("glm") || n.includes("bigmodel")) {
+    family = [
+      { mid: "glm-4.6", reasoning: true, vision: false, window: "128k" },
+      { mid: "glm-4.6-flash", reasoning: false, vision: true, window: "128k" },
+    ]
+  } else if (n.includes("deepseek")) {
+    family = [{ mid: "deepseek-chat", reasoning: true, vision: false, window: "128k" }, { mid: "deepseek-reasoner", reasoning: true, vision: false, window: "128k" }]
+  } else if (n.includes("ollama") || n.includes("本地") || n.includes("127.0.0.1")) {
+    family = [{ mid: p.model ?? "qwen2.5-coder:7b", reasoning: false, vision: false, window: "32k" }]
+  } else {
+    family = p.model ? [{ mid: p.model, reasoning: false, vision: false, window: "" }] : []
+  }
+  const rows: ModelRow[] = family.map((f) => ({ id: f.mid, ...f, def: f.mid === p.model }))
+  if (p.model && !rows.some((r) => r.mid === p.model)) {
+    rows.unshift({ id: p.model, mid: p.model, reasoning: true, vision: false, window: p.contextWindowTokens ? `${Math.round(p.contextWindowTokens / 1000)}k` : "", def: true })
+  }
+  if (rows.length && !rows.some((r) => r.def)) rows[0].def = true
+  return rows
 }
 
 function ModelCatalogNote(): React.ReactElement {
