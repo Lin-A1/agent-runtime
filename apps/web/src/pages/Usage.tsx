@@ -164,6 +164,16 @@ function peakSummary(u: UsageSummary): string {
   return `最活跃日期是 ${peak.day}，约 ${fmtTokens(peak.inputTokens + peak.outputTokens)} tokens。`
 }
 
+// Fixed light→dark ramp driven by the foreground colour (a fixed alpha ladder
+// on --txt), so the shades step evenly and read correctly in both themes.
+const HEAT_RAMP = [
+  "var(--bg2)",
+  "color-mix(in srgb, var(--txt) 16%, var(--bg2))",
+  "color-mix(in srgb, var(--txt) 34%, var(--bg2))",
+  "color-mix(in srgb, var(--txt) 58%, var(--bg2))",
+  "color-mix(in srgb, var(--txt) 88%, var(--bg2))",
+]
+
 function Heatmap({ days }: { days: UsageSummary["days"] }): React.ReactElement {
   const max = Math.max(1, ...days.map((d) => d.inputTokens + d.outputTokens))
   return (
@@ -171,13 +181,12 @@ function Heatmap({ days }: { days: UsageSummary["days"] }): React.ReactElement {
       {days.map((d) => {
         const v = d.inputTokens + d.outputTokens
         const level = v === 0 ? 0 : v / max > 0.75 ? 4 : v / max > 0.5 ? 3 : v / max > 0.25 ? 2 : 1
-        const bg = ["var(--bg2)", "rgba(148,158,178,0.22)", "rgba(148,158,178,0.42)", "rgba(148,158,178,0.68)", "var(--txt-dim)"][level]
         return (
           <div
             key={d.day}
             title={`${d.day} · ${fmtTokens(v)} tokens · ¥${d.cost.toFixed(2)}`}
             className="h-[26px] w-[26px] rounded-[4px]"
-            style={{ background: bg }}
+            style={{ background: HEAT_RAMP[level] }}
           />
         )
       })}
@@ -189,8 +198,8 @@ function HeatLegend(): React.ReactElement {
   return (
     <div className="flex items-center gap-1 text-2xs text-faint">
       少
-      {["var(--bg2)", "rgba(148,158,178,0.22)", "rgba(148,158,178,0.42)", "rgba(148,158,178,0.68)", "var(--txt-dim)"].map((c) => (
-        <span key={c} className="h-2.5 w-2.5 rounded-[3px]" style={{ background: c }} />
+      {HEAT_RAMP.map((c, i) => (
+        <span key={i} className="h-2.5 w-2.5 rounded-[3px]" style={{ background: c }} />
       ))}
       多
     </div>

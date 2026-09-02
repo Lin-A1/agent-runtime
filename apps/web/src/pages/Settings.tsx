@@ -100,14 +100,15 @@ export function SettingsPage({ initial }: { initial?: Section } = {}): React.Rea
       {isHub(section) ? (
         <div className="hub-embedded flex min-h-0 min-w-0 flex-1 flex-col">{(() => { const P = HUB_PAGES[section]; return <P /> })()}</div>
       ) : (
-        <div className="min-h-0 flex-1 overflow-y-auto p-4 md:p-6">
-          <div className="mb-5 hidden md:block">
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-6 md:px-8 md:py-8">
+          <div className="mx-auto w-full max-w-[820px]">
+          <div className="mb-6 hidden md:block">
             <h1 className="text-lg font-semibold text-fg">设置</h1>
-            <p className="mt-0.5 text-2xs text-faint">配置保存在工作区引擎；密钥只回显存在性，留空即保持不变。</p>
+            <p className="mt-1 text-xs text-faint">配置保存在工作区引擎；密钥只回显存在性，留空即保持不变。</p>
           </div>
           <AsyncRegion state={settings} empty={<EmptyState title="无配置" />}>
             {(s) => (
-              <div className="max-w-[860px]">
+              <div>
                 {section === "models" && <ModelsSection s={s} />}
                 {section === "integrations" && <IntegrationsSection s={s} />}
                 {section === "behavior" && <BehaviorSection s={s} />}
@@ -115,6 +116,7 @@ export function SettingsPage({ initial }: { initial?: Section } = {}): React.Rea
               </div>
             )}
           </AsyncRegion>
+          </div>
         </div>
       )}
     </div>
@@ -141,7 +143,7 @@ function ModelsSection({ s }: { s: SettingsView }): React.ReactElement {
   const [activeId, setActiveId] = useState<string | undefined>(s.activeProviderId)
   return (
     <div>
-      <div className="mb-4 flex items-center justify-between">
+      <div className="mb-5 flex items-center justify-between">
         <div>
           <h2 className="text-sm font-semibold text-fg">供应商预设</h2>
           <p className="mt-0.5 text-2xs text-faint">一键切换 = 写入 activeProviderId，原子生效；正在运行的会话保持其捕获的模型。</p>
@@ -151,7 +153,7 @@ function ModelsSection({ s }: { s: SettingsView }): React.ReactElement {
         </button>
       </div>
 
-      <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         {(s.providers ?? []).map((p) => {
           const active = p.id === activeId
           return (
@@ -175,24 +177,28 @@ function ModelsSection({ s }: { s: SettingsView }): React.ReactElement {
                 )}
               </div>
 
-              <div className="mt-3 grid grid-cols-2 gap-2 text-2xs">
-                <Field label="协议">
-                  <span className="font-mono text-dim">{p.kind}</span>
-                </Field>
-                <Field label="默认模型">
-                  <span className="font-mono text-dim">{p.model ?? "—"}</span>
-                </Field>
-                <Field label="上下文窗口">
-                  <span className="font-mono text-dim">{p.contextWindowTokens ? `${(p.contextWindowTokens / 1000).toFixed(0)}k` : "—"}</span>
-                </Field>
-                <Field label="单次输出预算">
-                  <span className="font-mono text-dim">{p.maxOutputTokens ? `${(p.maxOutputTokens / 1000).toFixed(0)}k` : "—"}</span>
-                </Field>
-              </div>
+              <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-3 text-xs">
+                <div>
+                  <dt className="text-2xs text-ghost">协议</dt>
+                  <dd className="mt-0.5 font-mono text-dim">{p.kind}</dd>
+                </div>
+                <div>
+                  <dt className="text-2xs text-ghost">默认模型</dt>
+                  <dd className="mt-0.5 truncate font-mono text-dim">{p.model ?? "—"}</dd>
+                </div>
+                <div>
+                  <dt className="text-2xs text-ghost">上下文窗口</dt>
+                  <dd className="mt-0.5 font-mono text-dim">{p.contextWindowTokens ? `${(p.contextWindowTokens / 1000).toFixed(0)}k` : "—"}</dd>
+                </div>
+                <div>
+                  <dt className="text-2xs text-ghost">单次输出预算</dt>
+                  <dd className="mt-0.5 font-mono text-dim">{p.maxOutputTokens ? `${(p.maxOutputTokens / 1000).toFixed(0)}k` : "—"}</dd>
+                </div>
+              </dl>
 
-              <div className="mt-3 flex items-center gap-2 border-t border-line pt-3">
+              <div className="mt-4 flex items-center gap-2 border-t border-line pt-4">
                 <KeyRound size={12} className={p.hasApiKey ? "text-ok" : "text-faint"} />
-                <span className="text-2xs text-dim">{p.hasApiKey ? `API Key 已配置（${p.apiKeyHint ?? "已存储"}）` : "未配置 API Key"}</span>
+                <span className="text-xs text-faint">{p.hasApiKey ? `API Key 已配置（${p.apiKeyHint ?? "已存储"}）` : "未配置 API Key"}</span>
                 <button className="btn ml-auto !py-0.5 text-2xs" onClick={() => setEditing(editing === p.id ? null : p.id)}>
                   {p.hasApiKey ? "更换" : "添加"}
                 </button>
@@ -421,15 +427,6 @@ function SystemSection({ s }: { s: SettingsView }): React.ReactElement {
         </div>
         <p className="mt-1.5 text-2xs text-faint">事件日志、配置、记忆索引都在此目录；删除即重置本工作区引擎状态。</p>
       </div>
-    </div>
-  )
-}
-
-function Field({ label, children }: { label: string; children: React.ReactNode }): React.ReactElement {
-  return (
-    <div className="rounded-md border border-line bg-bg2 px-2.5 py-1.5">
-      <div className="text-ghost">{label}</div>
-      <div className="mt-0.5">{children}</div>
     </div>
   )
 }
