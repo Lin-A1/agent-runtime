@@ -14,6 +14,7 @@ import {
   CalendarClock,
   Check,
   Cpu,
+  DownloadCloud,
   GitBranch,
   Inbox,
   KeyRound,
@@ -298,13 +299,32 @@ function ProviderEditorBody({
   // one provider can serve many models — seed from the capability catalog
   const seedModels = seedModelsFor(provider)
   const [rows, setRows] = useState<ModelRow[]>(seedModels)
+  const [fetching, setFetching] = useState(false)
+  const [fetched, setFetched] = useState(false)
   const vstyle = vendorStyle({ name, kind, baseUrl })
 
-  const addRow = () => setRows((r) => [...r, { id: `m-${Date.now()}`, mid: "", vision: false, reasoning: false, window: "", def: false }])
+  const addRow = () => setRows((r) => [...r, { id: `m-${Date.now()}`, mid: "", vision: false, reasoning: false, window: "" }])
   const patch = (id: string, k: keyof ModelRow, v: unknown) =>
     setRows((rs) => rs.map((r) => (r.id === id ? { ...r, [k]: v } : r)))
   const remove = (id: string) => setRows((rs) => rs.filter((r) => r.id !== id))
-  const makeDefault = (id: string) => setRows((rs) => rs.map((r) => ({ ...r, def: r.id === id })))
+
+  // One-click pull: in the wired build this GETs the provider's /models and
+  // registers every returned model; here we simulate the latency then sync
+  // the vendor family list (merging in any manually-added entries).
+  const pullModels = () => {
+    setFetching(true)
+    setTimeout(() => {
+      const fresh = seedModelsFor({ ...provider, name, kind, baseUrl: baseUrl || provider.baseUrl })
+      setRows((existing) => {
+        const have = new Set(existing.map((r) => r.mid).filter(Boolean))
+        const merged = [...existing]
+        for (const f of fresh) if (!have.has(f.mid)) merged.push({ ...f, id: f.mid })
+        return merged
+      })
+      setFetching(false)
+      setFetched(true)
+    }, 700)
+  }
 
   return (
     <div className="space-y-4">
@@ -339,22 +359,25 @@ function ProviderEditorBody({
       {/* models served by this provider */}
       <div>
         <div className="mb-2 flex items-center justify-between">
-          <label className="label !mb-0">模型（{rows.length}）</label>
-          <button className="btn !py-1 text-2xs" onClick={addRow}>
-            <Plus size={12} /> 添加模型
-          </button>
+          <label className="label !mb-0">已注册模型（{rows.length}）</label>
+          <div className="flex items-center gap-2">
+            <button
+              className="btn !py-1 text-2xs"
+              onClick={pullModels}
+              disabled={fetching}
+              title="从该供应商的 /models 端点拉取并注册模型"
+            >
+              {fetching ? <RefreshCw size={12} className="animate-spin" /> : <DownloadCloud size={12} />}
+              {fetching ? "拉取中…" : fetched ? "重新拉取" : "一键拉取模型"}
+            </button>
+            <button className="btn !py-1 text-2xs" onClick={addRow}>
+              <Plus size={12} /> 手动添加
+            </button>
+          </div>
         </div>
         <div className="space-y-2">
           {rows.map((r) => (
             <div key={r.id} className="flex items-center gap-2 rounded-lg border border-line bg-bg2 px-2.5 py-2">
-              <button
-                className="flex h-4 w-4 flex-none items-center justify-center rounded-full border text-[10px]"
-                style={r.def ? { borderColor: "var(--txt)", background: "var(--txt)", color: "var(--bg)" } : { borderColor: "var(--line-strong)" }}
-                title="设为默认模型"
-                onClick={() => makeDefault(r.id)}
-              >
-                {r.def && <Check size={10} />}
-              </button>
               <input
                 className="min-w-0 flex-1 bg-transparent font-mono text-xs text-fg outline-none placeholder:text-ghost"
                 value={r.mid}
@@ -415,7 +438,6 @@ interface ModelRow {
   reasoning: boolean
   vision: boolean
   window: string
-  def: boolean
 }
 
 /** Realistic per-vendor model families (hard-coded this pass); the default
@@ -441,11 +463,10 @@ function seedModelsFor(p: import("../api/types").ProviderProfile): ModelRow[] {
   } else {
     family = p.model ? [{ mid: p.model, reasoning: false, vision: false, window: "" }] : []
   }
-  const rows: ModelRow[] = family.map((f) => ({ id: f.mid, ...f, def: f.mid === p.model }))
+  const rows: ModelRow[] = family.map((f) => ({ id: f.mid, ...f }))
   if (p.model && !rows.some((r) => r.mid === p.model)) {
-    rows.unshift({ id: p.model, mid: p.model, reasoning: true, vision: false, window: p.contextWindowTokens ? `${Math.round(p.contextWindowTokens / 1000)}k` : "", def: true })
+    rows.unshift({ id: p.model, mid: p.model, reasoning: true, vision: false, window: p.contextWindowTokens ? `${Math.round(p.contextWindowTokens / 1000)}k` : "" })
   }
-  if (rows.length && !rows.some((r) => r.def)) rows[0].def = true
   return rows
 }
 
