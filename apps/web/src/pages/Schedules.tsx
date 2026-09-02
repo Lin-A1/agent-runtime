@@ -3,13 +3,15 @@
  * interaction: enable toggle, run-now (updates last result/time), two-step
  * delete, and create all mutate local state. Wiring day swaps to /v1/schedules.
  */
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { CalendarClock, Play, Plus, Trash2, AlertTriangle, CheckCircle2 } from "lucide-react"
 import { api } from "../api/client"
-import type { Schedule } from "../api/types"
-import { relativeTime } from "../api/fold"
+import type { Schedule, SessionRow } from "../api/types"
+import { prettyTitle, relativeTime } from "../api/fold"
 import { EmptyState, Modal, PageHeader, Toggle } from "../components/ui"
+import { useApi } from "../lib/useApi"
+import { ensureResidentSession } from "../api/client"
 
 function cadence(s: Schedule): string {
   if (s.intervalMinutes) return s.intervalMinutes < 60 ? `每 ${s.intervalMinutes} 分钟` : `每 ${Math.round(s.intervalMinutes / 60)} 小时`
@@ -31,34 +33,57 @@ function cronText(cron: string): string {
 
 export function SchedulesPage(): React.ReactElement {
   const navigate = useNavigate()
-  const [items, setItems] = useState<Schedule[]>(() => api.schedules())
+  const [items, setItems] = useState<Schedule[]>([])
+  const listState = useApi<Schedule[]>(() => api.schedules(), [])
+  useEffect(() => {
+    if (listState.data) setItems(listState.data)
+  }, [listState.data])
+  const sessState = useApi<SessionRow[]>(() => api.sessions(), [])
+  const sessList = sessState.data
+  const refetch = (): void => {
+    void api.schedules().then(setItems).catch(() => {})
+  }
   const [confirmId, setConfirmId] = useState<string | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
-  const [draft, setDraft] = useState({ prompt: "", cadenceType: "daily", time: "09:00", sessionId: "sess-nh-butler" })
+  const [draft, setDraft] = useState({ prompt: "", cadenceType: "daily", time: "09:00", sessionId: "" })
+  const [createErr, setCreateErr] = useState<string | null>(null)
+  useEffect(() => {
+    if (createOpen && !draft.sessionId) void ensureResidentSession().then((id) => setDraft((d) => ({ ...d, sessionId: id })))
+  }, [createOpen, draft.sessionId])
 
-  const toggle = (id: string): void =>
+  const toggle = (id: string): void => {
+    const t = items.find((x) => x.id === id)
     setItems((p) => p.map((s) => (s.id === id ? { ...s, enabled: !s.enabled } : s)))
-  const runNow = (id: string): void =>
+    if (t) void api.updateSchedule(id, { enabled: !t.enabled })
+  }
+  const runNow = (id: string): void => {
     setItems((p) => p.map((s) => (s.id === id ? { ...s, lastRunAt: Date.now(), lastResult: "ok", lastError: undefined } : s)))
+    void api.runSchedule(id)
+  }
   const remove = (id: string): void => {
+    void api.removeSchedule(id)
     setItems((p) => p.filter((s) => s.id !== id))
     setConfirmId(null)
   }
   const create = (): void => {
-    if (!draft.prompt.trim()) return
-    setItems((p) => [
-      {
-        id: `sch-new-${Date.now()}`,
-        sessionId: draft.sessionId,
-        prompt: draft.prompt.trim(),
-        enabled: true,
-        ...(draft.cadenceType === "daily" ? { dailyAt: draft.time } : draft.cadenceType === "interval" ? { intervalMinutes: 30 } : { cron: "0 9 * * 1" }),
-        createdAt: Date.now(),
-      },
-      ...p,
-    ])
-    setDraft({ prompt: "", cadenceType: "daily", time: "09:00", sessionId: "sess-nh-butler" })
-    setCreateOpen(false)
+    if (!draft.prompt.trim() || !draft.sessionId) return
+    // ScheduleInput 三种节奏：dailyAt（HH:MM）/ intervalMinutes / cron 表达式。
+    const body: Record<string, unknown> = {
+      sessionId: draft.sessionId,
+      prompt: draft.prompt.trim(),
+      enabled: true,
+    }
+    if (draft.cadenceType === "daily") body.dailyAt = draft.time
+    else if (draft.cadenceType === "interval") body.intervalMinutes = Math.max(1, Math.floor(Number(draft.time) || 30))
+    else body.cron = draft.time
+    setCreateErr(null)
+    void api.addSchedule(body)
+      .then(() => {
+        void api.schedules().then(setItems).catch(() => {})
+        setDraft({ prompt: "", cadenceType: "daily", time: "09:00", sessionId: "" })
+        setCreateOpen(false)
+      })
+      .catch((e) => setCreateErr(e instanceof Error ? e.message : String(e)))
   }
 
   return (
@@ -161,15 +186,21 @@ export function SchedulesPage(): React.ReactElement {
             </label>
             <label className="block">
               <span className="label mb-1 block">目标会话</span>
-              <input className="input font-mono text-xs" value={draft.sessionId} onChange={(e) => setDraft((d) => ({ ...d, sessionId: e.target.value }))} />
+              <select className="input text-xs" value={draft.sessionId} onChange={(e) => setDraft((d) => ({ ...d, sessionId: e.target.value }))}>
+                {draft.sessionId === "" && <option value="">选择会话…</option>}
+                {(sessList ?? []).map((r) => (
+                  <option key={r.sessionId} value={r.sessionId}>{prettyTitle(r.title, r.sessionId, 22)}</option>
+                ))}
+              </select>
             </label>
           </div>
         </div>
+        {createErr && <p className="mt-2 text-2xs text-bad">{createErr}</p>}
         <div className="mt-4 flex justify-end gap-2">
           <button className="btn" onClick={() => setCreateOpen(false)}>
             取消
           </button>
-          <button className="btn btn-primary" onClick={create} disabled={!draft.prompt.trim()}>
+          <button className="btn btn-primary" onClick={create} disabled={!draft.prompt.trim() || !draft.sessionId}>
             创建
           </button>
         </div>

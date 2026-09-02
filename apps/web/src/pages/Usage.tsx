@@ -133,7 +133,11 @@ export function UsagePage(): React.ReactElement {
 }
 
 function TraceRows(): React.ReactElement {
-  const events = useApi(() => api.events("sess-nh-butler"), [])
+  // Model-call trace folds from the resident butler session's event log — the
+  // id is engine-derived, so resolve it from the sessions list (never hardcode).
+  const sessions = useApi(() => api.sessions(), [])
+  const butlerId = sessions.data?.find((r) => r.role === "butler")?.sessionId
+  const events = useApi(() => (butlerId ? api.events(butlerId) : Promise.resolve([])), [butlerId])
   const calls = useMemo(
     () => (events.data ?? []).filter((e) => e.type === "Session.ModelCalled").slice(-6).reverse(),
     [events.data],

@@ -12,6 +12,7 @@ import { api } from "../api/client"
 import type { SessionRow } from "../api/types"
 import { prettyTitle, relativeTime } from "../api/fold"
 import { useApi } from "../lib/useApi"
+import { useWorkspace } from "../lib/workspace"
 import { EmotionBall } from "../components/EmotionBall"
 import { Composer } from "../components/Composer"
 import { StatusDot } from "../components/ui"
@@ -21,12 +22,33 @@ const SUGGESTIONS = ["读取当前仓库结构并总结", "帮我写一个周报
 export function Cover(): React.ReactElement {
   const navigate = useNavigate()
   const sessions = useApi<SessionRow[]>(() => api.sessions(), [])
+  const settings = useApi<import("../api/types").SettingsView>(() => api.settings(), [])
+  const models = useApi<string[]>(() => api.models(), [])
   const [focused, setFocused] = useState(false)
+  // The composer model chip must show the ENGINE's active model, not a default.
+  const activeModel = settings.data?.model ?? "…"
 
-  const recent = sessions.data
+  const recent = (sessions.data ?? [])
     .filter((r) => r.role !== "butler" && !r.archived)
     .sort((a, b) => b.updatedAt - a.updatedAt)
     .slice(0, 4)
+
+  const [busyBoot, setBusyBoot] = useState(false)
+  // Cover submit: every task gets its OWN session in the selected workspace
+  // (the resident butler session stays pinned in the sidebar as the
+  // coordinator — it is not a catch-all conversation).
+  const [ws] = useWorkspace(settings.data?.workspace)
+  const newTask = (draft: string): void => {
+    if (busyBoot) return
+    setBusyBoot(true)
+    void api.createSession(undefined, ws || undefined)
+      .then((r) => {
+        if (draft) sessionStorage.setItem("nh-draft", draft)
+        navigate(`/session/${r.sessionId}`)
+      })
+      .catch((e) => window.alert("新建会话失败：" + (e instanceof Error ? e.message : String(e))))
+      .finally(() => setBusyBoot(false))
+  }
 
   return (
     // Fixed, non-scrolling welcome on mobile (just ball + composer); the
@@ -41,12 +63,18 @@ export function Cover(): React.ReactElement {
         <h1 className="mt-5 text-center text-[23px] font-bold tracking-tight text-fg md:mt-7 md:text-[30px]">有什么可以帮你？</h1>
         <p className="mt-2 text-center text-[14px] text-faint md:mt-2.5 md:text-[15px]">把任务交给 newhorse，它会自己读文件、跑工具、拆分子任务</p>
 
+        {/* mobile spacer: pushes the composer to the bottom (chat-app convention) */}
+        <div className="flex-1 md:hidden" />
+
+        {/* Mobile: chat-app convention — the input lives at the bottom of the
+            viewport (safe-area padded), not mid-page. Desktop keeps the
+            centered hero flow. */}
         <div
-          className="mt-6 md:mt-7"
+          className="mt-auto pb-[max(1rem,env(safe-area-inset-bottom))] md:mt-7 md:pb-0"
           onFocusCapture={() => setFocused(true)}
           onBlurCapture={() => setFocused(false)}
         >
-          <Composer variant="cover" autoFocus />
+          <Composer variant="cover" autoFocus disabled={busyBoot} model={activeModel} models={models.data ?? []} onModelChange={(m) => void api.putSettings({ model: m }).then(() => settings.retry())} onSend={(body) => newTask(body)} />
         </div>
 
         {/* suggestion pills — desktop only (mobile keeps the cover fixed) */}
@@ -54,7 +82,7 @@ export function Cover(): React.ReactElement {
           {SUGGESTIONS.map((s) => (
             <button
               key={s}
-              onClick={() => navigate("/session/sess-nh-butler")}
+              onClick={() => newTask(s)}
               className="rounded-full border border-line bg-panel px-4 py-2 text-[13px] text-dim transition-colors hover:border-linestrong hover:text-fg"
             >
               {s}

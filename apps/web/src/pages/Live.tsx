@@ -3,8 +3,10 @@
  * which session, with pid and heartbeat. Weak-need page (pre-review §3.1);
  * heartbeat freshness is derived client-side.
  */
+import { useEffect } from "react"
 import { Network, Radio } from "lucide-react"
 import { api } from "../api/client"
+import { useBusRefresh } from "../api/bus"
 import type { LiveView } from "../api/types"
 import { relativeTime } from "../api/fold"
 import { useApi } from "../lib/useApi"
@@ -12,6 +14,17 @@ import { AsyncRegion, EmptyState, PageHeader } from "../components/ui"
 
 export function LivePage(): React.ReactElement {
   const live = useApi<LiveView>(() => api.live(), [])
+  // Refresh on settle frames (throttled) + a 10s heartbeat-freshness fallback —
+  // the page otherwise never refetches after first load.
+  useBusRefresh(
+    (f) => f.event.type === "result" || f.event.type === "done" || f.event.type === "error",
+    () => live.retry(),
+    2_000,
+  )
+  useEffect(() => {
+    const t = setInterval(() => live.retry(), 10_000)
+    return () => clearInterval(t)
+  }, [live.retry])
   return (
     <div className="flex h-full flex-col">
       <PageHeader title="运行状态" sub="跨进程会话注册：多个运行时并存时，每个会话由哪个 endpoint / 进程持有，心跳是否新鲜。" backTo="/settings" />

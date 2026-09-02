@@ -5,7 +5,7 @@
  * DAG-projected todos carry the "来自编排" note (pre-review §1.5①).
  */
 import { useState } from "react"
-import { CheckCircle2, ChevronRight, Circle, CircleDot, ListChecks, Target } from "lucide-react"
+import { CheckCircle2, ChevronRight, Circle, CircleDashed, CircleDot, ListChecks, Target } from "lucide-react"
 import type { GoalView, TodoItem } from "../api/types"
 
 export function TodoDock({ todos, goal }: { todos: TodoItem[]; goal: GoalView | null }): React.ReactElement | null {
@@ -33,10 +33,12 @@ export function TodoDock({ todos, goal }: { todos: TodoItem[]; goal: GoalView | 
                     <CheckCircle2 size={13} className="mt-0.5 flex-none text-ok" />
                   ) : t.status === "in_progress" ? (
                     <CircleDot size={13} className="mt-0.5 flex-none text-warn" />
+                  ) : t.status === "cancelled" ? (
+                    <CircleDashed size={13} className="mt-0.5 flex-none text-ghost" />
                   ) : (
                     <Circle size={13} className="mt-0.5 flex-none text-ghost" />
                   )}
-                  <span className={`text-xs leading-relaxed ${t.status === "completed" ? "text-faint line-through" : t.status === "in_progress" ? "text-fg" : "text-dim"}`}>
+                  <span className={`text-xs leading-relaxed ${t.status === "completed" ? "text-faint line-through" : t.status === "cancelled" ? "text-ghost line-through" : t.status === "in_progress" ? "text-fg" : "text-dim"}`}>
                     {t.content}
                   </span>
                 </div>

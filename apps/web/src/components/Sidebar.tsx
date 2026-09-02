@@ -4,15 +4,15 @@
  * (今天/昨天/本周/上周/本月/更早) with status dots, an archived group, and
  * a usage/settings footer. Mirrors ZCode's workspaceSidebar density.
  */
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { Link, useLocation, useNavigate } from "react-router-dom"
 import {
   Archive,
+  Ellipsis, PencilLine, ArchiveRestore, Trash2,
   Check,
   ChevronsUpDown,
   Clock,
   FolderGit2,
-  HardDrive,
   PanelLeftOpen,
   Plus,
   QrCode,
@@ -21,9 +21,10 @@ import {
   SunMoon,
 } from "lucide-react"
 import { api } from "../api/client"
-import type { SessionRow } from "../api/types"
+import { useBusRefresh } from "../api/bus"
+import type { SessionRow, SettingsView } from "../api/types"
 import { prettyTitle, relativeTime } from "../api/fold"
-import { WS_NH, WORKSPACES } from "../fixtures/sessions"
+import { normWorkspace, useWorkspace } from "../lib/workspace"
 import { useApi } from "../lib/useApi"
 import { EmotionBall } from "./EmotionBall"
 import { Dropdown, MenuItem, Spinner, StatusDot } from "./ui"
@@ -49,14 +50,36 @@ export function Sidebar({ onOpenRemote, collapsed, onToggleCollapse }: { onOpenR
   const navigate = useNavigate()
   const location = useLocation()
   const { toggle, theme } = useTheme()
-  const sessions = useApi<SessionRow[]>(() => api.sessions(WS_NH), [])
+  const sessions = useApi<SessionRow[]>(() => api.sessions(), [])
+  const settings = useApi<SettingsView>(() => api.settings(), [])
+  // Workspace partition: distinct workspaces derive from the engine default
+  // (settings.workspace) + every session's workspace; selection persists and
+  // filters the project list. Free tasks (no workspace) stay global.
+  const [ws, setWs] = useWorkspace(settings.data?.workspace)
+  const workspaces = useMemo(() => {
+    const seen = new Set<string>()
+    for (const w of [settings.data?.workspace, ...(sessions.data ?? []).map((r) => r.workspace)]) {
+      if (w && w !== "") seen.add(normWorkspace(w))
+    }
+    return [...seen]
+  }, [settings.data?.workspace, sessions.data])
   const [query, setQuery] = useState("")
   const [showArchived, setShowArchived] = useState(false)
+  const [creating, setCreating] = useState(false)
+
+  const newTask = (): void => {
+    if (creating) return
+    setCreating(true)
+    void api.createSession(undefined, ws || undefined)
+      .then((r) => navigate(`/session/${r.sessionId}`))
+      .catch((e) => window.alert("新建会话失败：" + (e instanceof Error ? e.message : String(e))))
+      .finally(() => setCreating(false))
+  }
 
   const { resident, groups, archived, freeTasks } = useMemo(() => {
     const rows = sessions.data ?? []
     // Free tasks = not bound to any project workspace (项目 vs 任务 split).
-    const projectRows = rows.filter((r) => r.workspace && r.workspace !== "")
+    const projectRows = rows.filter((r) => r.workspace && r.workspace !== "" && (!ws || normWorkspace(r.workspace) === ws))
     const freeTasks = rows
       .filter((r) => !r.workspace && !r.archived)
       .sort((a, b) => b.updatedAt - a.updatedAt)
@@ -74,7 +97,20 @@ export function Sidebar({ onOpenRemote, collapsed, onToggleCollapse }: { onOpenR
     }
     for (const list of groups.values()) list.sort((a, b) => b.updatedAt - a.updatedAt)
     return { resident, groups, archived, freeTasks }
-  }, [sessions.data])
+  }, [sessions.data, ws])
+
+  // Sessions poll (handoff §6.7): 4s keeps status dots honest across
+  // devices and engines without a push channel. MUST stay above the
+  // collapsed early-return — hooks cannot live behind a conditional.
+  useEffect(() => {
+    const t = setInterval(() => sessions.retry(), 4_000)
+    return () => clearInterval(t)
+  }, [])
+  // Push refresh: the global bus settles turns faster than the poll.
+  useBusRefresh(
+    (f) => f.event.type === "result" || f.event.type === "done" || f.event.type === "error",
+    sessions.retry,
+  )
 
   if (collapsed) {
     return <CollapsedRail onOpenRemote={onOpenRemote} onExpand={onToggleCollapse} onHome={() => navigate("/")} onSettings={() => navigate("/settings")} />
@@ -99,7 +135,7 @@ export function Sidebar({ onOpenRemote, collapsed, onToggleCollapse }: { onOpenR
           trigger={
             <button className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-hover">
               <FolderGit2 size={17} className="flex-none text-dim" />
-              <span className="min-w-0 flex-1 truncate text-[15px] font-semibold text-fg">newhorse</span>
+              <span className="min-w-0 flex-1 truncate text-[15px] font-semibold text-fg">{ws ? ws.replace(/\/+$/, "").split("/").pop() : "newhorse"}</span>
               <ChevronsUpDown size={14} className="flex-none text-ghost" />
             </button>
           }
@@ -108,28 +144,43 @@ export function Sidebar({ onOpenRemote, collapsed, onToggleCollapse }: { onOpenR
             <>
               <div className="px-2 pb-1 pt-1.5 text-2xs font-medium uppercase tracking-wide text-ghost">当前工作区</div>
               <div className="mx-1 mb-1 rounded-md bg-bg2 px-2 py-1.5">
-                <div className="truncate font-mono text-2xs text-faint">G:\Code\Agents\Custom\newhorse</div>
+                <div className="truncate font-mono text-2xs text-faint">{ws || "（未选择）"}</div>
               </div>
               <div className="px-2 pb-1 pt-1 text-2xs font-medium uppercase tracking-wide text-ghost">切换工作区</div>
-              {WORKSPACES.map((w) => (
+              {workspaces.length === 0 && <div className="px-3 py-2 text-2xs text-ghost">还没有会话产生工作区</div>}
+              {workspaces.map((w) => (
                 <MenuItem
-                  key={w.path}
-                  icon={w.name === "newhorse" ? <Check size={14} className="text-fg" /> : <span className="w-[14px]" />}
-                  onClick={() => close()}
+                  key={w}
+                  icon={w === ws ? <Check size={14} className="text-fg" /> : <span className="w-[14px]" />}
+                  onClick={() => {
+                    setWs(w)
+                    close()
+                  }}
                 >
                   <span className="min-w-0">
-                    <span className="block truncate text-[13px]">{w.name}</span>
-                    <span className="block truncate font-mono text-2xs text-ghost">{w.path}</span>
+                    <span className="block truncate text-[13px]">{w.replace(/\/+$/, "").split("/").pop()}</span>
+                    <span className="block truncate font-mono text-2xs text-ghost">{w}</span>
                   </span>
                 </MenuItem>
               ))}
-              <div className="menu-sep" />
-              <MenuItem icon={<Plus size={14} />} onClick={close}>
-                打开文件夹…
-              </MenuItem>
-              <MenuItem icon={<HardDrive size={14} />} onClick={close}>
-                从空目录开始
-              </MenuItem>
+              {ws && (
+                <>
+                  <div className="menu-sep" />
+                  <MenuItem
+                    icon={<Plus size={14} />}
+                    onClick={() => {
+                      // 引擎默认工作区之外的自定义路径：输入一次即入库。
+                      const w = window.prompt("工作区绝对路径（引擎按此创建/过滤会话）", ws)
+                      if (w?.trim()) {
+                        setWs(w.trim())
+                        close()
+                      }
+                    }}
+                  >
+                    输入其他工作区路径…
+                  </MenuItem>
+                </>
+              )}
             </>
           )}
         </Dropdown>
@@ -139,7 +190,9 @@ export function Sidebar({ onOpenRemote, collapsed, onToggleCollapse }: { onOpenR
       <div className="flex items-center gap-1.5 px-3 pt-3">
         <button
           className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-dim transition-colors hover:bg-hover hover:text-fg"
-          onClick={() => navigate("/")}
+          disabled={creating}
+          title={ws ? `在当前工作区新建会话：${ws}` : "新建会话"}
+          onClick={newTask}
         >
           <Plus size={16} /> 新任务
         </button>
@@ -159,7 +212,7 @@ export function Sidebar({ onOpenRemote, collapsed, onToggleCollapse }: { onOpenR
       {/* session list: projects (workspace-bound) vs free tasks */}
       <nav className="mt-2 flex-1 overflow-y-auto px-2 pb-2">
         {resident && (
-          <SessionRowView row={resident} active={location.pathname === `/session/${resident.sessionId}`} pinned onOpen={() => navigate(`/session/${resident.sessionId}`)} />
+          <SessionRowView row={resident} active={location.pathname === `/session/${resident.sessionId}`} pinned onOpen={() => navigate(`/session/${resident.sessionId}`)} onChanged={sessions.retry} />
         )}
 
         {GROUP_ORDER.map((g) => {
@@ -169,7 +222,7 @@ export function Sidebar({ onOpenRemote, collapsed, onToggleCollapse }: { onOpenR
             <div key={g} className="mt-2">
               <div className="px-2 pb-1 text-2xs font-medium uppercase tracking-wide text-ghost">{g}</div>
               {list.map((r) => (
-                <SessionRowView key={r.sessionId} row={r} active={location.pathname === `/session/${r.sessionId}`} onOpen={() => navigate(`/session/${r.sessionId}`)} />
+                <SessionRowView key={r.sessionId} row={r} active={location.pathname === `/session/${r.sessionId}`} onOpen={() => navigate(`/session/${r.sessionId}`)} onChanged={sessions.retry} />
               ))}
             </div>
           )
@@ -185,7 +238,7 @@ export function Sidebar({ onOpenRemote, collapsed, onToggleCollapse }: { onOpenR
             </button>
             {showArchived &&
               archived.map((r) => (
-                <SessionRowView key={r.sessionId} row={r} active={location.pathname === `/session/${r.sessionId}`} archived onOpen={() => navigate(`/session/${r.sessionId}`)} />
+                <SessionRowView key={r.sessionId} row={r} active={location.pathname === `/session/${r.sessionId}`} archived onOpen={() => navigate(`/session/${r.sessionId}`)} onChanged={sessions.retry} />
               ))}
           </div>
         )}
@@ -255,37 +308,137 @@ function SessionRowView({
   pinned,
   archived,
   onOpen,
+  onChanged,
 }: {
   row: SessionRow
   active: boolean
   pinned?: boolean
   archived?: boolean
   onOpen: () => void
+  /** Refetch the session list after a rename/archive/delete. */
+  onChanged?: () => void
 }): React.ReactElement {
   const isButler = row.role === "butler"
+  const navigate = useNavigate()
+  const location = useLocation()
+  const [renaming, setRenaming] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [draftTitle, setDraftTitle] = useState(row.title ?? "")
+
+  const commitRename = (): void => {
+    const t = draftTitle.trim()
+    if (t && t !== row.title) void api.setTitle(row.sessionId, t)
+    setRenaming(false)
+    onChanged?.()
+  }
+  const doArchive = (): void => {
+    if (row.archived) void api.unarchiveSession(row.sessionId)
+    else void api.archiveSession(row.sessionId)
+    onChanged?.()
+  }
+  const doDelete = (): void => {
+    void api.deleteSession(row.sessionId)
+    onChanged?.()
+    if (location.pathname === `/session/${row.sessionId}`) navigate("/")
+  }
+
   return (
-    <button
-      onClick={onOpen}
-      className="group relative mt-0.5 flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-hover"
-      style={active ? { background: "var(--hover-2)" } : undefined}
-    >
-      {isButler ? (
-        <span className="mt-0.5 flex h-5 w-5 flex-none items-center justify-center">
-          <EmotionBall mood={row.status === "active" ? "thinking" : "idle"} size={22} lite />
+    <div className="group relative mt-0.5">
+      <button
+        onClick={onOpen}
+        className="flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-hover"
+        style={active ? { background: "var(--hover-2)" } : undefined}
+      >
+        {isButler ? (
+          <span className="mt-0.5 flex h-5 w-5 flex-none items-center justify-center">
+            <EmotionBall mood={row.status === "active" ? "thinking" : "idle"} size={22} lite />
+          </span>
+        ) : (
+          <StatusDot status={row.status} className="mt-1.5" />
+        )}
+        <span className="min-w-0 flex-1">
+          <span className={`flex items-center gap-1.5 truncate text-[13px] ${pinned ? "font-medium text-fg" : "text-dim group-hover:text-fg"}`} style={active ? { color: "var(--txt)" } : undefined}>
+            {prettyTitle(row.title, isButler ? "newhorse" : "未命名会话")}
+          </span>
+          <span className="mt-0.5 flex items-center gap-1.5 text-2xs text-ghost">
+            {archived ? <Archive size={10} /> : null}
+            <span className="truncate">{isButler ? "常驻会话 · " : ""}{relativeTime(row.updatedAt)}</span>
+          </span>
         </span>
-      ) : (
-        <StatusDot status={row.status} className="mt-1.5" />
-      )}
-      <span className="min-w-0 flex-1">
-        <span className={`flex items-center gap-1.5 truncate text-[13px] ${pinned ? "font-medium text-fg" : "text-dim group-hover:text-fg"}`} style={active ? { color: "var(--txt)" } : undefined}>
-          {prettyTitle(row.title, isButler ? "newhorse" : "未命名会话")}
-        </span>
-        <span className="mt-0.5 flex items-center gap-1.5 text-2xs text-ghost">
-          {archived ? <Archive size={10} /> : null}
-          <span className="truncate">{isButler ? "常驻会话 · " : ""}{relativeTime(row.updatedAt)}</span>
-        </span>
-      </span>
-    </button>
+      </button>
+      {/* Session actions (engine-backed: POST title / POST archive / DELETE).
+          The resident session cannot be archived or deleted — it is
+          workspace-permanent by design. */}
+      <div className="absolute right-1 top-1 opacity-0 group-hover:opacity-100">
+        <Dropdown
+          width={180}
+          trigger={
+            <button
+              className="icon-btn !h-6 !w-6 border border-line bg-bg2"
+              title="会话操作"
+              onClick={(e) => {
+                e.stopPropagation()
+                setConfirmDelete(false)
+              }}
+            >
+              <Ellipsis size={13} />
+            </button>
+          }
+        >
+          {(close) => (
+            <>
+              {renaming ? (
+                <div className="px-2 py-1.5">
+                  <input
+                    autoFocus
+                    value={draftTitle}
+                    onChange={(e) => setDraftTitle(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") commitRename()
+                      if (e.key === "Escape") setRenaming(false)
+                    }}
+                    className="input !py-1 text-xs"
+                  />
+                  <div className="mt-1.5 flex gap-1.5">
+                    <button className="btn btn-primary !py-0.5 text-2xs" onClick={commitRename}>保存</button>
+                    <button className="btn !py-0.5 text-2xs" onClick={() => setRenaming(false)}>取消</button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <MenuItem
+                    icon={<PencilLine size={14} />}
+                    onClick={() => {
+                      setDraftTitle(row.title ?? "")
+                      setRenaming(true)
+                    }}
+                  >
+                    重命名
+                  </MenuItem>
+                  <MenuItem icon={archived ? <ArchiveRestore size={14} /> : <Archive size={14} />} onClick={doArchive}>
+                    {archived ? "取消归档" : "归档"}
+                  </MenuItem>
+                  {!isButler && (
+                    <>
+                      <div className="menu-sep" />
+                      {confirmDelete ? (
+                        <MenuItem icon={<Trash2 size={14} />} onClick={doDelete}>
+                          <span className="text-[13px] text-bad">确认删除（不可撤销）</span>
+                        </MenuItem>
+                      ) : (
+                        <MenuItem icon={<Trash2 size={14} />} onClick={() => setConfirmDelete(true)}>
+                          <span className="text-[13px]">删除…</span>
+                        </MenuItem>
+                      )}
+                    </>
+                  )}
+                </>
+              )}
+            </>
+          )}
+        </Dropdown>
+      </div>
+    </div>
   )
 }
 

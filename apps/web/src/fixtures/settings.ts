@@ -142,9 +142,8 @@ export function buildModels(): { models: string[] } {
 
 export function buildCatalog(): ModelCatalog {
   return {
-    catalog: {
-      schemaVersion: 1,
-      providers: [
+    schemaVersion: 1,
+    providers: [
         {
           id: "prov-anthropic",
           models: [
@@ -161,6 +160,5 @@ export function buildCatalog(): ModelCatalog {
           ],
         },
       ],
-    },
   }
 }

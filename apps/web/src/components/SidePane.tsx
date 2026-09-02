@@ -10,7 +10,8 @@
  *     create/modify/delete/view four kinds, #39 treemapping).
  *  5. 审批     — pending approvals + settled history.
  */
-import { useMemo, useState } from "react"
+import { useNavigate } from "react-router-dom"
+import { useEffect, useMemo, useState } from "react"
 import {
   Activity,
   Check,
@@ -31,6 +32,7 @@ import {
   X,
 } from "lucide-react"
 import { api } from "../api/client"
+import { useBusRefresh } from "../api/bus"
 import type { ApprovalRequest, ContextView, FsEntry, GoalView, SessionRow, StoredEventRow } from "../api/types"
 import { deriveSubagents, foldTranscript, relativeTime, type SubagentState } from "../api/fold"
 import { useApi } from "../lib/useApi"
@@ -71,8 +73,11 @@ export function SidePane({
     e.preventDefault()
     const startX = e.clientX
     const startW = width ?? 340
+    // Clamp against the viewport, not a fixed number: small windows cap at
+    // 70vw, large ones allow the pane to grow well past 560px.
+    const maxW = Math.max(340, Math.floor(window.innerWidth * 0.7))
     const move = (ev: PointerEvent) => {
-      const next = Math.min(560, Math.max(280, startW + (startX - ev.clientX)))
+      const next = Math.min(maxW, Math.max(240, startW + (startX - ev.clientX)))
       onResize?.(next)
     }
     const up = () => {
@@ -102,7 +107,7 @@ export function SidePane({
         <div className="mx-auto h-full w-px bg-transparent transition-colors hover:bg-accent" />
       </div>
       <div className="flex items-center justify-center md:hidden" aria-hidden>
-        <span className="mt-2 h-1 w-10 rounded-full bg-line-strong" />
+        <span className="mt-2 h-1 w-10 rounded-full bg-linestrong" />
       </div>
       <div className="flex items-center gap-1 border-b border-line px-2 py-2 md:py-1.5">
         <div className="flex flex-1 items-center gap-0.5 overflow-x-auto">
@@ -147,8 +152,16 @@ const SUB_STATE: Record<SubagentState, { label: string; color: string; icon: Rea
 }
 
 function SubagentsTab({ sessionId }: { sessionId: string }): React.ReactElement {
+  const navigate = useNavigate()
   const sessions = useApi<SessionRow[]>(() => api.sessions(), [])
   const live = useApi(() => api.live(), [])
+  const [followUp, setFollowUp] = useState<string | null>(null)
+  const [followText, setFollowText] = useState("")
+  // Settle frames (any session) change child states + liveness — refresh.
+  useBusRefresh((f) => f.event.type === "result" || f.event.type === "done" || f.event.type === "error", () => {
+    sessions.retry()
+    live.retry()
+  }, 2_000)
   const subs = useMemo(() => {
     if (!sessions.data) return []
     const liveIds = new Set((live.data?.live ?? []).map((l) => l.sessionId))
@@ -158,6 +171,26 @@ function SubagentsTab({ sessionId }: { sessionId: string }): React.ReactElement 
   if (sessions.loading) return <LoadingState />
   return (
     <div className="p-2">
+      {followUp && (
+        <div className="mb-2 flex gap-1.5">
+          <input
+            autoFocus
+            className="input !py-1.5 flex-1 text-xs"
+            placeholder={`追问 ${followUp.slice(0, 8)}…`}
+            value={followText}
+            onChange={(e) => setFollowText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && followText.trim()) {
+                void api.steer(followUp, followText)
+                setFollowUp(null)
+                setFollowText("")
+              }
+              if (e.key === "Escape") setFollowUp(null)
+            }}
+            onBlur={() => setFollowUp(null)}
+          />
+        </div>
+      )}
       {subs.length === 0 ? (
         <EmptyState icon={<Network size={18} />} title="暂无子代理" hint="主会话在回合边界用 spawn_agent / declare_dag 派生子代理后，会出现在这里。" />
       ) : (
@@ -185,10 +218,23 @@ function SubagentsTab({ sessionId }: { sessionId: string }): React.ReactElement 
                 </div>
               </div>
               <div className="mt-2 flex gap-1.5">
-                <button className="btn !py-1 text-2xs">
+                <button
+                  className="btn !py-1 text-2xs"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setFollowUp(s.session.sessionId)
+                    setFollowText("")
+                  }}
+                >
                   <MessageSquarePlus size={11} /> 追问
                 </button>
-                <button className="btn !py-1 text-2xs">
+                <button
+                  className="btn !py-1 text-2xs"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    navigate(`/session/${s.session.sessionId}`)
+                  }}
+                >
                   <ListTree size={11} /> 转录
                 </button>
               </div>
@@ -204,11 +250,28 @@ function SubagentsTab({ sessionId }: { sessionId: string }): React.ReactElement 
 
 function FilesTab({ workspace, events }: { workspace: string; events: StoredEventRow[] }): React.ReactElement {
   const [changedOnly, setChangedOnly] = useState(false)
-  const [expanded, setExpanded] = useState<Set<string>>(new Set(["."]))
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [selected, setSelected] = useState<string | null>(null)
-  const root = useApi<{ path: string; entries: FsEntry[] }>(() => api.fs(workspace, "."), [])
-  const packages = useApi<{ path: string; entries: FsEntry[] }>(() => api.fs(workspace, "packages"), [expanded.has("packages")])
-  const file = useApi(() => (selected ? api.file(workspace, selected) : null), [selected])
+  // 通用懒加载（ZCode get_dir_structure 先浅后深语义）：按需拉取子目录，
+  // 缓存在 Map 里——根目录挂载时拉一次，其余在展开时拉。
+  const [children, setChildren] = useState<Record<string, FsEntry[]>>({})
+  const root = useApi<{ path: string; entries: FsEntry[] }>(() => api.fs(workspace, "."), [workspace])
+  const file = useApi(() => (selected ? api.file(workspace, selected) : null), [selected, workspace])
+
+  const fetchDir = (dir: string): void => {
+    void api.fs(workspace, dir).then((r) => setChildren((prev) => ({ ...prev, [dir]: r.entries }))).catch(() => {})
+  }
+  const toggle = (name: string, dir: boolean): void => {
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(name)) next.delete(name)
+      else {
+        next.add(name)
+        if (dir && !children[name]) fetchDir(name)
+      }
+      return next
+    })
+  }
 
   const changedPaths = useMemo(() => {
     const set = new Set<string>()
@@ -216,14 +279,6 @@ function FilesTab({ workspace, events }: { workspace: string; events: StoredEven
     return set
   }, [events])
 
-  const toggle = (name: string): void => {
-    setExpanded((prev) => {
-      const next = new Set(prev)
-      if (next.has(name)) next.delete(name)
-      else next.add(name)
-      return next
-    })
-  }
 
   return (
     <div className="flex h-full flex-col">
@@ -238,38 +293,19 @@ function FilesTab({ workspace, events }: { workspace: string; events: StoredEven
         {root.loading ? (
           <LoadingState />
         ) : (
-          <>
-            {(root.data?.entries ?? [])
-              .filter((e) => !changedOnly || e.dir || changedPaths.has(e.name))
-              .map((e) => (
-                <div key={e.name}>
-                  <TreeRow
-                    name={e.name}
-                    dir={e.dir}
-                    depth={0}
-                    open={expanded.has(e.name)}
-                    changed={changedPaths.has(e.name)}
-                    onToggle={() => (e.dir ? toggle(e.name) : setSelected(e.name))}
-                  />
-                  {e.dir && expanded.has(e.name) && e.name === "packages" && (
-                    <div>
-                      {packages.loading ? (
-                        <div className="py-2 text-center text-2xs text-faint">
-                          <Spinner size={11} />
-                        </div>
-                      ) : (
-                        (packages.data?.entries ?? []).map((p) => (
-                          <TreeRow key={p.name} name={p.name} dir={p.dir} depth={1} open={false} changed={false} onToggle={() => undefined} />
-                        ))
-                      )}
-                    </div>
-                  )}
-                </div>
-              ))}
-          </>
+          <TreeLevel
+            entries={root.data?.entries ?? []}
+            parentPath=""
+            depth={0}
+            expanded={expanded}
+            childMap={children}
+            changedPaths={changedPaths}
+            changedOnly={changedOnly}
+            onToggle={toggle}
+            onSelect={setSelected}
+          />
         )}
-      </div>
-      {selected && (
+      </div>      {selected && (
         <div className="flex h-[46%] flex-none flex-col border-t border-line">
           <div className="flex items-center justify-between px-3 py-1.5">
             <span className="flex min-w-0 items-center gap-1.5 font-mono text-2xs text-dim">
@@ -288,10 +324,13 @@ function FilesTab({ workspace, events }: { workspace: string; events: StoredEven
                 <Hourglass size={11} /> 文件超过 2MB，仅显示前部分内容。
               </div>
             ) : null}
-            {/\.(png|jpe?g|gif|webp|svg)$/i.test(selected) ? (
-              <div className="flex h-full items-center justify-center text-faint">
-                <ImageIcon size={20} />
-                <span className="ml-2 text-2xs">图片预览（base64 直出）</span>
+            {/\.(png|jpe?g|gif|webp|svg)$/i.test(selected) && file.data?.encoding === "base64" ? (
+              <div className="flex h-full items-center justify-center p-2">
+                <img
+                  src={`data:image/${selected.split(".").pop()};base64,${file.data.content}`}
+                  alt={selected}
+                  className="max-h-full max-w-full object-contain"
+                />
               </div>
             ) : (
               <pre className="font-mono text-2xs leading-relaxed text-dim">{file.data?.content ?? ""}</pre>
@@ -318,6 +357,68 @@ function TreeRow({ name, dir, depth, open, changed, onToggle }: { name: string; 
       <span className={`flex-1 truncate font-mono ${changed ? "text-trajtool" : "text-dim"}`}>{name}</span>
       {changed && <span className="h-1.5 w-1.5 flex-none rounded-full bg-trajtool" />}
     </button>
+  )
+}
+
+/** Recursive tree level: renders entries and lazily-fetched children. */
+function TreeLevel({
+  entries,
+  parentPath,
+  depth,
+  expanded,
+  childMap,
+  changedPaths,
+  changedOnly,
+  onToggle,
+  onSelect,
+}: {
+  entries: FsEntry[]
+  parentPath: string
+  depth: number
+  expanded: Set<string>
+  childMap: Record<string, FsEntry[]>
+  changedPaths: Set<string>
+  changedOnly: boolean
+  onToggle: (name: string, dir: boolean) => void
+  onSelect: (path: string) => void
+}): React.ReactElement {
+  const visible = entries.filter((e) => {
+    const path = parentPath ? `${parentPath}/${e.name}` : e.name
+    return !changedOnly || e.dir || changedPaths.has(path)
+  })
+  return (
+    <>
+      {visible.map((e) => {
+        const path = parentPath ? `${parentPath}/${e.name}` : e.name
+        const isOpen = expanded.has(path)
+        const kids = childMap[path]
+        return (
+          <div key={path}>
+            <TreeRow
+              name={e.name}
+              dir={e.dir}
+              depth={depth}
+              open={isOpen}
+              changed={changedPaths.has(path)}
+              onToggle={() => (e.dir ? onToggle(path, true) : onSelect(path))}
+            />
+            {e.dir && isOpen && (
+              <>
+                {kids ? (
+                  kids.length > 0 ? (
+                    <TreeLevel entries={kids} parentPath={path} depth={depth + 1} expanded={expanded} childMap={childMap} changedPaths={changedPaths} changedOnly={changedOnly} onToggle={onToggle} onSelect={onSelect} />
+                  ) : (
+                    <div className="py-1 text-2xs text-ghost" style={{ paddingLeft: 20 + depth * 14 }}>空目录</div>
+                  )
+                ) : (
+                  <div className="py-1 text-center text-2xs text-faint"><Spinner size={11} /></div>
+                )}
+              </>
+            )}
+          </div>
+        )
+      })}
+    </>
   )
 }
 
@@ -431,10 +532,29 @@ function KindMark({ kind }: { kind: string }): React.ReactElement {
 function ApprovalsTab(): React.ReactElement {
   const approvals = useApi<{ approvals: ApprovalRequest[] }>(() => api.approvals(), [])
   const [settled, setSettled] = useState<Array<{ req: ApprovalRequest; allow: boolean }>>([])
+  const [error, setError] = useState<string | null>(null)
+  // Approvals appear mid-turn and auto-deny after 120s engine-side — poll and
+  // refresh on tool frames (a starting tool under strict policy raises one).
+  useEffect(() => {
+    const t = setInterval(() => approvals.retry(), 3_000)
+    return () => clearInterval(t)
+  }, [])
+  useBusRefresh((f) => f.event.type === "tool", approvals.retry, 2_000)
+  const decide = (req: ApprovalRequest, allow: boolean): void => {
+    void api
+      .approve(req.id, allow)
+      .then(() => {
+        setSettled((p) => [{ req, allow }, ...p])
+        setError(null)
+        approvals.retry()
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+  }
   if (approvals.loading) return <LoadingState />
   const pending = approvals.data?.approvals ?? []
   return (
     <div className="p-2">
+      {error && <div className="mb-2 px-1.5 text-2xs text-bad">{error}</div>}
       {pending.length === 0 && settled.length === 0 ? (
         <EmptyState icon={<ShieldQuestion size={18} />} title="没有待审批项" hint="strict 策略下，命令执行与敏感路径写入会在这里请求确认。" />
       ) : (
@@ -447,22 +567,10 @@ function ApprovalsTab(): React.ReactElement {
               <code className="block break-all rounded-md bg-panel p-2 font-mono text-2xs text-fg">{req.target}</code>
               {req.reason && <p className="mt-1.5 text-2xs leading-relaxed text-faint">{req.reason}</p>}
               <div className="mt-2 flex gap-1.5">
-                <button
-                  className="btn btn-primary !py-1 text-2xs"
-                  onClick={() => {
-                    void api.approve(req.id, true)
-                    setSettled((p) => [{ req, allow: true }, ...p])
-                  }}
-                >
+                <button className="btn btn-primary !py-1 text-2xs" onClick={() => decide(req, true)}>
                   <Check size={11} /> 允许
                 </button>
-                <button
-                  className="btn btn-danger !py-1 text-2xs"
-                  onClick={() => {
-                    void api.approve(req.id, false)
-                    setSettled((p) => [{ req, allow: false }, ...p])
-                  }}
-                >
+                <button className="btn btn-danger !py-1 text-2xs" onClick={() => decide(req, false)}>
                   <X size={11} /> 拒绝
                 </button>
               </div>

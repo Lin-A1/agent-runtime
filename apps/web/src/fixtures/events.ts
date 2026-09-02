@@ -12,6 +12,11 @@ export function buildDemoEvents(): StoredEventRow[] {
   resetSeq(0)
   const out: StoredEventRow[] = []
 
+  // --- turn 0: PAIRED admission + promotion (dedup regression): the same
+  // prompt id lands twice in a real log — the fold must render ONE turn. ---
+  out.push(ev("Session.PromptAdmitted", { id: "pair-0", prompt: "先给我一个仓库速览。", delivery: "queue" }, 96))
+  out.push(ev("Session.Prompted", { id: "pair-0", prompt: "先给我一个仓库速览。", delivery: "queue" }, 95))
+
   // --- turn 1: plain-text exploration (multi-tool, all success) ---
   out.push(ev("Session.Prompted", { prompt: "帮我看看这个仓库的结构，给一个上手摘要。" }, 92))
 
@@ -50,7 +55,7 @@ export function buildDemoEvents(): StoredEventRow[] {
         content: [
           {
             type: "text",
-            text: "这是一个 Bun + TypeScript 的 monorepo，分 10 个包，依赖方向自下而上：\n\n- **schema / core**：事件溯源存储与会话骨架（`StoredEventRow`、turn loop、DAG 调度）\n- **llm**：四轴 Route（协议/端点/鉴权/帧型）与统一 `LLMRequest` 词表\n- **runtime / server**：应用服务与 HTTP/SSE 面，SDK/CLI 是纯传输层\n\n上手建议从 `AGENTS.md` 的北极星开始，再对照 `docs/architecture-map.md` 的机制地图。",
+            text: "这是一个 Bun + TypeScript 的 monorepo，分 10 个包，依赖方向自下而上：\n\n- **schema / core**：事件溯源存储与会话骨架（`StoredEventRow`、turn loop、DAG 调度）\n- **llm**：四轴 Route（协议/端点/鉴权/帧型）与统一 `LLMRequest` 词表\n- **runtime / server**：应用服务与 HTTP/SSE 面，SDK/CLI 是纯传输层\n\n| 包 | 职责 |\n| --- | --- |\n| schema | 事件与词表 |\n| core | 会话循环 |\n| runtime / server | 编排与 HTTP/SSE |\n\n上手建议从 `AGENTS.md` 的北极星开始，再对照 `docs/architecture-map.md` 的机制地图。",
           },
         ],
       },
@@ -61,7 +66,7 @@ export function buildDemoEvents(): StoredEventRow[] {
   out.push(
     ev("Session.PromptAdmitted", {
       prompt: "这是设计稿截图，按它给 README 加一段开发指引，顺便把过期的端口号改掉。",
-      delivery: "prompt",
+      delivery: "queue",
       attachments: [{ sha256: "fixture-sha-1", mime: "image/png", bytes: 48230 }],
       images: [placeholderImage("design-shot")],
     }, 60),

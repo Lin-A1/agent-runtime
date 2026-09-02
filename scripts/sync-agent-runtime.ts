@@ -6,7 +6,7 @@
  *   --check : verify no drift (exit 1 if any synced file differs), copy nothing.
  *
  * INCLUDE (engine + QA + engine docs) — these MUST match upstream:
- *   packages/{schema,core,llm,plugin,memory,runtime,server,sdk}  (full dirs)
+ *   packages/{schema,core,llm,plugin,memory,mcp,runtime,server,sdk}  (full dirs)
  *   package.json / tsconfig.json / bun.lock / .gitignore          (workspace)
  *   specs/v2/ + docs/{core-technology-notes,architecture-map}.md  (design record)
  *   scripts/smoke/                                               (engine QA)
@@ -28,7 +28,7 @@ const UPSTREAM = new URL("..", import.meta.url).pathname.replace(/^\/([A-Za-z]:)
 const DEST = process.env.AGENT_RUNTIME_REPO ?? "G:/Code/Agents/Custom/agent-runtime"
 const CHECK = process.argv.includes("--check")
 
-const PACKAGES = ["schema", "core", "llm", "plugin", "memory", "runtime", "server", "sdk"]
+const PACKAGES = ["schema", "core", "llm", "plugin", "memory", "mcp", "runtime", "server", "sdk"]
 const ROOT_FILES = ["package.json", "tsconfig.json", "bun.lock", ".gitignore"]
 const DOC_FILES = ["docs/core-technology-notes.md", "docs/architecture-map.md"]
 

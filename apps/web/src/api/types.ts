@@ -66,6 +66,8 @@ export interface ChannelConfig {
   enabled?: boolean
   /** presence-only redaction of the HMAC secret. */
   hasSecret?: boolean
+  /** write-only on PUT: absent/"" keeps the stored value, a value sets it. */
+  secret?: string
 }
 
 export interface McpServerSettings {
@@ -291,28 +293,28 @@ export interface CommandInfo {
   description?: string
 }
 
+/** Flat — the server returns {catalog: ModelCatalog | null}; api.catalog()
+ *  already unwraps the envelope, so this is the inner shape. */
 export interface ModelCatalog {
-  catalog: {
-    schemaVersion: number
-    providers: Array<{
+  schemaVersion: number
+  providers: Array<{
+    id: string
+    models: Array<{
       id: string
-      models: Array<{
-        id: string
-        kinds?: string[]
-        modalities?: string[]
-        contextWindowTokens?: number
-        maxOutputTokens?: number
-        reasoning?: boolean
-      }>
+      kinds?: string[]
+      modalities?: string[]
+      contextWindowTokens?: number
+      maxOutputTokens?: number
+      reasoning?: boolean
     }>
-  } | null
+  }>
 }
 
 // --- per-session surfaces ---
 
 export interface TodoItem {
   content: string
-  status: "pending" | "in_progress" | "completed"
+  status: "pending" | "in_progress" | "completed" | "cancelled"
 }
 
 export interface GoalView {

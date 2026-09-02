@@ -222,7 +222,7 @@ export function PageHeader({ title, sub, actions, backTo }: { title: string; sub
   const navigate = useNavigate()
   return (
     <div className="page-header flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3.5 md:px-6 md:py-4">
-      <div className="flex min-w-0 items-center gap-2">
+      <div className="page-header-title flex min-w-0 items-center gap-2">
         {backTo && (
           <button className="icon-btn !h-8 !w-8 flex-none" onClick={() => navigate(backTo)} title="返回设置" aria-label="返回设置">
             <ChevronLeft size={17} />
@@ -233,7 +233,7 @@ export function PageHeader({ title, sub, actions, backTo }: { title: string; sub
           {sub && <p className="mt-0.5 truncate text-xs text-faint">{sub}</p>}
         </div>
       </div>
-      {actions && <div className="flex items-center gap-2">{actions}</div>}
+      {actions && <div className="page-header-actions flex items-center gap-2">{actions}</div>}
     </div>
   )
 }

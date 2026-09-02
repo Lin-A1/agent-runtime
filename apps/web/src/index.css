@@ -575,17 +575,50 @@ select {
   }
 }
 
-/* hub pages embedded inside settings: they share the settings nav, so hide
-   their own big page header (title/sub/actions row) to avoid duplication */
+/* hub pages embedded inside settings: they share the settings nav, so slim
+   the page header down to its ACTIONS row — the title block duplicates the
+   nav label, but hiding the WHOLE header also hid the primary actions
+   (导入技能/写入记忆/新建定时/提交 DAG). */
 .hub-embedded .page-header {
+  padding-top: 0.5rem;
+  padding-bottom: 0.5rem;
+}
+.hub-embedded .page-header-title {
   display: none;
 }
-.hub-embedded .page-header + * {
-  padding-top: 0;
+
+/* markdown tables (wave 8 detail): quiet borders, zebra rows, scroll on
+ * narrow screens — matches the codeblock visual weight */
+.md .tablewrap {
+  margin: 0.75rem 0;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
 }
-/* give embedded content a little breathing room under the section chips */
-.hub-embedded > * {
-  padding-top: 0.5rem;
+.md table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.75rem;
+}
+.md th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--txt-dim);
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--line-strong);
+  white-space: nowrap;
+}
+.md td {
+  padding: 0.45rem 0.75rem;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+.md tr:last-child td {
+  border-bottom: 0;
+}
+.md tbody tr:nth-child(even) {
+  background: var(--hover);
 }
 
 /* ---- mobile (remote control / phone web) ---- */

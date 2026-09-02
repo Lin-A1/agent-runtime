@@ -12,6 +12,8 @@ export default {
         side: "var(--sidebar)",
         card: "var(--card)",
         cardhover: "var(--card-hover)",
+        hover: "var(--hover)",
+        "hover-2": "var(--hover-2)",
         line: "var(--line)",
         linestrong: "var(--line-strong)",
         fg: "var(--txt)",

@@ -27,6 +27,8 @@ ZCode（D 盘安装包）的产品功能面，逐项映射到我们引擎已有�
 
 **本清单是活基线，不是封闭清单**：写它的那一轮也难免有遗漏。实现者被明确授权并要求**自行做发现轮**（方法见 §0 提示：对参考源码跑字符串/资产抽取、通读引擎路由），把新发现按同一规则追加进来——有引擎端点的进本清单（带证据标注），没有的进暂缓桶；§1 的审美决策是用户钉死的，只读不改；追加时保留发现方法与出处，让下一轮还能复核。
 
+> **发现轮 #2 已执行（2026-09-01 预审）**：引擎六个集成波落地 + ZCode i18n 目录整体提取（5000 键/80 命名空间，`G:/temp/zcode-i18n-keys.txt`）。结果见 **`docs/frontend-pre-review.md`**（页面矩阵、三端策略、分期、风险，先读它再动工）。清单增补 #33–#41，端点表与暂缓桶已同步修订。**§1.5「超出 ZCode 的增量」是产品主张的基准**：主模型调度权（动态编排 + 声明式 DAG 同基座）、常驻管理会话（butler）、目标预算、成本分层子代理模型、非 captive 接入等——UI 必须给这些差异化机制表达空间，编排页是差异化页不是附加页。
+
 | # | ZCode 功能 | 引擎落点 | UI 要求 |
 |---|---|---|---|
 | 1 | 会话管理（列表/搜索/重命名/归档/删除/分叉） | §5.1 sessions 相关端点 | 侧栏分组 + 归档组 + 双步删除 + 回退 fork |
@@ -61,15 +63,32 @@ ZCode（D 盘安装包）的产品功能面，逐项映射到我们引擎已有�
 | 30 | 会话调试信息 | 客户端 + §5.1 | 复制会话 ID / 事件日志说明；转录异常时的「重载会话」 |
 | 31 | 对话引用 | 客户端 | 把历史消息片段引用进新 prompt（客户端拼文本，设条数/长度上限，如 8 条 / 8000 字符） |
 | 32 | 应用内更新（桌面阶段） | Tauri updater | 检查更新 / 下载进度 / 重启安装 / 跳过此版本；更新前提示进行中会话会被中断 |
+| 33 | MCP 服务器管理（ZCode settings.mcp 100 键） | /v1/settings 的 mcpServers（脱敏 hasEnv/hasHeaders） | 设置页集成区：列表/新建/启停/搜索；env/headers 走「已配置 N 项，留空保持」；引擎往返擦除已修（保留语义见 §5.5） |
+| 34 | 入站渠道管理（webhook-first） | /v1/settings channels + POST /v1/channel/:id/inbound | 设置页集成区：渠道卡/绑定会话/secret presence/出站 webhook/启停；「发送测试消息」走 inbound（busy 时显式报错）；IM 原生协议仍暂缓 |
+| 35 | DAG 编排视图（引擎差异化，ZCode 无对应） | POST /v1/dag、GET /v1/dags、GET /v1/dag/:id（节点六态 pending/running/succeeded/failed/skipped/aborted） | /dags 页：列表 + 节点拓扑视图（含 per-node model）+ 节点跳转子会话 + spec JSON 提交 |
+| 36 | 文件查看器（解除暂缓一部分） | GET /v1/file（≤2MB utf8/base64、truncated 标记、symlink 复检） | 文件树点击 → 代码高亮/图片预览 + 截断横幅 +「仅显示变更文件」过滤；PDF/Office 仍暂缓 |
+| 37 | 模型能力目录 | GET /v1/models/catalog（kinds/modalities/contextWindow/reasoning；缺失=null） | 模型选择器与设置页增强：目录缺失时降级手填（引擎已定义降级语义） |
+| 38 | 模型调用轨迹（元数据，解除暂缓一部分） | Session.ModelCalled 事件（source: turn/compaction/extraction、durationMs、usage、错误） | 用量页调用列表 + 会话调试入口；正文落盘仍不做（ZCode 是调试器级需求） |
+| 39 | 每轮文件活动树 + 改动汇总卡（ZCode treemapping/changeSummary） | 客户端从 events 折叠 write/edit/read 的文件路径 | 右面板 Tab：当前轮文件活动（Live/快照徽标、写入/修改/删除/仅查看四类）；转录里每轮折「N 个文件已更改」卡 → 逐文件 diff |
+| 40 | @提及三类统一搜索（ZCode chat.mention） | /v1/fs + /v1/skills + /v1/agents（或子会话列表） | composer @ 唤起三类搜索：文件/技能/子智能体，客户端拼相对路径进 prompt |
+| 41 | 移动端访问引导（ZCode webRemoteControl 的 QR UX） | settings host/port 写入 + 客户端二维码 | 桌面端「手机访问」入口：URL+token 二维码，手机同源打开；前置提示 host 改 0.0.0.0 必须配 token |
 
-**明确暂缓**（ZCode 有、引擎暂无对应接口，不要自己造后端，也不要在客户端里埋业务逻辑）：内置终端；进程监视器 / 性能录制 / Agent stdio 抓取；PDF/Office/演示文稿/图片/代码内容预览面板（引擎只有 /v1/fs 单层列举，**没有文件内容读取端点**——代码面板整块等引擎补）；账号登录体系（用户名密码 / 扫码 / 多 Provider 登录，newhorse 只用 token）；IM 渠道机器人（微信 / 飞书 / 钉钉 / 企业微信 / Telegram / Webhook / Discord 全家桶，含绑定码与回复颗粒度）；模型调用轨迹落盘（model-io 逐次调用与来源分类）；回合级文件快照对比；画板（白板）；仓库 Wiki 生成（含 Mermaid 架构图批量生成与 Wiki 引用）；插件市场；git 深度集成（暂存/提交/推送/分支切换/Git 图谱/分支比较——ZCode 自己这块也还是前端占位）。清单外的新能力先问引擎有没有端点，没有就记入暂缓。
+**明确暂缓**（ZCode 有、引擎暂无对应接口，不要自己造后端，也不要在客户端里埋业务逻辑）：内置终端；进程监视器 / 性能录制 / Agent stdio 抓取；**PDF/Office/演示文稿预览**（~~图片/代码内容预览面板~~ **已解除：#36 文件查看器，/v1/file 已落地**）；~~模型调用轨迹落盘~~ **部分解除：#38，元数据已随 Session.ModelCalled 落盘，正文不做**；账号登录体系（用户名密码 / 扫码 / 多 Provider 登录，newhorse 只用 token）；IM 渠道机器人原生协议（微信 / 飞书 / 钉钉 / 企业微信 / Telegram / Discord 全家桶绑定码流——**webhook 渠道管理已解除：#34**）；回合级文件快照对比；队列消息编辑/移除/拖拽排序（引擎 admission 无对应端点，队列只做只读展示+立即发送）；文件级 checkpoint 撤销（rewind/reapply——引擎只有会话级 fork）；全局事件流订阅（ws/SSE feed，多端实时观察暂靠轮询）；offPeak 闲时任务；画板（白板）；仓库 Wiki 生成（含 Mermaid 架构图批量生成与 Wiki 引用）；插件市场；git 深度集成（暂存/提交/推送/分支切换/Git 图谱/分支比较——ZCode 自己这块也还是前端占位）。清单外的新能力先问引擎有没有端点，没有就记入暂缓。
+
+### 1.6 视觉外壳阶段（先于接口接线的一轮委托）
+
+范围：**只做 UI 外壳**——页面结构、版式、主题、组件、状态变体；**不接引擎接口**（不发真实 HTTP/SSE，不装 API client）。页面覆盖以 `docs/frontend-pre-review.md` §3 的页面矩阵为准（8 路由 + 会话页 sidePane 五标签 + composer/todo dock/审批卡全状态）。
+
+**Fixture 纪律（本轮最重要的约束）**：mock 数据的形状必须与 §5.1 的真实端点响应**逐字段一致**（`SessionRow`、`StoredEventRow`、`ApprovalRequest`、`Schedule`、`DagStatus`、设置回显形状…）；API 层做成薄桩——函数签名就是未来的 fetch 调用，组件只消费桩。转录**不要手写消息列表**：写 `foldTranscript(events)`，喂 fixture 事件数组、按 §5.3 折叠规则渲染（工具行/错误行/图片老化/steer 弱化行都靠它出）。做到这两条，接线阶段 = 把桩实现换成真 fetch，组件零改动。
+
+其余边界：深浅两主题都做（§7.1）；宽幅规则 §1.8；**移动端响应式降级不在本轮**（接线阶段按预审 §4.3 做）；Tauri 不在本轮。验收 = §7 的 1/2/4 条 + pre-review §3 逐页有落点 + 每页交付 空/加载/错误/工作 四态静态变体。
 
 ## 2. 仓库与工作方式
 
-- Bun + TypeScript monorepo。引擎包：`packages/{schema,core,llm,plugin,memory,runtime,server,sdk,cli}`——**这些不要动**（除非发现 bug，单独提）。
+- Bun + TypeScript monorepo。引擎包：`packages/{schema,core,llm,plugin,memory,mcp,runtime,server,sdk,cli}`——**这些不要动**（除非发现 bug，单独提）。
 - 分支 `dev`；commit 用 conventional style（`feat(web): …`）；分支名 ≤3 个单词连字符（`session-recovery` 风格）。
 - 测试/类型检查在**包目录里**跑：`bun typecheck`、`bun test`（不要从仓库根跑 tsc）。
-- 冒烟脚本在 `scripts/smoke/`（`client-surfaces.ts` 无密钥可跑 9/9），假 LLM 在 `scripts/fake-llm.ts`。
+- 冒烟脚本在 `scripts/smoke/`（`client-surfaces.ts` 无密钥可跑 9/9）。
 - 镜像同步：只同步 `packages/*`，纯前端改动**不需要**跑 `scripts/sync-agent-runtime.ts`。
 - 文档基线：`AGENTS.md`（引擎北极星）、`docs/product-voice.md`（审美决策记录）、`docs/architecture-map.md`（机制地图）。
 
@@ -120,6 +139,7 @@ POST /v1/session                          # body {sessionId?, workspace?, asButl
 GET  /v1/sessions[?workspace=]            # 行结构见 §5.3
 GET  /v1/session/:id                      # snapshot {id, messages?, headSeq}
 GET  /v1/session/:id/events               # StoredEventRow[]（转录从这折）
+GET  /v1/events/stream                    # 全局事件总线 SSE：全服务器 LoopEvent + result/error 终态，帧={sessionId,event}（仿 opencode /api/event；UI 单连接替代轮询，见 apps/web/src/api/bus.ts）
 POST /v1/session/:id/prompt               # body {text, images?:[{mime,data}]} → SSE（见下）
 POST /v1/session/:id/steer {text}         # 回合中追加（durable）
 POST /v1/session/:id/interrupt
@@ -142,7 +162,13 @@ GET  /v1/fs?workspace=&path=              # 沙盒单层目录列举
 GET  /v1/skills[?name=] ; GET /v1/agents
 POST /v1/dag {spec} ; GET /v1/dags ; GET /v1/dag/:id
 GET  /v1/live                             # 跨进程目录视图
+GET  /v1/models/catalog                   # 模型能力目录（kinds/modalities/上下文窗；缺失={catalog:null}）
+GET  /v1/file?workspace=&path=            # 文件内容读取（≤2MB utf8/base64、truncated、symlink 复检）
+GET  /v1/audit[?actorSessionId=]          # 审计行（进程内存活期，重启即空）
+POST /v1/channel/:id/inbound {text,userId?} # 渠道入站 → 常驻会话 prompt 全链路（busy 显式报错）
 ```
+
+> 修订（预审 2026-09-01）：`/v1/sessions` 支持 `?workspace=&status=`；`SessionRow` 增 `projectId?`；设置回显增 `channels[]`（hasSecret）与 `mcpServers`（hasEnv/hasHeaders）；事件新增 `Session.ModelCalled`；附件改为内容寻址（/events 注水回 images 形状，客户端契约不变；预算闸门单图 ≤20MiB/总 ≤25MiB 引擎侧执行）。**settings 往返擦除已修**：PUT 对 mcpServers（按名）/channels（按 id）是整表形状（patch 即全集，缺条目即删除），但条目内密钥字段（env/headers/secret）走 providers 的 apiKey 同款保留语义——脱敏回显（hasEnv/hasHeaders/hasSecret）往返绝不擦掉已存值；`""`/缺省=保留，显式 `null`=清除，`{}`=清空 map；展示键永不落盘。设置页可安全做读改写。
 
 **prompt SSE**：先发注释行 `: open`（Bun 首字节才刷头，客户端必须立即能读到 200）；事件 = LoopEvent 原样转发：`{type:"text"|"reasoning", text}`、`{type:"tool", name, input}`、`{type:"tool-result", output, isError?}`、`{type:"step", step}`、`{type:"error", code, message}`、`{type:"done", finish}`；然后 `{type:"result", ...}` + `data: [DONE]`；每 15s 一条 keepalive 注释；客户端断开会触发 interrupt。
 
@@ -199,7 +225,7 @@ AGENT_RUNTIME_HOME=G:/temp/nh-dev-home NEWHORSE_PORT=3931 NEWHORSE_UI_DIR=<dist>
 
 **admission 语义（steer/queue）**：`POST /steer` 落一条 `delivery:"steer"` 的收件（下一个安全边界晋升）；进行中直接再发 prompt 会被当成排队（`delivery:"queue"`，会话空闲时晋升）。admit 是幂等的：同 id 同内容返回同一回执，同 id 不同内容报冲突；收件箱从事件日志重建，**重启不丢**。
 
-**settings 合并语义**：PUT 是深合并（按字段）；`baseUrl/model/contextWindowTokens/maxOutputTokens` 等是 CLEARABLE（传 `""` 或 null 清空存储值，用于预设切换）；apiKey 按字段保留——**脱敏回显（hasApiKey/apiKeyHint 只是展示字段）往返绝不擦掉已存密钥**（有回归测试钉着）；密钥留空 = 保持不变。
+**settings 合并语义**：PUT 是深合并（按字段）；`baseUrl/model/contextWindowTokens/maxOutputTokens` 等是 CLEARABLE（传 `""` 或 null 清空存储值，用于预设切换）；apiKey 按字段保留——**脱敏回显（hasApiKey/apiKeyHint 只是展示字段）往返绝不擦掉已存密钥**（有回归测试钉着）；密钥留空 = 保持不变。mcpServers（按名）/channels（按 id）同款：整表形状（patch 即全集，缺条目=删除）+ 密钥字段（env/headers/secret）保留语义（`""`/缺省=保留、`null`=清除、`{}`=清空 map，同样有回归测试钉着）。
 
 **会话状态机**：`created → active → settled | interrupted`（registry 折叠自事件）；UI 只需要三态渲染：active=脉动点、settled=灰点、interrupted=红点。
 
@@ -217,6 +243,14 @@ AGENT_RUNTIME_HOME=G:/temp/nh-dev-home NEWHORSE_PORT=3931 NEWHORSE_UI_DIR=<dist>
 6. 球的 vendored 文件用 `// @ts-nocheck` 整段收编即可，别逐行改写成 TS（改写必出 bug）。
 7. 轮询节奏：会话列表 4s 一轮够用；回合中 1.5s；流式渲染直接吃 prompt SSE，不要靠轮询做流式。
 8. 前端依赖从零装：react / react-dom / react-router-dom / lucide-react + vite/@vitejs/plugin-react/tailwindcss 3.4/autoprefixer/postcss/@types/*。
+9. **server.ts 路由顺序陷阱**：`GET /v1/session/:id` 曾写成裸 `parts.length === 3`（不校验 parts[1]），吞掉所有 3 段 GET——`/v1/events/stream`、`/v1/dag/:id` 全部命中它变 404 "session not found"。任何新 3 段 GET 路由必须钉住 `parts[1]`。
+10. **config.json 文件层回读**：`loadRuntimeSettings` 曾只回读 provider/model/port 等标量，`channels`/`mcpServers` 写得进 config.json 但永远读不回（GET 恒 null、MCP 重启后不挂载）。新增文件层条目时必须同时补写入（writeAgentHomeConfig）和回读（loadRuntimeSettings）两处。
+11. **workspace 串不能跨端硬编码**：fixtures 里 `WS_NH` 是反斜杠 `G:\...`，引擎 registry 存正斜杠 `G:/...`；服务端 `?workspace=` 精确匹配会静默过滤成空。UI 侧拉列表就别带 workspace 过滤，客户端分组。
+12. **React hooks 不能在早退 return 之后**：Sidebar 折叠切换曾因 useEffect 落在 `if (collapsed) return` 之后而整树报错。轮询/订阅 hooks 一律放在所有早退之前。
+13. **baseUrl /v1 陷阱（已修）**：供应商文档给的 baseUrl 常自带 `/v1`（如 `https://api.minimaxi.com/anthropic` 类），而协议 path 自带 `/v1`——`packages/llm/src/adapter.ts` 的 `normalizeBaseUrl` 在使用点统一剥掉尾 `/v1`（chat 和 `/v1/models` 拉取共用）；不要在各调用点手写拼接。修之前"拉取模型"永远返回空列表。
+14. **hub 页头隐藏陷阱（已修）**：`.hub-embedded .page-header{display:none}` 曾把 hub 页的整个页头含操作按钮全藏掉——导入技能/写入记忆/新建定时/提交 DAG 的按钮在设置里不可见（用户会以为功能没做）。现在只藏 `page-header-title` 标题区，动作行保留。
+15. **vendor 种子模型匹配不含 kind（已修）**：`seedModelsFor` 曾把 `p.kind` 拼进匹配串——MiniMax 预设（kind=anthropic、URL 路径含 anthropic）被注入 claude-opus/sonnet/haiku 三件套，保存时还静默把第一个种子写成预设 model。匹配只看 name+baseUrl，且 minimax 分支必须在 anthropic 之前（其 URL 路径含 anthropic 字样）。
+16. **plugins 目录即注册面已启用**：引擎带 `NEWHORSE_PLUGINS_DIR=plugins`（repo 根）；`plugins/commands/*.md` = 斜杠命令（frontmatter name/description + 正文展开，`$ARGUMENTS` 由 app.ts 替换，展开文本直接作为提示词进回合）、`plugins/skills/<name>/SKILL.md` = 技能（POST /v1/skills 可在线导入）。会话页/封面发送 = 新建独立会话（POST /v1/session，workspace 取当前选择）；常驻 butler 会话只在侧栏置顶，不再吞所有新任务。
 
 ## 7. 验收标准（Definition of Done）
 
@@ -226,6 +260,6 @@ AGENT_RUNTIME_HOME=G:/temp/nh-dev-home NEWHORSE_PORT=3931 NEWHORSE_UI_DIR=<dist>
 4. 侧栏：工作区身份块 + 常驻会话置顶 + 按工作区分组 + 归档组 + 状态点。
 5. 设置 / 用量 / 记忆 / 定时四页可用（数据全来自 §5.1 接口）。
 5b. **§1.5 功能清单逐项核对，缺一项不算完**。
-6. `bun typecheck`、`bun run build` 过；无密钥冒烟（fake-llm 或 client-surfaces）过；浏览器逐页截图自验。
+6. `bun typecheck`、`bun run build` 过；无密钥冒烟（client-surfaces）过；浏览器逐页截图自验。
 7. 提交推送 dev；纯前端改动不用同步镜像。
 8. web 验收通过后**打包 desktop**：Tauri 2 + server sidecar + 内置 dist（历史配置 `git show ff81b663f -- apps/desktop` 可整体恢复作参考），产出安装包，并验证深浅主题与球动画在 WebView 里正常。

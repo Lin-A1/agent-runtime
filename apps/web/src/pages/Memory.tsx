@@ -1,12 +1,13 @@
 /**
- * Memory — semantic-memory browser over hard-coded fixtures, with live local
- * interaction: debounced search filters, two-step delete, and manual write all
- * mutate local state (no API this pass; wiring day swaps to /v1/memory).
+ * Memory — semantic-memory browser over the live /v1/memory store: debounced
+ * server-side search, two-step delete, and manual write all round-trip the
+ * engine (FTS5 × cosine RRF hybrid retrieval underneath).
  */
-import { useMemo, useState } from "react"
+import { useEffect, useState } from "react"
+import { useApi } from "../lib/useApi"
 import { Brain, Inbox, Plus, Search, Trash2 } from "lucide-react"
 import { api } from "../api/client"
-import type { MemoryRecord, MemoryType } from "../api/types"
+import type { MemoryType } from "../api/types"
 import { relativeTime } from "../api/fold"
 import { EmptyState, Modal, PageHeader } from "../components/ui"
 
@@ -18,33 +19,39 @@ const TYPE_LABEL: Record<MemoryType, string> = {
 }
 
 export function MemoryPage(): React.ReactElement {
-  const [items, setItems] = useState<MemoryRecord[]>(() => api.memory().memories)
+  // Server-side search (q param); 300ms debounce keeps keystrokes off the wire.
   const [q, setQ] = useState("")
+  const [debounced, setDebounced] = useState("")
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(q), 300)
+    return () => clearTimeout(t)
+  }, [q])
+  const memState = useApi(() => api.memory(debounced), [debounced])
+
   const [writeOpen, setWriteOpen] = useState(false)
   const [draft, setDraft] = useState({ content: "", type: "fact" as MemoryType, priority: 60 })
   const [confirmId, setConfirmId] = useState<string | null>(null)
-
-  const filtered = useMemo(() => {
-    const kw = q.trim().toLowerCase()
-    return kw ? items.filter((m) => m.content.toLowerCase().includes(kw)) : items
-  }, [items, q])
+  const [err, setErr] = useState<string | null>(null)
 
   const addMemory = (): void => {
     if (!draft.content.trim()) return
-    setItems((p) => [
-      {
-        id: `mem-new-${Date.now()}`,
-        content: draft.content.trim(),
-        type: draft.type,
-        priority: draft.priority,
-        sessionId: "sess-nh-butler",
-        createdAt: Date.now(),
-      },
-      ...p,
-    ])
-    setDraft({ content: "", type: "fact", priority: 60 })
-    setWriteOpen(false)
+    void api.writeMemory(draft.content.trim(), draft.type, draft.priority)
+      .then(() => {
+        setDraft({ content: "", type: "fact", priority: 60 })
+        setWriteOpen(false)
+        memState.retry()
+      })
+      .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
   }
+
+  const removeMemory = (id: string): void => {
+    void api.deleteMemory(id).then(() => {
+      setConfirmId(null)
+      memState.retry()
+    }).catch((e) => setErr(e instanceof Error ? e.message : String(e)))
+  }
+
+  const memories = memState.data?.memories ?? []
 
   return (
     <div className="flex h-full flex-col">
@@ -64,20 +71,22 @@ export function MemoryPage(): React.ReactElement {
         </div>
       </div>
 
-      {filtered.length === 0 ? (
+      {err && <div className="border-b border-line bg-panel px-6 py-2 text-2xs text-bad">{err}</div>}
+
+      {memories.length === 0 ? (
         <EmptyState
           className="!py-24"
           icon={<Inbox size={18} />}
-          title={q ? "没有匹配的记忆" : "还没有记忆条目"}
-          hint={q ? "换个关键词，或清空搜索。" : "开启行为设置里的自动抽取后，对话会沉淀为记忆；也可以手动写入。"}
+          title={q ? "没有匹配的记忆" : memState.data ? "还没有记忆条目" : "记忆库未开启"}
+          hint={q ? "换个关键词，或清空搜索。" : "在设置 → 行为里开启语义记忆后重启，对话会沉淀为记忆；也可以在这里手动写入。"}
         />
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto p-4 md:p-6">
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-            {filtered.map((m) => (
+            {memories.map((m) => (
               <div key={m.id} className="card group p-4">
                 <div className="flex items-center gap-2">
-                  <span className="chip !py-0 !text-[10px]">{TYPE_LABEL[m.type]}</span>
+                  <span className="chip !py-0 !text-[10px]">{TYPE_LABEL[m.type] ?? m.type}</span>
                   <span className="flex items-center gap-1 font-mono text-2xs text-faint">
                     <Brain size={10} /> 优先级 {m.priority}
                   </span>
@@ -89,13 +98,7 @@ export function MemoryPage(): React.ReactElement {
                   {confirmId === m.id ? (
                     <span className="flex items-center gap-1.5">
                       <span className="text-2xs text-bad">确认删除？</span>
-                      <button
-                        className="btn btn-danger !py-0.5 text-2xs"
-                        onClick={() => {
-                          setItems((p) => p.filter((x) => x.id !== m.id))
-                          setConfirmId(null)
-                        }}
-                      >
+                      <button className="btn btn-danger !py-0.5 text-2xs" onClick={() => removeMemory(m.id)}>
                         <Trash2 size={11} /> 删除
                       </button>
                       <button className="btn !py-0.5 text-2xs" onClick={() => setConfirmId(null)}>
@@ -143,6 +146,7 @@ export function MemoryPage(): React.ReactElement {
             />
           </label>
         </div>
+        {err && <p className="mt-2 text-2xs text-bad">{err}</p>}
         <div className="mt-4 flex justify-end gap-2">
           <button className="btn" onClick={() => setWriteOpen(false)}>
             取消

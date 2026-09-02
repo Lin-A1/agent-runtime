@@ -128,6 +128,11 @@ function changeFor(name: string, input: Record<string, unknown>, prev: FileChang
 export function foldTranscript(events: StoredEventRow[]): TranscriptItem[] {
   const out: TranscriptItem[] = []
   let turn: UserTurn | null = null
+  // Every prompt lands TWICE in a real log: PromptAdmitted at admission, then
+  // Prompted at promotion — same prompt id. Without this dedup every user
+  // turn renders twice on a wired session (fixtures hid it by using only one
+  // of the two per turn).
+  const seenPromptIds = new Set<string>()
   // tool-call blocks awaiting their result message (results arrive in order)
   const pendingTool: ToolBlock[] = []
   let textBuf = ""
@@ -159,6 +164,9 @@ export function foldTranscript(events: StoredEventRow[]): TranscriptItem[] {
       if (turn) flushText()
       const images = (d.images as ChatImage[] | undefined)?.filter((img) => img?.mime && img?.data)
       const delivery = String(d.delivery ?? "")
+      const promptId = String(d.id ?? "")
+      if (promptId && seenPromptIds.has(promptId)) continue
+      if (promptId) seenPromptIds.add(promptId)
       turn = {
         kind: "user",
         text: String(d.prompt ?? d.text ?? ""),
@@ -278,7 +286,7 @@ export function foldTodos(events: StoredEventRow[]): TodoItem[] {
   for (const e of events) {
     if (e.type !== "Session.TodoUpdated") continue
     const next = (e.data?.todos as TodoItem[] | undefined) ?? []
-    if (next.length) todos = next
+    todos = next
   }
   return todos
 }

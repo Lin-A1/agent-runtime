@@ -11,6 +11,7 @@ import { AlertTriangle, Menu, X } from "lucide-react"
 import { Sidebar } from "./Sidebar"
 import { CommandPalette } from "./CommandPalette"
 import { RemoteAccess } from "./RemoteAccess"
+import { startBus } from "../api/bus"
 
 class Boundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   state = { error: null as Error | null }
@@ -47,6 +48,9 @@ export function AppShell(): React.ReactElement {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [railCollapsed, setRailCollapsed] = useState(false)
   const location = useLocation()
+
+  // One global SSE connection for the whole app (opencode /api/event pump).
+  useEffect(() => startBus(), [])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {

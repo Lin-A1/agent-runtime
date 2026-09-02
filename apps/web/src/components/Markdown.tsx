@@ -40,6 +40,33 @@ export function Markdown({ text, streaming }: { text: string; streaming?: boolea
       blocks.push(<blockquote key={key++}>{inline(buf.join(" "))}</blockquote>)
       continue
     }
+    // pipe table (wave 8 detail): header row + separator row → <table>
+    if (/^\|.*\|/.test(line) && i + 1 < lines.length && /^\|[\s:|-]+$/.test(lines[i + 1]!)) {
+      const cells = (row: string): string[] =>
+        row.replace(/^\||\|$/g, "").split("|").map((c) => c.trim())
+      const header = cells(line)
+      i += 2
+      const rows: string[][] = []
+      while (i < lines.length && /^\|.*\|/.test(lines[i]!)) {
+        rows.push(cells(lines[i]!))
+        i++
+      }
+      blocks.push(
+        <div key={key++} className="tablewrap">
+          <table>
+            <thead>
+              <tr>{header.map((h, ci) => (<th key={ci}>{inline(h)}</th>))}</tr>
+            </thead>
+            <tbody>
+              {rows.map((r, ri) => (
+                <tr key={ri}>{r.map((c, ci) => (<td key={ci}>{inline(c)}</td>))}</tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )
+      continue
+    }
     if (/^[-*]\s/.test(line) || /^\d+\.\s/.test(line)) {
       const ordered = /^\d+\.\s/.test(line)
       const items: React.ReactElement[] = []
