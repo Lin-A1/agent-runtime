@@ -31,6 +31,39 @@ describe("runtime server", () => {
     expect(await res.json()).toEqual({ status: "ok" })
   })
 
+  it("events/stream subscribes to live events and a steer wakes the idle drain (wave 12)", async () => {
+    const payload = [
+      "data: " + JSON.stringify({ choices: [{ delta: { content: "Hello" }, finish_reason: "stop" }] }) + "\n\n",
+      "data: [DONE]\n\n",
+    ].join("")
+    handle = await createServer({ port: 0, sessionConfig: () => ({ provider, model: "m", fetch: mockFetch(payload) }) })
+    const base = handle.baseUrl
+
+    const created = await fetch(`${base}/v1/session`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "m" }) })
+    const { sessionId } = (await created.json()) as { sessionId: string }
+
+    // Open the live stream BEFORE any prompt: idle session, nothing happening.
+    const stream = await fetch(`${base}/v1/session/${sessionId}/events/stream`)
+    expect(stream.headers.get("content-type")).toContain("text/event-stream")
+    const reader = stream.body!.getReader()
+    const decoder = new TextDecoder()
+    let seen = ""
+    // First frame must be the ": open" comment (Bun flushes on first byte).
+    seen += decoder.decode((await reader.read()).value)
+    expect(seen).toContain(": open")
+
+    // Steer the IDLE session: fire-and-forget wake → the drain runs → its
+    // live events arrive on the already-open stream.
+    await fetch(`${base}/v1/session/${sessionId}/steer`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "hello" }) })
+    const deadline = Date.now() + 5_000
+    while (Date.now() < deadline && !seen.includes('"text"')) {
+      const chunk = await Promise.race([reader.read(), new Promise<null>((r) => setTimeout(() => r(null), 500))])
+      if (chunk && !chunk.done && chunk.value) seen += decoder.decode(chunk.value)
+    }
+    expect(seen).toContain('"text"')
+    await reader.cancel()
+  }, 15_000)
+
   it("creates a session and prompts it, streaming loop events over SSE", async () => {
     const payload = [
       "data: " + JSON.stringify({ choices: [{ delta: { role: "assistant", content: "Hello" }, finish_reason: null }] }) + "\n\n",
@@ -246,11 +279,18 @@ describe("server cross-app effects", () => {
     const interrupt = await fetch(`${base}/v1/session/svc-b/interrupt`, { method: "POST" })
     expect(interrupt.status).toBe(200)
     expect(((await interrupt.json()) as { interrupted: boolean }).interrupted).toBe(true)
-    // A steer is durably ADMITTED (Session.PromptAdmitted) — promoted into
-    // visible messages at B's next drain. The admission is the delivery proof.
-    const evs = await fetch(`${base}/v1/session/svc-b/events`)
-    const log = (await evs.json()) as { type: string; data: { prompt?: string } }[]
-    expect(log.some((e) => e.type === "Session.PromptAdmitted" && e.data.prompt?.includes("cross-app hello"))).toBe(true)
+    // A steer is durably ADMITTED (Session.PromptAdmitted). On an IDLE session
+    // the wake is fire-and-forget (prompt path admits async) — poll for the
+    // admission, the delivery proof.
+    const evsDeadline = Date.now() + 5_000
+    let admitted = false
+    while (Date.now() < evsDeadline && !admitted) {
+      const evs = await fetch(`${base}/v1/session/svc-b/events`)
+      const log = (await evs.json()) as { type: string; data: { prompt?: string } }[]
+      admitted = log.some((e) => e.type === "Session.PromptAdmitted" && e.data.prompt?.includes("cross-app hello"))
+      if (!admitted) await new Promise((r) => setTimeout(r, 50))
+    }
+    expect(admitted).toBe(true)
   })
 })
 

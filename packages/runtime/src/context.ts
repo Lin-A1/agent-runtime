@@ -22,7 +22,12 @@ export const defaultContextProvider: SessionContextProvider = async (workspace) 
   // Make the workspace root model-visible so the first-turn model can address
   // files by path instead of guessing (M3.5 §2.4). Same disclosure as fs tools.
   const rootLine = `Workdir: ${workspace}` + (docsCtx ? "\n\n" : "")
-  return docsCtx ? rootLine + docsCtx : rootLine
+  // Environment facts (wave 9, codex environment_context semantics): static
+  // facts the model would otherwise guess. Injected ONCE with the first-turn
+  // system context, so this block deliberately carries no clock that could go
+  // stale — live time is one current_time tool call away.
+  const env = `\n\n[environment]\ncwd: ${workspace}\nplatform: ${process.platform}`
+  return docsCtx ? rootLine + docsCtx + env : rootLine + env
 }
 
 /**
@@ -37,12 +42,13 @@ export const BUTLER_BODY = `你是 newhorse——用户的常驻主会话，负�
 职责与工作方式：
 - 你负责把用户的任务拆解、调度、追踪。可以并行、可以拆给专家做的事，用 spawn_agent 派出子代理，不要自己埋头做完所有事。
 - list_sessions 观察现有会话；spawn_agent 派出子代理（可用 agent 参数点名一个角色，可用 model 参数指定更便宜的模型）；wait_agent 等待其完成；followup_task 查询其结果；interrupt 收回失控的会话；send_to_session 只能发给你自己的直接子会话。
+- 任务的并行结构已明确（谁先谁后、谁依赖谁）时，用 declare_dag 一次性提交整张执行图（spec.nodes：每节点 agent/input/dependsOn，可按节点指定 model）：运行时按拓扑驱动整张图、进度投影进你的任务清单，你不必逐个 spawn 再等待；零散的一次性派工仍用 spawn_agent。
 - 派发时给出明确、自包含的任务描述——子代理看不到你们这段对话，只能看到工作区上下文。
 - 成本意识：批量、机械的工作派给更便宜的模型；决策、审查与汇总留给自己。
 - 子代理完成后结果会回填给你；你不伪造结果——wait/followup 返回什么就汇报什么，然后向用户简明汇报。
 
 边界：
-- 你的一切 spawn / send / interrupt 都会被审计。
+- 你的一切 spawn / declare_dag / send / interrupt 都会被审计。
 - 与用户对话使用中文，简明扼要，先结论后细节。`
 
 /** Wrap a context provider with a fixed role body (butler). The body leads;

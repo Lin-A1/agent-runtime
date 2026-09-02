@@ -1,4 +1,5 @@
 import type { AdapterConfig } from "./adapter"
+import { normalizeBaseUrl } from "./adapter"
 import type { Fetcher } from "./route"
 
 /**
@@ -13,7 +14,7 @@ export async function listModels(config: AdapterConfig, fetch: Fetcher = globalT
     ? { "x-api-key": config.apiKey ?? "", "anthropic-version": "2023-06-01", ...(config.extraHeaders ?? {}) }
     : { ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}), ...(config.extraHeaders ?? {}) }
   try {
-    const res = await fetch(config.baseUrl.replace(/\/$/, "") + "/v1/models", { headers, signal: AbortSignal.timeout(10_000) })
+    const res = await fetch(normalizeBaseUrl(config.baseUrl) + "/v1/models", { headers, signal: AbortSignal.timeout(10_000) })
     if (!res.ok) return []
     const body = (await res.json()) as { data?: Array<{ id?: string }> }
     const ids = (body.data ?? []).map((m) => m.id).filter((id): id is string => typeof id === "string" && id.length > 0)

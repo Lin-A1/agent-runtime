@@ -21,6 +21,8 @@ import type { SessionMessage, StoredEvent } from "@newhorse/schema"
 export interface CompactOptions {
   /** Keep this many most-recent messages verbatim. Default 12. */
   readonly retain?: number
+  /** Abort signal from the driving turn (cancelled = interrupt). */
+  readonly signal?: AbortSignal
   /** Byte budget for the retained tail (the same JSON-chars measure the
    *  trigger uses). A COUNT-only retain makes no promise about tail size —
    *  one 50k-char file-read message twelve times over still overflows a
@@ -28,11 +30,13 @@ export interface CompactOptions {
    *  cap shrinks so the overflow folds into the summarized head instead.
    *  Derived from the model window when known; default 30_000 chars. */
   readonly maxTailChars?: number
-  /** Optional LLM summarizer: (folded head text) -> summary. When absent, a
-   *  cheap LOCAL marker ("[previous context: N messages folded...]") is used.
-   *  The seam keeps compaction provider-agnostic — the caller (runtime) injects
-   *  the summary call; a broken summarizer fails back to the local marker. */
-  readonly summarize?: (headText: string) => Promise<string>
+  /** Optional LLM summarizer: (folded head text, abort signal) -> summary.
+   *  When absent, a cheap LOCAL marker ("[previous context: N messages
+   *  folded...]") is used. The seam keeps compaction provider-agnostic — the
+   *  caller (runtime) injects the summary call; a broken summarizer fails back
+   *  to the local marker. The signal lets an interrupt cancel the summary
+   *  stream instead of letting it burn tokens in the background. */
+  readonly summarize?: (headText: string, signal?: AbortSignal) => Promise<string>
   /** Cap on the head text handed to the summarizer (chars). Default 30_000 —
    *  scale it with the model window: a 200k-token model can summarize far
    *  more head than a 32k-token one. */
@@ -104,7 +108,7 @@ export async function compactSession(events: EventStore, sessionId: string, opts
         // The loser of the race must never surface a late unhandled rejection
         // (a summarizer failing AFTER the timeout resolved would crash the
         // process) — swallow it: the local marker already stood in.
-        opts.summarize(prompt).then((s) => `[previous context] ${s}`).catch(() => ""),
+        opts.summarize(prompt, opts.signal).then((s) => `[previous context] ${s}`).catch(() => ""),
         new Promise<string>((r) => setTimeout(() => r(""), opts.summarizeTimeoutMs ?? summarizeTimeoutMs(prompt.length))),
       ])
       summary = result || localSummary(headCount, head)
@@ -161,4 +165,41 @@ export function projectCompacted(stored: StoredEvent[]): { messages: SessionMess
     }
   }
   return { messages, boundary }
+}
+
+/**
+ * Microcompact (ZCode `LocalToolResultClear` semantics, projection-native):
+ * when the visible history has grown past the compaction trigger, tool
+ * results older than the last `keepRecent` are projected as placeholders —
+ * the pairing structure (callId) survives, only the bulky output text gives
+ * way, and the model can re-run the tool if it truly needs the old value.
+ *
+ * Implemented as a PURE projection, not a history rewrite: the rule is a
+ * deterministic function of the log (visible chars + recency), so every
+ * replay derives the same view and the log is never touched — the same
+ * "model-visible ⟺ logged" discipline as projectCompacted. Keep the newest
+ * `keepRecent` tool results verbatim; gate on `visibleChars` exceeding
+ * `thresholdChars` so small sessions never lose anything.
+ *
+ * Refinements (ZCode's parameter surface): `clearable` restricts clearing to
+ * named tools (absent = everything is clearable); error results are KEPT
+ * unless `clearErrors` — they are small and the model usually needs them.
+ */
+export function clearStaleToolResults(messages: SessionMessage[], opts: { keepRecent?: number; thresholdChars: number; visibleChars: number; clearable?: readonly string[]; clearErrors?: boolean }): SessionMessage[] {
+  const keep = Math.max(0, opts.keepRecent ?? 12)
+  if (keep <= 0 || opts.visibleChars <= opts.thresholdChars) return messages
+  const toolIdx: number[] = []
+  for (let i = 0; i < messages.length; i++) if (messages[i]!.kind === "tool") toolIdx.push(i)
+  const staleCount = toolIdx.length - keep
+  if (staleCount <= 0) return messages
+  const stale = new Set(toolIdx.slice(0, staleCount))
+  const clearable = opts.clearable ? new Set(opts.clearable) : undefined
+  return messages.map((m, i) => {
+    if (m.kind !== "tool" || !stale.has(i)) return m
+    const t = m as { name: string; isError?: boolean }
+    if (t.isError && !opts.clearErrors) return m
+    if (clearable && !clearable.has(t.name)) return m
+    const chars = JSON.stringify(m.output ?? "").length
+    return { ...m, output: `[tool result cleared: ${t.name}, ${chars} chars — re-run the tool if you need this output again]` }
+  })
 }

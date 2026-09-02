@@ -134,6 +134,71 @@ describe("loadRuntimeSettings (harness floor)", () => {
     }
   })
 
+  it("mcpServers: a redacted round-trip keeps env/headers; null clears; omitted entries are removed", async () => {
+    const home = await mkdtemp(join(tmpdir(), "nh-cfg-"))
+    try {
+      await writeAgentHomeConfig(home, {
+        mcpServers: { fs: { command: "bun", args: ["run", "fs.ts"], env: { FS_TOKEN: "secret-token" }, headers: { Authorization: "Bearer h-secret" } } },
+      } as never)
+      // Client PUTs the redacted view (hasEnv/hasHeaders, NO env/headers values).
+      await writeAgentHomeConfig(home, {
+        mcpServers: { fs: { command: "bun", args: ["run", "fs2.ts"], enabled: false, hasEnv: true, hasHeaders: true } },
+      } as never)
+      const cfg = await readAgentHomeConfig(home)
+      const fs = cfg.mcpServers?.fs as Record<string, unknown>
+      expect(fs.env).toEqual({ FS_TOKEN: "secret-token" }) // survived
+      expect(fs.headers).toEqual({ Authorization: "Bearer h-secret" }) // survived
+      expect(fs.command).toBe("bun") // plain fields overwrite
+      expect(fs.enabled).toBe(false)
+      expect(fs.hasEnv).toBeUndefined() // display keys never persist
+      expect(fs.hasHeaders).toBeUndefined()
+      // Explicit null clears a secret field; a secret-less new entry creates fine.
+      await writeAgentHomeConfig(home, { mcpServers: { fs: { headers: null }, web: { url: "https://mcp.example/rpc" } } } as never)
+      const cfg2 = await readAgentHomeConfig(home)
+      expect((cfg2.mcpServers?.fs as Record<string, unknown>).headers).toBeUndefined()
+      expect((cfg2.mcpServers?.fs as Record<string, unknown>).env).toEqual({ FS_TOKEN: "secret-token" }) // untouched entry keeps
+      expect(cfg2.mcpServers?.web).toEqual({ url: "https://mcp.example/rpc" })
+      // Omitting an entry from the patch map removes it; an empty map stores as absent.
+      await writeAgentHomeConfig(home, { mcpServers: { web: { url: "https://mcp.example/rpc" } } } as never)
+      const cfg3 = await readAgentHomeConfig(home)
+      expect(Object.keys(cfg3.mcpServers ?? {})).toEqual(["web"])
+      await writeAgentHomeConfig(home, { mcpServers: {} } as never)
+      expect((await readAgentHomeConfig(home)).mcpServers).toBeUndefined()
+    } finally {
+      await rm(home, { recursive: true, force: true }).catch(() => {})
+    }
+  })
+
+  it("channels: a redacted round-trip keeps the secret (\"\" keeps, null clears); omitted ids are removed", async () => {
+    const home = await mkdtemp(join(tmpdir(), "nh-cfg-"))
+    try {
+      await writeAgentHomeConfig(home, {
+        channels: [{ id: "hook", webhookUrl: "https://example/hook", secret: "hmac-secret", enabled: true }],
+      } as never)
+      // Client PUTs the redacted view (hasSecret, NO secret value).
+      await writeAgentHomeConfig(home, { channels: [{ id: "hook", enabled: false, hasSecret: true }] } as never)
+      const cfg = await readAgentHomeConfig(home)
+      const hook = (cfg.channels ?? [])[0] as unknown as Record<string, unknown>
+      expect(hook.secret).toBe("hmac-secret") // survived
+      expect(hook.enabled).toBe(false)
+      expect(hook.hasSecret).toBeUndefined() // display keys never persist
+      // "" on the secret keeps (blank form field), null clears, add + remove by id.
+      await writeAgentHomeConfig(home, { channels: [{ id: "hook", secret: "" }, { id: "im", webhookUrl: "https://example/im" }] } as never)
+      const cfg2 = await readAgentHomeConfig(home)
+      expect((cfg2.channels ?? []).map((c) => c.id)).toEqual(["hook", "im"])
+      expect((cfg2.channels ?? [])[0] as unknown as Record<string, unknown>).toMatchObject({ secret: "hmac-secret" })
+      await writeAgentHomeConfig(home, { channels: [{ id: "hook", secret: null }] } as never)
+      const cfg3 = await readAgentHomeConfig(home)
+      const hook3 = (cfg3.channels ?? [])[0] as unknown as Record<string, unknown>
+      expect(hook3.secret).toBeUndefined()
+      expect(hook3.webhookUrl).toBe("https://example/hook") // other fields keep
+      await writeAgentHomeConfig(home, { channels: [] } as never)
+      expect((await readAgentHomeConfig(home)).channels).toBeUndefined()
+    } finally {
+      await rm(home, { recursive: true, force: true }).catch(() => {})
+    }
+  })
+
   it("provider presets (ccswitch): activeProviderId makes the preset the file-layer provider+model+budgets; env still overrides", async () => {
     const home = await mkdtemp(join(tmpdir(), "nh-cfg-"))
     try {

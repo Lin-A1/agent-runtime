@@ -554,6 +554,34 @@ describe("butler fixed session role", () => {
     // prompt with caller kind "butler".
     expect(log.some((e) => e.type === "Session.Prompted")).toBe(true)
   })
+
+  it("a butler with a dagRunner can declare a DAG: the tool call reaches the runner bound to this session", async () => {
+    const spec = { nodes: { A: { id: "A", agent: { name: "a" }, input: "x" }, B: { id: "B", agent: { name: "b" }, input: "y", dependsOn: ["A"] } } }
+    const turn1 = [
+      'data: ' + JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "c1", function: { name: "declare_dag", arguments: JSON.stringify({ spec }) } }] }, finish_reason: "tool_calls" }] }) + "\n\n",
+      "data: [DONE]\n\n",
+    ].join("")
+    const turn2 = ["data: " + JSON.stringify({ choices: [{ delta: { content: "declared" }, finish_reason: "stop" }] }) + "\n\n", "data: [DONE]\n\n"].join("")
+    let call = 0
+    const fetch: Fetcher = async () => sse(call++ === 0 ? turn1 : turn2)
+    const runs: { spec: unknown; opts?: unknown }[] = []
+    const dagRunner = {
+      run: async (s: unknown, opts?: unknown) => {
+        runs.push({ spec: s, opts })
+        return { dagId: "dag-wired" }
+      },
+    }
+    const butler = await createApp({ provider: { kind: "openai", baseUrl: "https://x", apiKey: "k" }, model: "m", sessionId: "butler-dag", workspace: "/w", asButler: true, dagRunner: dagRunner as never, fetch: fetch as never })
+    await butler.prompt("plan it")
+    // The runner got the untouched spec, scoped to the declaring session's
+    // todo projection and its workspace.
+    expect(runs).toHaveLength(1)
+    expect(runs[0]!.spec).toEqual(spec)
+    expect(runs[0]!.opts).toMatchObject({ workspace: "/w", todoSessionId: "butler-dag" })
+    // The audit trail lives in its own aggregate (audit:<sessionId>).
+    const auditLog = await butler.events.read("audit:butler-dag")
+    expect(auditLog.some((e) => e.type === "Session.ButlerAction" && (e.data as { op?: string }).op === "declare_dag" && (e.data as { outcome?: string }).outcome === "allowed")).toBe(true)
+  })
 })
 
 describe("durable role + policy restore (log is authoritative)", () => {
@@ -628,5 +656,29 @@ describe("image attachments + $ARGUMENTS", () => {
     // a body without the placeholder is returned verbatim
     plugins.registerDiscovered([{ kind: "command", name: "plain", description: "no placeholder", run: async () => "原样返回" }])
     expect(await app.runCommand("/plain some args")).toBe("原样返回")
+  })
+})
+
+describe("steer wake (wave-7)", () => {
+  it("a steer to an IDLE session drives the drain instead of sitting unpromoted forever", async () => {
+    const payload = ["data: " + JSON.stringify({ choices: [{ delta: { content: "ack" }, finish_reason: "stop" }] }) + "\n\n", "data: [DONE]\n\n"].join("")
+    let calls = 0
+    const fetch: Fetcher = async () => {
+      calls += 1
+      return sse(payload)
+    }
+    const app = await createApp({ provider: { kind: "openai", baseUrl: "https://x", apiKey: "k" }, model: "m", sessionId: "steer-idle", workspace: "/w", fetch: fetch as never })
+    // No prompt ever ran — the session is idle. The steer must WAKE it (the
+    // drain is the only promoter; a bare admit would sit unpromoted forever).
+    // The wake is FIRE-AND-FORGET: steer() returns fast, the drain runs in
+    // the background — poll for it.
+    await app.steer("hello")
+    for (let i = 0; i < 100 && calls === 0; i++) await new Promise((r) => setTimeout(r, 10))
+    expect(calls).toBe(1)
+    for (let i = 0; i < 100 && app.isBusy(); i++) await new Promise((r) => setTimeout(r, 10))
+    const log = await app.events.read("steer-idle")
+    expect(log.some((e) => e.type === "Session.Prompted" && (e.data as { prompt?: string }).prompt === "hello")).toBe(true)
+    expect(log.some((e) => e.type === "Session.MessageAppended" && (e.data as { message?: { kind?: string } }).message?.kind === "assistant")).toBe(true)
+    expect(app.isBusy()).toBe(false)
   })
 })

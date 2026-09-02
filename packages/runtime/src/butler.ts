@@ -15,6 +15,9 @@ import type { SessionRegistry } from "@newhorse/core"
  *   - spawn_agent: any caller may spawn; spawner becomes the parent.
  *   - send_to_session: default-deny; only user, or parent to its direct child.
  *     targetRequired.
+ *   - declare_dag: butler submits a declarative DAG spec (no target session);
+ *     the runtime schedules it and projects progress into the declaring
+ *     session's todo list. Audited on success like spawn_agent.
  */
 export interface ButlerDeps {
   readonly registry: SessionRegistry
@@ -164,6 +167,23 @@ export function createButlerTools(deps: ButlerDeps): Tool[] {
           const res = await c.sendToTarget?.(targetId!, content ?? "")
           return { authorization: "allowed", targetId, content, implemented: res?.implemented ?? false, pending: res?.pending ?? true }
         })
+      },
+    },
+    {
+      name: "declare_dag",
+      sideEffects: true,
+      description: "Declare a DAG of subagent nodes for PLANNED parallel work: submit { spec: { nodes: { [id]: { agent: { name: string, role?: string, model?: string }, input: string, dependsOn?: string[] } } } } and the runtime drives the whole graph (topo order, readiness wakeups, per-node models, crash-resumable) while node progress projects into this session's todo list. Returns { dagId, nodes }. Fire-and-forget — collect results later with followup_task / list_sessions. Use spawn_agent instead for one-off dynamic spawns.",
+      execute: async (input: unknown, ctx?: ToolCtx) => {
+        const c = requireCtx(ctx)
+        const spec = (input as { spec?: { nodes?: Record<string, unknown> } }).spec
+        if (!spec || typeof spec !== "object" || !spec.nodes || typeof spec.nodes !== "object" || Object.keys(spec.nodes).length === 0) {
+          throw new Error("spec.nodes is required (at least one node)")
+        }
+        if (!c.declareDag) throw new Error("declareDag not available (no dag runner configured)")
+        if (!c.appendAudit) throw new Error("butler tool missing appendAudit")
+        const res = await c.declareDag(spec)
+        await c.appendAudit({ actorKind: c.caller.kind, actorId: c.sessionId ?? (c.caller.kind === "user" ? "user" : c.caller.sessionId), op: "declare_dag", outcome: "allowed", reason: undefined })
+        return { authorization: "allowed", dagId: res.dagId, nodes: Object.keys(spec.nodes).length }
       },
     },
   ]

@@ -128,10 +128,10 @@ describe("client endpoints (settings / models / approvals)", () => {
     const handle = await createServer({
       port: 0,
       settings: {
-        get: () => ({ agentHome: "/h", dataDir: "/d", provider: { kind: "anthropic", baseUrl: "https://x", apiKey: "sk-secret-9999" }, model: "m", host: "127.0.0.1", port: 1, workspace: "/w", allowBash: false, allowPluginCode: false, approvalPolicy: "strict", memory: { on: false, extraction: false, vector: { enabled: false, mode: "auto", embedding: { kind: "minimax", baseUrl: "https://e", apiKey: "", model: "embo-01" } } } }),
+        get: () => ({ agentHome: "/h", dataDir: "/d", provider: { kind: "anthropic", baseUrl: "https://x", apiKey: "sk-secret-9999" }, model: "m", host: "127.0.0.1", port: 1, workspace: "/w", allowBash: false, allowWeb: false, allowPluginCode: false, approvalPolicy: "strict", memory: { on: false, extraction: false, vector: { enabled: false, mode: "auto", embedding: { kind: "minimax", baseUrl: "https://e", apiKey: "", model: "embo-01" } } } }),
         write: async (patch) => {
           written = patch
-          return { agentHome: "/h", dataDir: "/d", provider: { kind: "openai", baseUrl: "https://y", apiKey: "sk-new-1" }, model: "new-model", host: "127.0.0.1", port: 1, workspace: "/w", allowBash: false, allowPluginCode: false, approvalPolicy: "strict", memory: { on: false, extraction: false, vector: { enabled: false, mode: "auto", embedding: { kind: "minimax", baseUrl: "https://e", apiKey: "", model: "embo-01" } } } }
+          return { agentHome: "/h", dataDir: "/d", provider: { kind: "openai", baseUrl: "https://y", apiKey: "sk-new-1" }, model: "new-model", host: "127.0.0.1", port: 1, workspace: "/w", allowBash: false, allowWeb: false, allowPluginCode: false, approvalPolicy: "strict", memory: { on: false, extraction: false, vector: { enabled: false, mode: "auto", embedding: { kind: "minimax", baseUrl: "https://e", apiKey: "", model: "embo-01" } } } }
         },
       },
     })
@@ -155,7 +155,7 @@ describe("client endpoints (settings / models / approvals)", () => {
     const handle = await createServer({
       port: 0,
       modelsFetch: fakeFetch,
-      settings: { get: () => ({ agentHome: "/h", dataDir: "/d", provider: { kind: "openai", baseUrl: "https://x", apiKey: "k" }, model: "m", host: "127.0.0.1", port: 1, workspace: "/w", allowBash: false, allowPluginCode: false, approvalPolicy: "strict", memory: { on: false, extraction: false, vector: { enabled: false, mode: "auto", embedding: { kind: "minimax", baseUrl: "https://e", apiKey: "", model: "e" } } } }), write: async () => { throw new Error("unused") } },
+      settings: { get: () => ({ agentHome: "/h", dataDir: "/d", provider: { kind: "openai", baseUrl: "https://x", apiKey: "k" }, model: "m", host: "127.0.0.1", port: 1, workspace: "/w", allowBash: false, allowWeb: false, allowPluginCode: false, approvalPolicy: "strict", memory: { on: false, extraction: false, vector: { enabled: false, mode: "auto", embedding: { kind: "minimax", baseUrl: "https://e", apiKey: "", model: "e" } } } }), write: async () => { throw new Error("unused") } },
     })
     const res = await (await fetch(`${handle.baseUrl}/v1/models`)).json() as { models: string[] }
     expect(res.models).toEqual(["model-a", "model-b"])

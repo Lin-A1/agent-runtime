@@ -2,12 +2,23 @@ import type { LLMEvent, LLMRequest, SessionMessage, ContentPart, ToolCallPart } 
 import type { TurnRuntime, Agent, Tool, ToolCall, ToolResult, ToolCtx, Initiator } from "./runner"
 import { Session } from "../session/session"
 import { toLlmMessages, resolveAttachmentImages } from "../session/messages"
-import { projectCompacted, compactSession } from "./compaction"
+import { projectCompacted, compactSession, clearStaleToolResults } from "./compaction"
 import { currentGoal } from "./goal"
 import { denyAllExecPolicy } from "./execpolicy"
 
 /** Hard cap on steps per drain to guarantee termination. */
 const MAX_STEPS = 50
+
+/** Per-tool-result output cap (serialized chars) when RunOptions leaves it
+ *  unset — codex `truncation_policy` semantics at a conservative size. */
+const DEFAULT_TOOL_OUTPUT_CHARS = 20_000
+
+/** Rounds that must pass after a compaction before the trigger may fire again
+ *  (rapid-refill breaker, ZCode semantics). */
+const COMPACT_COOLDOWN_ROUNDS = 2
+
+/** Fraction of the budget at which the goal layer emits its early warning. */
+const GOAL_WARN_FRACTION = 0.8
 
 export interface TurnResult {
   readonly needsContinuation: boolean
@@ -31,7 +42,12 @@ export type LoopEvent =
  * imports plugin). A hook returns allow/block; a block carries a human-readable
  * reason injected back into the turn (e.g. a Stop hook can force another step).
  */
-export type HookEvent = "stop" | "pre-tool-use"
+/** Hook events. Observational (verdict ignored): post-tool-use,
+ *  post-compact, interrupt, subagent-start/stop. Decisive: stop / pre-tool-use /
+ *  user-prompt-submit (block semantics), pre-compact (block skips the AUTO fold;
+ *  the reactive overflow fold ignores blocks). subagent-* fire on the spawn_agent
+ *  path only — DAG nodes are not wired yet (documented exclusion). */
+export type HookEvent = "stop" | "pre-tool-use" | "post-tool-use" | "user-prompt-submit" | "pre-compact" | "post-compact" | "interrupt" | "subagent-start" | "subagent-stop"
 export type HookVerdict = { readonly decision: "allow" | "block"; readonly reason?: string }
 
 /** One completed model call (per provider turn). Metadata only — never request
@@ -77,9 +93,25 @@ export interface RunOptions {
    * apply their own fallback — the anthropic protocol MUST send a value (the
    * API requires it) and would silently truncate at its conservative floor. */
   readonly maxOutputTokens?: number
-  /** Optional LLM summarizer used by compaction (head text -> summary). The
-   * runtime injects it from its LLM client; absent = cheap local marker. */
-  readonly compactSummarize?: (headText: string) => Promise<string>
+  /** Optional LLM summarizer used by compaction (head text, abort signal ->
+   * summary). The runtime injects it from its LLM client; absent = cheap
+   * local marker. The signal lets an interrupt cancel the summary stream. */
+  readonly compactSummarize?: (headText: string, signal?: AbortSignal) => Promise<string>
+  /** Per-tool-result output cap in serialized chars (codex truncation_policy
+   *  semantics): an oversized result is stored as a head+tail excerpt with a
+   *  marker. Default 20_000; 0 disables. */
+  readonly toolOutputMaxChars?: number
+  /** Microcompact projection (ZCode LocalToolResultClear): when the visible
+   *  history exceeds compactLimit, tool results older than the last N are
+   *  projected as placeholders — a pure, deterministic projection; the log is
+   *  never rewritten. Default 12; 0 disables. */
+  readonly toolResultKeepRecent?: number
+  /** Restrict clearing to these tool names (ZCode compactableToolNames).
+   *  Absent = every tool's results are clearable. */
+  readonly toolResultClearable?: readonly string[]
+  /** Keep error results verbatim (they are small and the model usually needs
+   *  them). Default false — errors clear like everything else. */
+  readonly toolResultClearErrors?: boolean
   /**
    * Observability seam: invoked once per completed provider turn with call
    * metadata (model-io trace). A throwing callback propagates like a failed
@@ -111,6 +143,19 @@ export async function runSession(runtime: TurnRuntime, opts: RunOptions): Promis
   let turns = 0
   let needsContinuation = true
   let lastStepEnded: "tool" | "stop" | "length" | "content-filter" | "error" = "tool"
+  // Rapid-refill breaker state: the last round that ran a compaction, and a
+  // flag for "even a fresh fold cannot bring the view under the limit" (a
+  // tail message bigger than the tail budget) — re-firing would only burn
+  // summarizer calls (ZCode rapid-refill semantics, softened to a skip).
+  let lastCompactTurn = 0
+  let compactionExhausted = false
+  // Reactive compaction (codex reactiveCompactAfterContextExceeded): one
+  // context-overflow retry per drain — a second overflow means even the
+  // compacted view does not fit, and the honest error beats a silent loop.
+  let reactiveCompacted = false
+  // The provider's own last reported input-token count (the precise pressure
+  // signal, unlike the char estimate) — fed from runTurn's usage payload.
+  let lastInputTokens = 0
 
   while (needsContinuation && turns < MAX_STEPS) {
     if (opts.signal?.aborted) {
@@ -159,10 +204,41 @@ export async function runSession(runtime: TurnRuntime, opts: RunOptions): Promis
       opts.onEvent?.({ type: "done", step: result.step, needsContinuation: false, finish: "length" })
       return result
     }
-    if (opts.compactAuto !== false) {
+    // Early warning at GOAL_WARN_FRACTION of the budget (in-band, like the
+    // step-budget note): admitted as a steer the NEXT round promotes, so the
+    // model hears it before the hard stop. De-dup store is the log itself —
+    // keyed by the BUDGET VALUE, not just the prefix: a raised budget must
+    // earn a fresh warning for its new window.
+    if (opts.goalEnforce !== false && goal?.status === "active" && goal.tokenBudget !== undefined && goal.tokensUsed >= goal.tokenBudget * GOAL_WARN_FRACTION && goal.tokensUsed <= goal.tokenBudget) {
+      const budgetKey = `/${goal.tokenBudget})`
+      const warned = storedForCompaction.some((e) => {
+        if (e.type !== "Session.PromptAdmitted") return false
+        const p = (e.data as { prompt?: string }).prompt
+        return typeof p === "string" && p.startsWith("[goal budget] 80%") && p.includes(budgetKey)
+      })
+      if (!warned) {
+        await runtime.inbox.admit({ id: crypto.randomUUID(), sessionId: opts.sessionId, prompt: `[goal budget] 80% of the token budget used (${goal.tokensUsed}/${goal.tokenBudget}). Start wrapping up, or raise the budget via goal_write.`, delivery: "steer", principal: "parent" })
+      }
+    }
+    if (opts.compactAuto !== false && !compactionExhausted && (lastCompactTurn === 0 || turns - lastCompactTurn >= COMPACT_COOLDOWN_ROUNDS)) {
       const chars = visibleCheck.reduce((n, m) => n + JSON.stringify(m).length, 0)
-      if (chars > compactLimit(opts)) {
-        await compactSession(runtime.events, opts.sessionId, { summarize: opts.compactSummarize, maxTailChars: compactionTailChars(opts) })
+      // Two pressure signals: the char-estimate AND the provider's own last
+      // reported input-token count (codex token_limit_reached semantics — the
+      // estimate is approximate, the provider's number is the truth).
+      const tokenPressure = opts.contextWindowTokens !== undefined && lastInputTokens >= opts.contextWindowTokens * 0.9
+      if (chars > compactLimit(opts) || tokenPressure) {
+        // Cooldown is recorded whenever the trigger fires — including a blocked
+        // attempt — so a standing block is consulted at most once per cooldown
+        // window instead of every round.
+        lastCompactTurn = turns
+        // Pre-compact hook (codex PreCompact): a block skips THIS automatic
+        // fold — the reactive path below ignores blocks, because an overflow
+        // fold is protective, not optional.
+        const verdict = opts.runHooks ? await opts.runHooks("pre-compact", { chars, limit: compactLimit(opts), trigger: "auto", lastInputTokens }) : { decision: "allow" as const }
+        if (verdict.decision !== "block") {
+          await compactSession(runtime.events, opts.sessionId, { summarize: opts.compactSummarize, maxTailChars: compactionTailChars(opts), signal: opts.signal })
+          await opts.runHooks?.("post-compact", { trigger: "auto", chars })
+        }
       }
     }
     // Compaction-aware projection: if a Session.Compacted boundary exists, the
@@ -170,10 +246,23 @@ export async function runSession(runtime: TurnRuntime, opts: RunOptions): Promis
     // in) — this is what actually bounds the request window; the full log stays
     // durable. The boundary is read from the store so the projection is exact.
     const { messages: visibleMessages } = projectCompacted(await runtime.events.read(opts.sessionId))
+    // Rapid-refill breaker (post-fold check): a compaction that leaves the
+    // visible history over the limit means the tail itself cannot shrink —
+    // stop re-firing this drain.
+    if (opts.compactAuto !== false && lastCompactTurn === turns) {
+      const chars = visibleMessages.reduce((n, m) => n + JSON.stringify(m).length, 0)
+      if (chars > compactLimit(opts)) compactionExhausted = true
+    }
+    // Microcompact projection (ZCode LocalToolResultClear, done as a pure
+    // projection): when the visible history is over the compaction trigger,
+    // tool results older than the last N become placeholders. Deterministic
+    // in the log — the UI transcript still renders the full outputs.
+    const visibleChars = visibleMessages.reduce((n, m) => n + JSON.stringify(m).length, 0)
+    const visible = clearStaleToolResults(visibleMessages, { keepRecent: opts.toolResultKeepRecent, thresholdChars: compactLimit(opts), visibleChars, clearable: opts.toolResultClearable, clearErrors: opts.toolResultClearErrors })
     // Content-addressed attachment refs hydrate ONLY on the last user turn
     // (same aging rule as inline images) before the request is built.
-    const attachmentImages = await resolveAttachmentImages(visibleMessages, runtime.attachments)
-    const messages = toLlmMessages(visibleMessages, opts.agent.model, attachmentImages)
+    const attachmentImages = await resolveAttachmentImages(visible, runtime.attachments)
+    const messages = toLlmMessages(visible, opts.agent.model, attachmentImages)
     if (messages.length === 0) {
       // Nothing promoted and no history yet — drain is done.
       break
@@ -196,7 +285,7 @@ export async function runSession(runtime: TurnRuntime, opts: RunOptions): Promis
       maxTokens: opts.maxOutputTokens,
     }
 
-    let turn: { needsContinuation: boolean; step: number; finish: "tool" | "stop" | "length" | "content-filter" | "error" }
+    let turn: { needsContinuation: boolean; step: number; finish: "tool" | "stop" | "length" | "content-filter" | "error"; usage?: unknown }
     try {
       turn = await runTurn(runtime, opts, request, turns)
     } catch (e) {
@@ -204,10 +293,37 @@ export async function runSession(runtime: TurnRuntime, opts: RunOptions): Promis
       // llm transport's LlmCancelled; both mean "interrupt the run". We detect
       // by tag without importing the llm package (core must not depend on it).
       if (isCancelled(e)) return cancelledResult(runtime, opts, turns)
+      // Reactive compaction (codex reactiveCompactAfterContextExceeded): the
+      // projected history no longer fits the provider window — fold hard and
+      // retry this step once. Guards: a second overflow rethrows (even the
+      // compacted view does not fit — the honest error beats a silent loop);
+      // a retry at the step cap would be swallowed by the while condition and
+      // misreport success, so the cap rethrows too; the fold counts toward the
+      // breaker cooldown, or the retry round's auto-trigger would fire a
+      // second, pointless fold with a LARGER tail budget than the one that
+      // just failed to get under the limit.
+      if (isContextOverflow(e) && !reactiveCompacted && turns < MAX_STEPS) {
+        reactiveCompacted = true
+        lastCompactTurn = turns
+        // A fresh fold shrinks the next request — the stale pressure reading
+        // must not survive it (it would re-fold every cooldown round).
+        lastInputTokens = 0
+        await compactSession(runtime.events, opts.sessionId, { summarize: opts.compactSummarize, maxTailChars: Math.floor(compactionTailChars(opts) / 2), retain: 4, signal: opts.signal })
+        // No pre-compact hook here: an overflow fold is protective, not
+        // optional (the alternative is a hard provider error).
+        await opts.runHooks?.("post-compact", { trigger: "reactive" })
+        continue
+      }
       throw e
     }
     needsContinuation = turn.needsContinuation
     lastStepEnded = turn.finish
+    // Feed the pressure signal: the provider's reported input tokens are the
+    // precise "how full is the window" measurement (codex token_limit_reached).
+    // Latest-positive, not a high-water mark — after a fold the next request
+    // is much smaller, and a stale max would re-fold every cooldown round.
+    const reported = extractInputTokens(turn.usage)
+    if (reported > 0) lastInputTokens = reported
 
     // Stop hook (deterministic, claude code Stop-event shape): a block can
     // force another step with a reason re-injected as a steer — the "loop until
@@ -248,6 +364,49 @@ function isCancelled(e: unknown): boolean {
   // DOM abort (some runtimes) surfaces as DOMException with code 20 (ABORT_ERR).
   if (typeof err.code === "number" && err.code === 20) return true
   return false
+}
+
+/** Tag-based provider context-overflow detection (core must not import the
+ *  llm package — same discipline as isCancelled): the transport classifies a
+ *  400 whose message mentions context/length/token as code "context-overflow". */
+function isContextOverflow(e: unknown): boolean {
+  const err = e as { code?: string } | null
+  return !!err && err.code === "context-overflow"
+}
+
+/** Defensive input-token extraction from the opaque per-protocol usage payload.
+ *  Anthropic canonical shape: `inputTokens` EXCLUDES cached reads/writes (they
+ *  arrive as separate cacheReadTokens/cacheWriteTokens fields) — window
+ *  pressure is the SUM, since a fully cached long session is exactly the case
+ *  where the char estimate lies. openai-style `prompt_tokens` already includes
+ *  cache hits. 0 when the shape is unrecognized. */
+function extractInputTokens(usage: unknown): number {
+  const u = usage as { inputTokens?: number; prompt_tokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number } | null | undefined
+  if (!u) return 0
+  if (typeof u.inputTokens === "number" && u.inputTokens > 0) {
+    return u.inputTokens + (typeof u.cacheReadTokens === "number" ? u.cacheReadTokens : 0) + (typeof u.cacheWriteTokens === "number" ? u.cacheWriteTokens : 0)
+  }
+  if (typeof u.prompt_tokens === "number" && u.prompt_tokens > 0) return u.prompt_tokens
+  const cacheOnly = (typeof u.cacheReadTokens === "number" ? u.cacheReadTokens : 0) + (typeof u.cacheWriteTokens === "number" ? u.cacheWriteTokens : 0)
+  return cacheOnly > 0 ? cacheOnly : 0
+}
+
+/** Codex truncation_policy semantics: an oversized tool result is stored as a
+ *  head+tail excerpt with an explicit marker. A string result stays a string;
+ *  anything else is serialized for the measure (and replaced by that string
+ *  when over the cap — error results already store strings, so a string
+ *  `output` is a shape the log and every consumer already understands). */
+function truncateToolOutput(output: unknown, maxChars: number): unknown {
+  // null/undefined pass through untouched (JSON.stringify(undefined) is the
+  // value undefined — measuring it would throw): the pipeline has always
+  // tolerated these shapes and the encoders render them as "undefined".
+  if (maxChars <= 0 || output == null) return output
+  const text = typeof output === "string" ? output : JSON.stringify(output)
+  if (text.length <= maxChars) return output
+  const headKeep = Math.floor(maxChars * 0.7)
+  const tailKeep = Math.max(0, maxChars - headKeep)
+  const omitted = text.length - headKeep - tailKeep
+  return `${text.slice(0, headKeep)}\n[...truncated ${omitted} of ${text.length} chars — re-run the tool with a narrower query for the full output...]\n${text.slice(text.length - tailKeep)}`
 }
 
 /**
@@ -386,8 +545,10 @@ async function runTurn(runtime: TurnRuntime, opts: RunOptions, request: LLMReque
       const call = toolCalls[i]!
       const outcome = settled[i]!
       if (outcome.status === "fulfilled") {
-        await appendMessage(runtime, opts.sessionId, { kind: "tool", id: crypto.randomUUID(), seq: 0, callId: call.id, name: call.name, output: outcome.value })
-        opts.onEvent?.({ type: "tool-result", name: call.name, output: outcome.value })
+        const output = truncateToolOutput(outcome.value, opts.toolOutputMaxChars ?? DEFAULT_TOOL_OUTPUT_CHARS)
+        await appendMessage(runtime, opts.sessionId, { kind: "tool", id: crypto.randomUUID(), seq: 0, callId: call.id, name: call.name, output })
+        opts.onEvent?.({ type: "tool-result", name: call.name, output })
+        await opts.runHooks?.("post-tool-use", { name: call.name, callId: call.id, isError: false })
       } else {
         // A cancelled tool must be marked "Tool execution interrupted", matching
         // the cross-process convention in failInterruptedTools, so a resumed
@@ -397,6 +558,7 @@ async function runTurn(runtime: TurnRuntime, opts: RunOptions, request: LLMReque
         const text = interrupted ? "Tool execution interrupted" : `tool error: ${outcome.reason}`
         await appendMessage(runtime, opts.sessionId, { kind: "tool", id: crypto.randomUUID(), seq: 0, callId: call.id, name: call.name, output: text, isError: true })
         opts.onEvent?.({ type: "tool-result", name: call.name, output: text, isError: true })
+        await opts.runHooks?.("post-tool-use", { name: call.name, callId: call.id, isError: true })
       }
     }
   }

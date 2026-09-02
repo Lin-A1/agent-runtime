@@ -1,4 +1,4 @@
-import { readFile, writeFile, mkdir } from "node:fs/promises"
+import { readFile, writeFile, mkdir, rename } from "node:fs/promises"
 import { dirname } from "node:path"
 
 /**
@@ -75,10 +75,13 @@ export function validateCron(expr: string): void {
   if (fields.length !== 5) throw new Error(`cron needs 5 fields (m h dom mon dow), got ${fields.length}`)
   const maxes = [59, 23, 31, 12, 6]
   fields.forEach((f, i) => {
-    if (!cronFieldMatch(f, 0, maxes[i]!)) {
+    // Standard cron accepts 7 for Sunday in the dow field; JS getDay() is 0-6,
+    // so 7 normalizes to 0 before the range check (and at match time below).
+    const norm = i === 4 ? f.replaceAll(/\b7\b/g, "0") : f
+    if (!cronFieldMatch(norm, 0, maxes[i]!)) {
       // `0` may legitimately not match (e.g. `*/5` matches 0 — fine; `5` alone does not) —
       // re-test against a value inside the field's own range instead.
-      const probe = f === "*" || f.startsWith("*/") ? 0 : Number(f.split(",")[0]!.split("-")[0]!.split("/")[0]!)
+      const probe = norm === "*" || norm.startsWith("*/") ? 0 : Number(norm.split(",")[0]!.split("-")[0]!.split("/")[0]!)
       if (!Number.isInteger(probe) || probe < 0 || probe > maxes[i]!) throw new Error(`cron field ${i + 1} out of range: ${f}`)
     }
   })
@@ -93,7 +96,7 @@ function cronMatches(expr: string, d: Date): boolean {
     cronFieldMatch(fields[1]!, d.getHours(), 23) &&
     cronFieldMatch(fields[2]!, d.getDate(), 31) &&
     cronFieldMatch(fields[3]!, d.getMonth() + 1, 12) &&
-    cronFieldMatch(fields[4]!, d.getDay(), 6)
+    cronFieldMatch(fields[4]!.replaceAll(/\b7\b/g, "0"), d.getDay(), 6)
   )
 }
 
@@ -157,7 +160,10 @@ export function createScheduler(opts: { file: string; fire: (schedule: Schedule)
 
   async function persist(): Promise<void> {
     await mkdir(dirname(file), { recursive: true })
-    await writeFile(file, JSON.stringify({ schedules: rows }, null, 2) + "\n", "utf8")
+    // tmp + rename: a crash mid-write must not leave a truncated schedule file.
+    const tmp = file + ".tmp"
+    await writeFile(tmp, JSON.stringify({ schedules: rows }, null, 2) + "\n", "utf8")
+    await rename(tmp, file)
   }
 
   const due = (s: Schedule, now: number): boolean => {

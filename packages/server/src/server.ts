@@ -1,5 +1,5 @@
-import { createApp, redactSettings, aggregateUsage, loadModelCatalog, createDagRunner, handleChannelInbound, channelSessionId, type App, type AppConfig, type PromptResult, type SessionRow, type RegistryQuery, type AuditEventRow, type SessionDirectory, type DirectoryEntry, type SettingsController, type AgentHomeConfig, type ApprovalHub, type Scheduler, type ScheduleInput, type Schedule, type DagRunner, type DagStatus, type ChannelConfig } from "@newhorse/runtime"
-import { currentGoal, tokensUsed as foldTokensUsed, currentTodos, validateGoal, projectCompacted } from "@newhorse/core"
+import { createApp, redactSettings, aggregateUsage, loadModelCatalog, createDagRunner, handleChannelInbound, channelSessionId, type App, type AppEvent, type AppConfig, type PromptResult, type SessionRow, type RegistryQuery, type AuditEventRow, type SessionDirectory, type DirectoryEntry, type SettingsController, type AgentHomeConfig, type ApprovalHub, type Scheduler, type ScheduleInput, type Schedule, type DagRunner, type DagStatus, type ChannelConfig } from "@newhorse/runtime"
+import { currentGoal, tokensUsed as foldTokensUsed, currentTodos, validateGoal, projectCompacted, clearStaleToolResults, compactLimit } from "@newhorse/core"
 import { discoverSkills, discoverPlugin } from "@newhorse/plugin"
 import { SessionRegistry, SqliteEventStore, type DAGSpec } from "@newhorse/core"
 import { Database } from "bun:sqlite"
@@ -8,7 +8,7 @@ import { listModels } from "@newhorse/llm"
 import type { AdapterConfig, Fetcher } from "@newhorse/llm"
 import type { StoredEvent, ApprovalRequest } from "@newhorse/schema"
 import { join, resolve, sep } from "node:path"
-import { readdir, realpath } from "node:fs/promises"
+import { readdir, realpath, mkdir, writeFile, rename } from "node:fs/promises"
 import { Buffer } from "node:buffer"
 
 /**
@@ -257,6 +257,41 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
   /** Sessions this process created (directory-owned; unregistered on stop). */
   const owned = new Set<string>()
 
+  // Global event bus (GET /v1/events/stream, opencode's /api/event): one SSE
+  // feed forwarding every attached session's LoopEvents so a UI keeps ONE live
+  // connection instead of polling lists + tailing per-session streams. Each
+  // attach() plants a permanent relay; global listeners come and go freely.
+  // Listener errors are isolated — a broken SSE consumer never sinks a turn.
+  // Frames carry LoopEvents plus the prompt-stream terminal `result` marker.
+  type BusEvent = AppEvent | ({ type: "result" } & Record<string, unknown>)
+  const globalListeners = new Set<(frame: { sessionId: string; event: BusEvent }) => void>()
+  const relays = new Map<string, () => void>()
+  const attach = (sessionId: string, app: App): void => {
+    apps.set(sessionId, app)
+    relays.get(sessionId)?.()
+    relays.set(
+      sessionId,
+      app.onEvent((event) => {
+        for (const l of globalListeners) {
+          try {
+            l({ sessionId, event })
+          } catch {
+            // isolated
+          }
+        }
+      }),
+    )
+  }
+  const detach = (sessionId: string): void => {
+    const app = apps.get(sessionId)
+    apps.delete(sessionId)
+    relays.get(sessionId)?.()
+    relays.delete(sessionId)
+    // Close the app's SQLite connection — a deleted session must not leak an
+    // open Database handle (same discipline as the resolveApp conflict path).
+    void (app?.events as { close?: () => void } | undefined)?.close?.()
+  }
+
   /** The URL peers use to reach this server (advertised or derived). Trailing
    *  slashes are stripped so endpoint comparisons (stale-self guard) can't be
    *  defeated by spelling. */
@@ -277,6 +312,19 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
     }
   }
 
+  /** A directory row may only point at loopback — the shared SQLite file is
+   *  writable by any local process, and proxying carries OUR bearer token to
+   *  the endpoint. Cross-host clustering would need a separate cluster secret
+   *  (not designed yet); refusing here closes the token-exfiltration path. */
+  function proxyTargetAllowed(entry: DirectoryEntry): boolean {
+    try {
+      const h = new URL(entry.endpoint).hostname
+      return h === "127.0.0.1" || h === "localhost" || h === "::1" || h === "[::1]"
+    } catch {
+      return false
+    }
+  }
+
   /** A resolved session: served locally, owned by a sibling process, or absent. */
   type Found = { kind: "local"; app: App } | { kind: "remote"; entry: DirectoryEntry } | { kind: "missing"; error: string }
   const findSession = async (sessionId: string): Promise<Found> => {
@@ -289,8 +337,11 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
           // Stale self-entry (we ARE that endpoint but hold no app — the owner
           // restarted). Sweep it rather than proxying to ourselves.
           directory.unregister(sessionId)
-        } else {
+        } else if (proxyTargetAllowed(entry)) {
           return { kind: "remote", entry }
+        } else {
+          // Poisoned row (non-loopback endpoint): never proxy our token to it.
+          directory.unregister(sessionId)
         }
       }
     }
@@ -328,7 +379,7 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
       // from another node, etc.) — cache the result to avoid repeated resolution.
       const resolved = await sessionResolver(sessionId)
       if (resolved) {
-        apps.set(sessionId, resolved)
+        attach(sessionId, resolved)
         // We now HOLD this session locally and the directory had no live row
         // — claim ownership so cross-process ops route here.
         if (directory) {
@@ -416,7 +467,7 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
       }
       owned.add(id)
     }
-    apps.set(id, app)
+    attach(id, app)
     return { app }
   }
 
@@ -425,7 +476,7 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
    *  down cleanly instead of leaving a half-open SSE connection — Bun's
    *  server.stop() would otherwise crash on a pending disconnected stream. */
   let inFlight = 0
-  async function promptStream(app: App, text: string, principal?: "user" | "butler" | "parent", signal?: AbortSignal, images?: { mime: string; data: string }[]): Promise<Response> {
+  async function promptStream(app: App, text: string, principal?: "user" | "butler" | "parent", signal?: AbortSignal, images?: { mime: string; data: string }[], opts?: { replace?: boolean }): Promise<Response> {
     inFlight++
     const sse = sseStream()
     // Flush headers NOW with an SSE comment line: Bun does not send response
@@ -440,19 +491,34 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
     const unsubscribe = app.onEvent((event) => {
       sse.emit(`data: ${JSON.stringify(event)}\n\n`)
     })
+    // Terminal frames also ride the global bus: a turn that fails at the LLM
+    // call throws WITHOUT a LoopEvent (only the prompt stream would know) —
+    // forward result/error so bus consumers see the settle either way.
+    const emitGlobal = (event: BusEvent): void => {
+      for (const l of globalListeners) {
+        try {
+          l({ sessionId: app.sessionId, event })
+        } catch {
+          // isolated
+        }
+      }
+    }
     // Client went away → cancel the run. The loop settles as interrupted;
     // further emit/close are no-ops on the closed controller.
     const onAbort = (): void => app.interrupt()
     signal?.addEventListener("abort", onAbort, { once: true })
     app
-      .prompt(text, principal, images)
+      .prompt(text, principal, images, opts)
       .then((result) => {
+        emitGlobal({ type: "result", ...result })
         sse.emit(`data: ${JSON.stringify({ type: "result", ...result })}\n\n`)
         sse.emit(`data: [DONE]\n\n`)
         sse.close()
       })
       .catch((err: unknown) => {
-        sse.emit(`data: ${JSON.stringify({ type: "error", code: "server", message: err instanceof Error ? err.message : String(err) })}\n\n`)
+        const event: AppEvent = { type: "error", code: "server", message: err instanceof Error ? err.message : String(err) }
+        emitGlobal(event)
+        sse.emit(`data: ${JSON.stringify(event)}\n\n`)
         sse.emit(`data: [DONE]\n\n`)
         sse.close()
       })
@@ -514,14 +580,14 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
       // Shape + caps are validated here so one bad paste can never poison the
       // append-only log or balloon a provider request. An image-only prompt
       // (empty text) is valid.
-      if (method === "POST" && parts.length === 4 && parts[3] === "prompt") {
+      if (method === "POST" && parts.length === 4 && parts[1] === "session" && parts[3] === "prompt") {
         const found = await findSession(parts[2]!)
         if (found.kind === "missing") return json(404, { error: found.error })
         // Bound the buffered read BEFORE parsing: the caps below bound what is
         // LOGGED, not what a hostile body could make us buffer.
         const declared = Number(req.headers.get("content-length") ?? 0)
         if (declared > MAX_PROMPT_BODY) return json(413, { error: "request body too large" })
-        const parsed = await readJsonOr400<{ text?: string; principal?: "user" | "butler" | "parent"; images?: { mime?: string; data?: string }[] }>(req)
+        const parsed = await readJsonOr400<{ text?: string; principal?: "user" | "butler" | "parent"; images?: { mime?: string; data?: string }[]; replace?: boolean }>(req)
         if ("error" in parsed) return json(400, parsed)
         const images: { mime: string; data: string }[] = []
         for (const img of parsed.images ?? []) {
@@ -531,12 +597,12 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
           images.push({ mime: img.mime, data: img.data })
         }
         if (!parsed.text && images.length === 0) return json(400, { error: "text or images required" })
-        if (found.kind === "remote") return proxyPrompt(found.entry, parts[2]!, JSON.stringify({ text: parsed.text ?? "", principal: parsed.principal, ...(images.length ? { images } : {}) }), req.signal)
-        return promptStream(found.app, parsed.text ?? "", parsed.principal, req.signal, images)
+        if (found.kind === "remote") return proxyPrompt(found.entry, parts[2]!, JSON.stringify({ text: parsed.text ?? "", principal: parsed.principal, ...(images.length ? { images } : {}), replace: parsed.replace }), req.signal)
+        return promptStream(found.app, parsed.text ?? "", parsed.principal, req.signal, images, parsed.replace ? { replace: true } : undefined)
       }
 
       // POST /v1/session/:id/steer
-      if (method === "POST" && parts.length === 4 && parts[3] === "steer") {
+      if (method === "POST" && parts.length === 4 && parts[1] === "session" && parts[3] === "steer") {
         const found = await findSession(parts[2]!)
         if (found.kind === "missing") return json(404, { error: found.error })
         const parsed = await readJsonOr400<{ text?: string }>(req)
@@ -548,7 +614,7 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
       }
 
       // POST /v1/session/:id/interrupt
-      if (method === "POST" && parts.length === 4 && parts[3] === "interrupt") {
+      if (method === "POST" && parts.length === 4 && parts[1] === "session" && parts[3] === "interrupt") {
         const found = await findSession(parts[2]!)
         if (found.kind === "missing") return json(404, { error: found.error })
         if (found.kind === "remote") return proxyJson(found.entry, `/v1/session/${parts[2]!}/interrupt`, { method: "POST" })
@@ -608,8 +674,9 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
         }
       }
 
-      // GET /v1/session/:id
-      if (method === "GET" && parts.length === 3) {
+      // GET /v1/session/:id — MUST pin parts[1]: a bare length check would
+      // swallow every other 3-segment GET (/v1/events/stream, /v1/dag/:id).
+      if (method === "GET" && parts.length === 3 && parts[1] === "session") {
         const found = await findSession(parts[2]!)
         if (found.kind === "missing") return json(404, { error: found.error })
         if (found.kind === "remote") return proxyJson(found.entry, `/v1/session/${parts[2]!}`)
@@ -659,7 +726,81 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
       }
 
       // GET /v1/session/:id/events
-      if (method === "GET" && parts.length === 4 && parts[3] === "events") {
+      // GET /v1/events/stream — global event bus: one SSE for ALL locally
+      // attached sessions, frames envelope `{sessionId, event}`. Remote-owned
+      // sessions are not forwarded (same scope as the per-session stream).
+      if (method === "GET" && parts.length === 3 && parts[1] === "events" && parts[2] === "stream") {
+        const encoder = new TextEncoder()
+        const body = new ReadableStream({
+          start(controller) {
+            let closed = false
+            const send = (data: string) => {
+              if (closed) return
+              try {
+                controller.enqueue(encoder.encode(data))
+              } catch {
+                closed = true
+              }
+            }
+            send(": open\n\n")
+            const listener = (frame: { sessionId: string; event: BusEvent }): void => send(`data: ${JSON.stringify(frame)}\n\n`)
+            globalListeners.add(listener)
+            const keepalive = setInterval(() => send(": keepalive\n\n"), 15_000)
+            req.signal.addEventListener("abort", () => {
+              closed = true
+              clearInterval(keepalive)
+              globalListeners.delete(listener)
+              try {
+                controller.close()
+              } catch {
+                // already closed
+              }
+            })
+          },
+        })
+        return new Response(body, { headers: { "content-type": "text/event-stream", "cache-control": "no-cache" } })
+      }
+
+      // GET /v1/session/:id/events/stream — live event subscription (wave 12):
+      // SSE over app.onEvent; `: open` first (Bun flushes headers on the first
+      // body byte), 15s keepalive comments, ends when the client disconnects.
+      // Clients load GET /events for history, then stream this for the live tail.
+      if (method === "GET" && parts.length === 5 && parts[1] === "session" && parts[3] === "events" && parts[4] === "stream") {
+        const found = await findSession(parts[2]!)
+        if (found.kind === "missing") return json(404, { error: found.error })
+        if (found.kind === "remote") return json(501, { error: "event streaming on a remote-owned session is not proxied yet" })
+        const app = found.app
+        const encoder = new TextEncoder()
+        const body = new ReadableStream({
+          start(controller) {
+            let closed = false
+            const send = (data: string) => {
+              if (closed) return
+              try {
+                controller.enqueue(encoder.encode(data))
+              } catch {
+                closed = true
+              }
+            }
+            send(": open\n\n")
+            const unsub = app.onEvent((event) => send(`data: ${JSON.stringify(event)}\n\n`))
+            const keepalive = setInterval(() => send(": keepalive\n\n"), 15_000)
+            req.signal.addEventListener("abort", () => {
+              closed = true
+              clearInterval(keepalive)
+              unsub()
+              try {
+                controller.close()
+              } catch {
+                // already closed
+              }
+            })
+          },
+        })
+        return new Response(body, { headers: { "content-type": "text/event-stream", "cache-control": "no-cache" } })
+      }
+
+      if (method === "GET" && parts.length === 4 && parts[1] === "session" && parts[3] === "events") {
         const found = await findSession(parts[2]!)
         if (found.kind === "missing") return json(404, { error: found.error })
         if (found.kind === "remote") return proxyJson(found.entry, `/v1/session/${parts[2]!}/events`)
@@ -733,7 +874,7 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
       }
 
       // GET /v1/session/:id/goal — folded goal + persisted usage.
-      if (method === "GET" && parts.length === 4 && parts[3] === "goal") {
+      if (method === "GET" && parts.length === 4 && parts[1] === "session" && parts[3] === "goal") {
         const found = await findSession(parts[2]!)
         if (found.kind === "missing") return json(404, { error: found.error })
         const events = (found.kind === "local" ? await found.app.events.read(parts[2]!) : await (await fetch(`${found.entry.endpoint}/v1/session/${parts[2]!}/events`, { headers: token ? { authorization: `Bearer ${token}` } : {} })).json()) as StoredEvent[]
@@ -742,7 +883,7 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
       }
 
       // POST /v1/session/:id/goal {objective, tokenBudget?} — durable goal write.
-      if (method === "POST" && parts.length === 4 && parts[3] === "goal") {
+      if (method === "POST" && parts.length === 4 && parts[1] === "session" && parts[3] === "goal") {
         const found = await findSession(parts[2]!)
         if (found.kind === "missing") return json(404, { error: found.error })
         if (found.kind === "remote") return json(501, { error: "goal write on a remote-owned session is not proxied yet" })
@@ -755,7 +896,7 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
       }
 
       // GET /v1/session/:id/todos — the current durable task list.
-      if (method === "GET" && parts.length === 4 && parts[3] === "todos") {
+      if (method === "GET" && parts.length === 4 && parts[1] === "session" && parts[3] === "todos") {
         const found = await findSession(parts[2]!)
         if (found.kind === "missing") return json(404, { error: found.error })
         const events = (found.kind === "local" ? await found.app.events.read(parts[2]!) : await (await fetch(`${found.entry.endpoint}/v1/session/${parts[2]!}/events`, { headers: token ? { authorization: `Bearer ${token}` } : {} })).json()) as StoredEvent[]
@@ -763,14 +904,22 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
       }
 
       // GET /v1/session/:id/context — visible context size vs the window.
-      if (method === "GET" && parts.length === 4 && parts[3] === "context") {
+      if (method === "GET" && parts.length === 4 && parts[1] === "session" && parts[3] === "context") {
         const found = await findSession(parts[2]!)
         if (found.kind === "missing") return json(404, { error: found.error })
         const events = (found.kind === "local" ? await found.app.events.read(parts[2]!) : await (await fetch(`${found.entry.endpoint}/v1/session/${parts[2]!}/events`, { headers: token ? { authorization: `Bearer ${token}` } : {} })).json()) as StoredEvent[]
-        const { messages } = projectCompacted(events)
-        const chars = messages.reduce((n, m) => n + JSON.stringify(m).length, 0)
-        const windowTokens = settings?.get().contextWindowTokens
-        return json(200, { chars, estTokens: Math.ceil(chars / 2.5), ...(windowTokens ? { windowTokens, ratio: Math.min(1, Math.ceil(chars / 2.5) / (windowTokens * 0.6)) } : {}) })
+        const settingsNow = settings?.get()
+        const windowTokens = settingsNow?.contextWindowTokens
+        // Mirror the loop's model-visible view: the microcompact projection
+        // clears old tool results once over the compaction trigger, so the
+        // reported size must reflect what the model actually receives.
+        const cpt = settingsNow?.charsPerToken ?? 2.5
+        const limit = compactLimit({ contextWindowTokens: windowTokens, charsPerToken: cpt })
+        const { messages: projected } = projectCompacted(events)
+        const visible = clearStaleToolResults(projected, { thresholdChars: limit, visibleChars: projected.reduce((n, m) => n + JSON.stringify(m).length, 0) })
+        const chars = visible.reduce((n, m) => n + JSON.stringify(m).length, 0)
+        const estTokens = Math.ceil(chars / cpt)
+        return json(200, { chars, estTokens, ...(windowTokens ? { windowTokens, ratio: Math.min(1, estTokens / (windowTokens * 0.6)) } : {}) })
       }
 
       // POST /v1/memory {content, type?, priority?} — client-side memory write.
@@ -792,14 +941,14 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
         if (found.kind === "remote") return json(501, { error: "delete on a remote-owned session is not proxied yet" })
         found.app.interrupt()
         await found.app.events.delete(parts[2]!)
-        apps.delete(parts[2]!)
+        detach(parts[2]!)
         directory?.unregister(parts[2]!)
         owned.delete(parts[2]!)
         return json(200, { deleted: true })
       }
 
       // POST /v1/session/:id/archive {archived} — archive/unarchive a session.
-      if (method === "POST" && parts.length === 4 && parts[3] === "archive") {
+      if (method === "POST" && parts.length === 4 && parts[1] === "session" && parts[3] === "archive") {
         const found = await findSession(parts[2]!)
         if (found.kind === "missing") return json(404, { error: found.error })
         if (found.kind === "remote") return json(501, { error: "archive on a remote-owned session is not proxied yet" })
@@ -811,7 +960,7 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
       }
 
       // POST /v1/session/:id/title {title} — durable rename (Session.TitleSet).
-      if (method === "POST" && parts.length === 4 && parts[3] === "title") {
+      if (method === "POST" && parts.length === 4 && parts[1] === "session" && parts[3] === "title") {
         const found = await findSession(parts[2]!)
         if (found.kind === "missing") return json(404, { error: found.error })
         if (found.kind === "remote") return json(501, { error: "rename on a remote-owned session is not proxied yet" })
@@ -827,7 +976,7 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
       // (codex backtrack: append-only fork, never truncate). The child
       // re-Creates with the SOURCE's workspace (a fork is the same project —
       // `location: ""` would leave it working blind) and its fixed role.
-      if (method === "POST" && parts.length === 4 && parts[3] === "fork") {
+      if (method === "POST" && parts.length === 4 && parts[1] === "session" && parts[3] === "fork") {
         const found = await findSession(parts[2]!)
         if (found.kind === "missing") return json(404, { error: found.error })
         if (found.kind === "remote") return json(501, { error: "fork of a remote-owned session is not proxied yet" })
@@ -855,7 +1004,7 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
       // GET/POST /v1/session/:id/policy — read or change this session's
       // permission level (strict | readonly | trusted). The change is durable
       // (Session.PolicyChanged) and effective from the next prompt.
-      if (parts.length === 4 && parts[3] === "policy" && (method === "GET" || method === "POST")) {
+      if (parts.length === 4 && parts[1] === "session" && parts[3] === "policy" && (method === "GET" || method === "POST")) {
         const found = await findSession(parts[2]!)
         if (found.kind === "missing") return json(404, { error: found.error })
         if (found.kind === "remote") return json(501, { error: "policy on a remote-owned session is not proxied yet" })
@@ -868,6 +1017,21 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
         return json(200, { policy })
       }
 
+      // POST /v1/session/:id/compact — manual fold (codex Op::Compact): one
+      // compaction now with the loop's own summarizer; refused while a drain
+      // is live (409) rather than racing the turn's compaction.
+      if (method === "POST" && parts.length === 4 && parts[1] === "session" && parts[3] === "compact") {
+        const found = await findSession(parts[2]!)
+        if (found.kind === "missing") return json(404, { error: found.error })
+        if (found.kind === "remote") return proxyJson(found.entry, `/v1/session/${parts[2]!}/compact`, { method: "POST" })
+        if (found.app.isBusy()) return json(409, { error: "session busy" })
+        try {
+          return json(200, await found.app.compact())
+        } catch (e) {
+          return json(400, { error: e instanceof Error ? e.message : String(e) })
+        }
+      }
+
       // GET /v1/fs?path=&workspace= — sandboxed one-level listing.
       if (method === "GET" && parts.length === 2 && parts[1] === "fs") {
         if (!settings) return json(404, { error: "no settings controller configured" })
@@ -876,8 +1040,17 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
         const rootAbs = resolve(ws)
         const targetAbs = resolve(ws, rel)
         if (targetAbs !== rootAbs && !targetAbs.startsWith(rootAbs + sep)) return json(403, { error: "path escapes the workspace" })
+        // Symlink re-check (same invariant as /v1/file): a workspace-internal
+        // symlink pointing OUT must not yield an outside-workspace listing.
+        let canon = targetAbs
         try {
-          const dir = await readdir(targetAbs, { withFileTypes: true })
+          canon = await realpath(targetAbs)
+        } catch {
+          return json(200, { path: rel, entries: [] })
+        }
+        if (canon !== rootAbs && !canon.startsWith(rootAbs + sep)) return json(403, { error: "path escapes the workspace" })
+        try {
+          const dir = await readdir(canon, { withFileTypes: true })
           const entries = []
           for (const d of dir) {
             if (d.name.startsWith(".") || d.name === "node_modules") continue
@@ -947,6 +1120,35 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
         return json(200, { skills: skills.map((sk) => ({ name: sk.name, description: sk.description, path: sk.path })) })
       }
 
+      // POST /v1/skills — import a skill through the directory seam:
+      // {name, description?, body} → pluginsDir/skills/<name>/SKILL.md.
+      if (method === "POST" && parts.length === 2 && parts[1] === "skills") {
+        if (!pluginsDir) return json(404, { error: "no pluginsDir configured" })
+        const parsed = await readJsonOr400<{ name?: string; description?: string; body?: string }>(req)
+        if ("error" in parsed) return json(400, parsed)
+        const name = (parsed.name ?? "").trim()
+        if (!/^[a-z0-9][a-z0-9._-]*$/i.test(name)) return json(400, { error: "skill name must be a slug (letters, digits, -, _)" })
+        const body = (parsed.body ?? "").trim()
+        if (!body) return json(400, { error: "body is required" })
+        try {
+          const dir = join(pluginsDir, "skills", name)
+          // YAML-safe description (quoted + escaped; a raw ": " or leading
+          // "*" would corrupt the frontmatter the discovery parser reads).
+          const desc = parsed.description?.trim().replace(/\n/g, " ")
+          const fm = desc ? `---\ndescription: ${JSON.stringify(desc)}\n---\n\n` : ""
+          await mkdir(dir, { recursive: true })
+          const path = join(dir, "SKILL.md")
+          // Atomic write (tmp + rename) — same rule as the config file: a
+          // crash mid-write must not leave a truncated SKILL.md on disk.
+          const tmp = path + ".tmp"
+          await writeFile(tmp, fm + body + "\n", "utf8")
+          await rename(tmp, path)
+          return json(201, { name, description: desc, path })
+        } catch (e) {
+          return json(500, { error: `skill write failed: ${e instanceof Error ? e.message : String(e)}` })
+        }
+      }
+
       // GET /v1/agents — discovered agent roles (name/model/allowedTools).
       if (method === "GET" && parts.length === 2 && parts[1] === "agents") {
         if (!pluginsDir) return json(404, { error: "no pluginsDir configured" })
@@ -964,7 +1166,7 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
       // POST /v1/session/:id/command {text} — run a slash line ("/name args")
       // through the session's command seam. Returns the expansion text (the
       // client puts it back into the composer); 404 when not a command.
-      if (method === "POST" && parts.length === 4 && parts[3] === "command") {
+      if (method === "POST" && parts.length === 4 && parts[1] === "session" && parts[3] === "command") {
         const found = await findSession(parts[2]!)
         if (found.kind === "missing") return json(404, { error: found.error })
         if (found.kind === "remote") return json(501, { error: "commands on a remote-owned session are not proxied yet" })
@@ -1106,8 +1308,10 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
     const resolved = await resolveApp({ sessionId })
     const app = resolved?.app
     if (!app) throw new Error(`cannot attach session "${sessionId}" (no sessionConfig)`)
-    void app.prompt(prompt, "user").catch(() => {
-      // A failed fire is recorded by the scheduler's lastResult bookkeeping.
+    void app.prompt(prompt, "user").catch((e) => {
+      // The scheduler records admission, not settlement — a dead turn must be
+      // LOUD in the log so a silent schedule failure is diagnosable.
+      console.error(`[admitPrompt] session "${sessionId}" prompt failed:`, e instanceof Error ? e.message : e)
     })
   }
 

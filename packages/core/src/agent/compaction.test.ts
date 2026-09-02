@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { MemoryEventStore } from "../session/store"
-import { compactSession, summarizeTimeoutMs } from "./compaction"
+import { clearStaleToolResults, compactSession, summarizeTimeoutMs } from "./compaction"
+import type { SessionMessage } from "@newhorse/schema"
 
 async function seed(events: MemoryEventStore, id: string, n: number): Promise<void> {
   await events.append(id, "Session.Created", { id, location: "/w", createdAt: Date.now() })
@@ -94,4 +95,29 @@ it("summarizeTimeoutMs scales with the prompt (fixed 10s degraded big-head summa
   expect(summarizeTimeoutMs(1_000)).toBe(10_000) // floor
   expect(summarizeTimeoutMs(30_000)).toBe(12_000)
   expect(summarizeTimeoutMs(250_000)).toBe(100_000)
+})
+
+describe("clearStaleToolResults (microcompact projection)", () => {
+  function toolMsg(n: string): SessionMessage {
+    return { kind: "tool", id: n, seq: 0, callId: `call_${n}`, name: "search", output: `result-${n}` }
+  }
+
+  it("clears tool results older than keepRecent ONLY when over the threshold; recent ones stay verbatim", () => {
+    const messages = [toolMsg("t1"), toolMsg("t2"), toolMsg("t3"), toolMsg("t4"), toolMsg("t5")]
+    // Under threshold: nothing changes (small sessions never lose anything).
+    const under = clearStaleToolResults(messages, { keepRecent: 2, thresholdChars: 10_000, visibleChars: 100 })
+    expect(under).toBe(messages)
+    // Over threshold: the oldest 3 become placeholders, the newest 2 stay.
+    const over = clearStaleToolResults(messages, { keepRecent: 2, thresholdChars: 10, visibleChars: 5_000 }) as { output: string }[]
+    expect(over.filter((m) => String(m.output).includes("[tool result cleared")).length).toBe(3)
+    expect(over[0]!.output).toContain("[tool result cleared: search")
+    expect(over[0]!.output).toContain("re-run the tool")
+    expect(over[3]!.output).toBe("result-t4")
+    expect(over[4]!.output).toBe("result-t5")
+    // Pairing fields survive the projection.
+    expect((over[0] as unknown as { callId: string }).callId).toBe("call_t1")
+    // Non-tool messages pass through untouched.
+    const mixed = clearStaleToolResults([{ kind: "user", id: "u1", seq: 0, text: "hi" }, toolMsg("t1")], { keepRecent: 0, thresholdChars: 1, visibleChars: 9_000 })
+    expect(mixed[0]!.kind).toBe("user")
+  })
 })
