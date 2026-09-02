@@ -109,7 +109,7 @@ export class MemorySessionInput implements SessionInputStore {
   async admit(input: AdmitInput): Promise<Admission> {
     // Check the durable log first (source of truth), not a memory map, so a
     // concurrent admit of the same new id can't double-insert.
-    const existing = await this.#findDurable(input.id)
+    const existing = await this.#findDurable(input.id, input.sessionId)
     if (existing) {
       if (existing.sessionId === input.sessionId && existing.prompt === input.prompt && existing.delivery === input.delivery) {
         return { id: existing.id, sessionId: existing.sessionId, prompt: existing.prompt, delivery: existing.delivery, principal: existing.principal, admittedSeq: existing.admittedSeq }
@@ -159,10 +159,19 @@ export class MemorySessionInput implements SessionInputStore {
     const rows = [...this.#rows.values()].filter((r) => r.sessionId === sessionId && r.promotedSeq === null && r.delivery === "steer" && r.admittedSeq <= cutoff).sort((a, b) => a.admittedSeq - b.admittedSeq)
     let count = 0
     for (const row of rows) {
-      row.promotedSeq = row.admittedSeq
+      // Optimistic mark + rollback on failure: marking before the await keeps
+      // a re-entrant promote from double-appending, and rolling back keeps a
+      // failed append (store closed at shutdown) from drifting the in-memory
+      // inbox away from the log for the process lifetime.
       // Images are NOT copied here — they stay durable on the PromptAdmitted
       // event and the fold resolves them by id (the base64 is stored once).
-      await this.events.append(sessionId, "Session.Prompted", { id: row.id, sessionId: row.sessionId, prompt: row.prompt, delivery: row.delivery, principal: row.principal ?? "butler", promotedSeq: row.promotedSeq })
+      row.promotedSeq = row.admittedSeq
+      try {
+        await this.events.append(sessionId, "Session.Prompted", { id: row.id, sessionId: row.sessionId, prompt: row.prompt, delivery: row.delivery, principal: row.principal ?? "butler", promotedSeq: row.admittedSeq })
+      } catch (e) {
+        row.promotedSeq = null
+        throw e
+      }
       count++
     }
     return count
@@ -172,7 +181,12 @@ export class MemorySessionInput implements SessionInputStore {
     const next = [...this.#rows.values()].filter((r) => r.sessionId === sessionId && r.promotedSeq === null && r.delivery === "queue").sort((a, b) => a.admittedSeq - b.admittedSeq)[0]
     if (!next) return false
     next.promotedSeq = next.admittedSeq
-    await this.events.append(sessionId, "Session.Prompted", { id: next.id, sessionId: next.sessionId, prompt: next.prompt, delivery: next.delivery, principal: next.principal ?? "butler", promotedSeq: next.promotedSeq })
+    try {
+      await this.events.append(sessionId, "Session.Prompted", { id: next.id, sessionId: next.sessionId, prompt: next.prompt, delivery: next.delivery, principal: next.principal ?? "butler", promotedSeq: next.admittedSeq })
+    } catch (e) {
+      next.promotedSeq = null
+      throw e
+    }
     return true
   }
 
@@ -193,16 +207,16 @@ export class MemorySessionInput implements SessionInputStore {
     }
   }
 
-  async #findDurable(id: string): Promise<Row | undefined> {
+  async #findDurable(id: string, sessionId: string): Promise<Row | undefined> {
     const row = this.#rows.get(id)
     if (row) return row
-    // Not in memory: search the log for a prior PromptAdmitted with this id.
-    for (const aggregate_id of await this.events.aggregateIds()) {
-      for (const event of await this.events.read(aggregate_id)) {
-        if (event.type === "Session.PromptAdmitted" && (event.data as { id?: string }).id === id) {
-          this.#apply(event)
-          return this.#rows.get(id)
-        }
+    // Not in memory: search THIS session's log only — admission ids are
+    // per-session, so a full-aggregate scan was O(DB) per brand-new prompt
+    // (every admission hit this path: the id is fresh by construction).
+    for (const event of await this.events.read(sessionId)) {
+      if (event.type === "Session.PromptAdmitted" && (event.data as { id?: string }).id === id) {
+        this.#apply(event)
+        return this.#rows.get(id)
       }
     }
     return undefined

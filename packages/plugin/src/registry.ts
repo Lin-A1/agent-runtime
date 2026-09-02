@@ -58,7 +58,14 @@ export type HookEvent =
  */
 export const HOOK_EVENTS: ReadonlySet<string> = new Set([
   "pre-tool-use",
+  "post-tool-use",
+  "user-prompt-submit",
   "stop",
+  "pre-compact",
+  "post-compact",
+  "interrupt",
+  "subagent-start",
+  "subagent-stop",
 ])
 
 export interface HookCapability {

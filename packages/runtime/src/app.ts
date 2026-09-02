@@ -12,7 +12,8 @@ import { createButlerTools } from "./butler"
 import { createSessionHub } from "./hub"
 import { driveChildSession, readChildText } from "./session-manager"
 import { resolveAgent, type AgentDefinition } from "./agent-resolver"
-import { currentTodos, type TodoItem } from "@newhorse/core"
+import type { DagRunner } from "./dag-api"
+import { currentTodos, type TodoItem, type DAGSpec, compactSession, compactionTailChars } from "@newhorse/core"
 import { currentGoal, type GoalState } from "@newhorse/core"
 import { createBuiltinTools, createExecPolicy, rulesFilePath } from "./tools"
 import { allowAllExecPolicy } from "@newhorse/core"
@@ -51,6 +52,26 @@ export interface AppConfig {
   readonly fetch?: Fetcher
   /** Enable the butler toolset (list/send/spawn/interrupt) for this session. */
   readonly asButler?: boolean
+  /** Per-tool-result output cap in serialized chars (codex truncation_policy
+   *  semantics; core default 20_000). 0 disables. */
+  readonly toolOutputMaxChars?: number
+  /** Microcompact projection: tool results older than the last N are
+   *  projected as placeholders once the visible history is over the
+   *  compaction trigger (core default 12). 0 disables. */
+  readonly toolResultKeepRecent?: number
+  /** The agent-home config directory (self_status reports it so the model
+   *  knows where its own configuration lives). */
+  readonly agentHome?: string
+  /** Chars-per-token ratio for the compaction trigger (file-layer knob;
+   *  core default 2.5). */
+  readonly charsPerToken?: number
+  /** Opt-in web fetch tool (wave 12): escapes the fs sandbox like bash. */
+  readonly enableWeb?: boolean
+  /** DAG runner backing the butler's declare_dag tool. Absent = the tool
+   *  reports unavailable (the HTTP /v1/dag routes stay the host-side path).
+   *  Injected per session so node progress projects into the declaring
+   *  session's todo list (todoSessionId) under its workspace. */
+  readonly dagRunner?: DagRunner
   /** Expose the shell `bash` tool. Off by default because it is not sandboxed
    * to the workspace (M3.5 §2.2): enabling it authorizes the session to
    * read/write/execute any reachable path with the process user's permissions. */
@@ -135,6 +156,12 @@ export interface App {
    *  loops on one log would double-promote inbox rows and orphan the abort
    *  controller. */
   readonly isBusy: () => boolean
+  /** Manual fold (codex Op::Compact): run one compaction now with the same
+   *  summarizer/tail params as the automatic path. Refused while a drain is
+   *  in flight (a boundary is projection-safe mid-drain, but the fold's own
+   *  LLM call would race the turn's compaction). */
+  readonly compact: () => Promise<{ boundarySeq: number; summary: string }>
+
   /** Subscribe to live session events; returns an unsubscribe function. */
   readonly onEvent: (listener: (event: AppEvent) => void) => () => void
   /**
@@ -142,7 +169,7 @@ export interface App {
    * `principal` marks who authored the prompt (user from a human TTY, else
    * butler/parent); it drives the caller kind for butler tools (M2b).
    */
-  readonly prompt: (text: string, principal?: "user" | "butler" | "parent", images?: readonly PromptImage[]) => Promise<PromptResult>
+  readonly prompt: (text: string, principal?: "user" | "butler" | "parent", images?: readonly PromptImage[], opts?: { replace?: boolean }) => Promise<PromptResult>
   /** Reconstruct the current session projection from the log. */
   readonly resume: () => Promise<Session>
   /** Query the session registry (observational control surface). */
@@ -319,7 +346,31 @@ export async function createApp(config: AppConfig): Promise<App> {
   }
   // skillsDir = the plugin dir (its `skills/` sub-tree is discovered lazily by
   // the skill tool). The tool is only exposed when a pluginsDir is configured.
-  const builtin = createBuiltinTools({ workspace, enableBash: config.enableBash ?? false, memoryStore: config.memoryStore, skillsDir: config.pluginsDir, events })
+  const builtin = createBuiltinTools({
+    workspace,
+    enableBash: config.enableBash ?? false,
+    enableWeb: config.enableWeb ?? false,
+    memoryStore: config.memoryStore,
+    skillsDir: config.pluginsDir,
+    events,
+    // Self-awareness (wave 9): the model can answer what/where/how-much. The
+    // closures read live state (policy, final tool surface) at call time.
+    self: {
+      sessionId,
+      workspace,
+      role: asButler ? "newhorse 常驻会话" : "代理",
+      model: config.model,
+      providerKind: config.provider.kind,
+      approvalPolicy: () => currentPolicy,
+      toolCount: () => liveSurface.length,
+      events,
+      contextWindowTokens: config.contextWindowTokens,
+      charsPerToken: config.charsPerToken,
+      toolResultKeepRecent: config.toolResultKeepRecent,
+      ...(config.dataDir ? { dataDir: config.dataDir } : {}),
+      ...(config.agentHome ? { agentHome: config.agentHome } : {}),
+    },
+  })
   // Discover a plugin directory (directory-as-registration-surface) and register
   // its capabilities into a PluginRegistry, so a pluginsDir yields tools (and
   // agents/commands/hooks) by convention rather than requiring the caller to
@@ -427,6 +478,10 @@ export async function createApp(config: AppConfig): Promise<App> {
   // settle, promotes the child's final text into the PARENT's inbox as a
   // synthetic result so the parent's next turn sees it. Without the driver
   // (non-butler) the hub is undefined.
+  // DAG runner backing the butler's declare_dag: bound per declare to THIS
+  // session's todo list (todoSessionId) under its workspace. Absent = the
+  // tool reports unavailable; the HTTP /v1/dag routes stay the host-side path.
+  const dagRunner = config.dagRunner
   const hub = asButler
     ? createSessionHub(
         events,
@@ -443,6 +498,9 @@ export async function createApp(config: AppConfig): Promise<App> {
           const agentDef = agentName ? agentDefinitions[agentName] : undefined
           const resolved = resolveAgent(agentDef, { tools: agentTools, model: config.model }, model)
           try {
+            // Subagent lifecycle hooks (claude-code SubagentStart/Stop shape):
+            // observational, errors isolated by the hook runner itself.
+            void hookRunner?.("subagent-start", { childId, parentId, agent: agentName }).catch(() => {})
             const driven = await driveChildSession({
               runtime,
               inbox,
@@ -461,6 +519,7 @@ export async function createApp(config: AppConfig): Promise<App> {
             // child's text into the parent's inbox as a steer so the parent's
             // next turn can consume the result (result promotion).
             await events.append(childId, "Session.Settled", { sessionId: childId, finish: driven.finish, needsContinuation: false })
+            void hookRunner?.("subagent-stop", { childId, parentId, finish: driven.finish }).catch(() => {})
             if (driven.settled) {
               await inbox.admit({ id: crypto.randomUUID(), sessionId: parentId, prompt: `[child ${childId} result]\n${driven.text}`, delivery: "steer", principal: "parent" })
             } else {
@@ -495,6 +554,10 @@ export async function createApp(config: AppConfig): Promise<App> {
       ts: Date.now(),
     })
   }
+  // One hook runner at app scope: the prompt drain, the manual surfaces
+  // (interrupt / user-prompt-submit) and the hub's subagent lifecycle all
+  // share it — a hook registered once is observable everywhere.
+  const hookRunner = makeHookRunner(pluginRegistry)
   const rulesFile = config.dataDir ? rulesFilePath(config.dataDir, workspace) : join(process.cwd(), "..", "..", ".execpolicy-rules.json")
   const execPolicy: ExecPolicy = createExecPolicy({
     rulesFile,
@@ -508,6 +571,29 @@ export async function createApp(config: AppConfig): Promise<App> {
     onApprove: config.onApprove,
     audit: execAudit,
   })
+
+  // ApprovedForSession (wave 8, codex semantics): an interactively approved
+  // command is remembered FOR THIS SESSION (exact-string match) — the next
+  // identical command runs without re-prompting. Discipline: the base decide
+  // still runs first, so only a base "prompt" can be upgraded to "allow" —
+  // explicit forbids never lift. A DANGEROUS command that was once approved
+  // IS replayed as allowed (the floor forced exactly one human decision;
+  // codex ApprovedForSession semantics) — and the memory is session-scoped
+  // (gone on restart).
+  const sessionApproved = new Set<string>()
+  const execPolicySession: ExecPolicy = {
+    decide: (cmd) => {
+      const base = execPolicy.decide(cmd)
+      if (base === "prompt" && sessionApproved.has(cmd)) return "allow"
+      return base
+    },
+    decidePath: (path) => execPolicy.decidePath(path),
+    approve: async (req) => {
+      const ok = (await execPolicy.approve?.(req)) ?? false
+      if (ok && req.kind === "command" && req.target) sessionApproved.add(req.target)
+      return ok
+    },
+  }
 
   // Live event fan-out. The prompt run emits streamed model/tool events through
   // a small hook so a shell can render incrementally without polling the log.
@@ -543,143 +629,221 @@ export async function createApp(config: AppConfig): Promise<App> {
     await events.append(sessionId, "Session.ModelCalled", { sessionId, source, ...info, ts: Date.now() } as Record<string, unknown>)
   }
 
+  // Compaction summarizer (shared by the loop's auto path and the manual
+  // POST /compact): the app's own LLM folds the head (provider-agnostic —
+  // any LlmClient). A failure/timeout inside compactSession falls back to
+  // the local marker; here we only convert the stream to text.
+  const compactSummarize = async (headText: string, signal?: AbortSignal): Promise<string> => {
+    const started = performance.now()
+    const stream = await llm.stream({ model: config.model, messages: [
+      { role: "system", content: [{ type: "text", text: "Summarize the conversation head in under 200 words. Capture the objective, decisions made, and current state. Output only the summary." }] },
+      { role: "user", content: [{ type: "text", text: headText }] },
+    ] }, signal)
+    let out = ""
+    for await (const ev of stream) {
+      if (ev.type === "text.delta") out += ev.text
+    }
+    const text = out.trim()
+    await traceModelCall("compaction", {
+      model: config.model,
+      durationMs: Math.round(performance.now() - started),
+      promptChars: headText.length,
+      outputChars: text.length,
+    })
+    return text
+  }
+
+  /** Drive the turn loop over the current inbox WITHOUT admitting new text.
+   *  prompt() is the admitting caller; compact() uses this to wake steers
+   *  parked during a fold. inFlight lifecycle is owned by the CALLER (this
+   *  path clears only the live registration + current controller). */
+  const runDrain = async (principal: "user" | "butler" | "parent"): Promise<PromptResult> => {
+    // A fresh abort controller per run, so interrupt() cancels only this
+    // run and a later prompt is unaffected (an AbortSignal cannot be reset).
+    const ctrl = new AbortController()
+    current = ctrl
+    // Live-session registration (M4 session manager): the butler hub can now
+    // interrupt THIS session (abort) and send it a steer (admit) — so
+    // `send_to_session`/`interrupt` from another butler tool are REAL.
+    const unregisterLive = hub ? hub.register(sessionId, {
+      abort: () => ctrl.abort(),
+      admit: (text) => inbox.admit({ id: crypto.randomUUID(), sessionId, prompt: text, delivery: "steer", principal: "butler" }).then(() => {}),
+    }) : undefined
+    const caller: Initiator = principal === "user" ? { kind: "user" } : asButler ? { kind: "butler", sessionId } : { kind: "parent", sessionId }
+    try {
+      // Per-prompt tool surface from the CURRENT policy (+ request_mode in
+      // readonly so the model can ask to leave plan mode).
+      liveSurface.length = 0
+      liveSurface.push(...applyPolicy(agentTools, currentPolicy), ...(currentPolicy === "readonly" ? [requestModeTool] : []))
+      const promptAgent: Agent = { ...agent, tools: liveSurface }
+      const result = await runSession(runtime, {
+        agent: promptAgent,
+        sessionId,
+        resolveTool: (name) => liveSurface.find((t) => t.name === name),
+        onEvent: emit,
+        signal: ctrl.signal,
+        caller,
+        runHooks: hookRunner,
+        contextWindowTokens: config.contextWindowTokens,
+        maxOutputTokens: config.maxOutputTokens,
+        ...(config.charsPerToken !== undefined ? { charsPerToken: config.charsPerToken } : {}),
+        ...(config.toolOutputMaxChars !== undefined ? { toolOutputMaxChars: config.toolOutputMaxChars } : {}),
+        ...(config.toolResultKeepRecent !== undefined ? { toolResultKeepRecent: config.toolResultKeepRecent } : {}),
+        onModelCall: (info) => traceModelCall("turn", info),
+        compactSummarize,
+        toolCtx: hub ? {
+          registry,
+          appendAudit,
+          interruptTarget: hub.interrupt,
+          sendToTarget: hub.send,
+          spawnFrom: hub.spawn,
+          queryTask: async (taskId) => {
+            const log = await events.read(taskId)
+            const settled = log.find((e) => e.type === "Session.Settled")
+            if (settled) {
+              const finish = (settled.data as { finish?: string }).finish
+              return { state: "settled", finish, text: await readChildText(events, taskId) }
+            }
+            return { state: log.some((e) => e.type === "Session.Created") ? "running" : "unknown" }
+          },
+          ...(dagRunner
+            ? { declareDag: (spec: unknown) => dagRunner.run(spec as DAGSpec, { workspace, todoSessionId: sessionId }) }
+            : {}),
+          execPolicy: currentPolicy === "trusted" ? allowAllExecPolicy : execPolicySession,
+        } : { registry, appendAudit, execPolicy: currentPolicy === "trusted" ? allowAllExecPolicy : execPolicySession },
+      })
+      // Post-turn memory extraction (opt-in, fire-and-forget): the default
+      // pipe uses the app's own LLM client + model; runMemoryExtraction is
+      // fail-closed, so a broken LLM is a no-op, never a failed turn.
+      const memStore = config.memoryStore
+      if (memStore && config.memoryExtract?.enabled) {
+        void (async () => {
+          try {
+            const session = Session.replay(await events.read(sessionId))
+            const recent = session.messages
+              .filter((m) => m.kind === "user" || m.kind === "assistant")
+              .slice(-30)
+              .map((m) => ({ role: m.kind === "user" ? "user" : "assistant", text: m.kind === "user" ? (m as { text: string }).text : (m as { content: { type?: string; text?: string }[] }).content.filter((p) => p.type === "text").map((p) => p.text!).join("\n") }))
+              .filter((m) => m.text.trim().length > 0)
+            if (recent.length > 0 && (!config.memoryExtract?.shouldExtract || config.memoryExtract.shouldExtract({ step: result.step, finish: result.finish }, sessionId))) {
+              const pipe = createDefaultMemoryPipeline(llm, config.model)
+              const recentCount = config.memoryExtract?.recentCount ?? 30
+              await runMemoryExtraction(pipe, memStore, { messages: recent.slice(-recentCount), sessionId })
+            }
+          } catch (err) {
+            void err // best-effort; memory extraction must never poison the turn
+          }
+        })()
+      }
+      return { step: result.step, needsContinuation: result.needsContinuation, finish: result.finish }
+    } finally {
+      unregisterLive?.()
+      if (current === ctrl) current = undefined
+    }
+  }
+
   const app: App = {
     sessionId,
     events,
     ...(attachmentStore ? { attachments: attachmentStore } : {}),
     onEvent,
-    async prompt(text: string, principal?: "user" | "butler" | "parent", images?: readonly PromptImage[]): Promise<PromptResult> {
-      // Ambient workspace AGENTS.md is a Context Source: discovered from the
-      // session location and admitted as model-visible context BEFORE the prompt,
-      // per the "model-visible ⟺ logged" rule. It is appended only once: once a
-      // system message is already in the log we reuse it, so repeated prompts in
-      // a session do not keep re-inserting the same context.
-      await ensureSystemContext(events, sessionId, workspace, asButler ? withRoleBody(contextProvider, BUTLER_BODY) : contextProvider)
-      const effPrincipal = principal ?? (asButler ? "butler" : "parent")
-      // Attachment pipeline wave 1 (docs/agent-runtime-integrations.md §5):
-      // bytes go to the content-addressed store ONCE, the log carries refs.
-      // Budget gates run here (admission time) and are DETERMINISTIC: same
-      // input always evicts the same images, oldest position first.
-      let promptText = text
-      let admittedAttachments: readonly AttachmentRef[] | undefined
-      if (images?.length && attachmentStore) {
-        const prepared = await preparePromptImages(text, images, attachmentStore)
-        promptText = prepared.prompt
-        admittedAttachments = prepared.attachments
+    async prompt(text: string, principal?: "user" | "butler" | "parent", images?: readonly PromptImage[], opts?: { replace?: boolean }): Promise<PromptResult> {
+      // Task replacement (codex TurnAbortReason::Replaced semantics): with
+      // replace:true a live run is aborted and DRAINED before the new prompt
+      // admits — the new prompt owns the session cleanly instead of queueing
+      // behind work it just declared obsolete. Bounded wait (10s): a hung
+      // settle falls through to the normal busy semantics.
+      if (opts?.replace && inFlight) {
+        current?.abort()
+        for (let i = 0; i < 400 && inFlight; i++) await new Promise((r) => setTimeout(r, 25))
+        // Replace is an OWNERSHIP request, not a queue request: if the old
+        // drain refuses to settle, a concurrent fallback would double-
+        // promote on one log — refuse honestly instead.
+        if (inFlight) throw new Error("session busy (replace timeout)")
       }
-      await inbox.admit({
-        id: crypto.randomUUID(),
-        sessionId,
-        prompt: promptText,
-        delivery: "steer",
-        principal: effPrincipal,
-        ...(admittedAttachments?.length ? { attachments: admittedAttachments } : {}),
-        ...(!admittedAttachments?.length && images?.length ? { images } : {}), // no store configured → legacy inline path
-      })
-
-      // A fresh abort controller per prompt, so interrupt() cancels only this
-      // run and a later prompt is unaffected (an AbortSignal cannot be reset).
-      const ctrl = new AbortController()
-      current = ctrl
+      // Refuse concurrent prompts outright: two runSession loops over one
+      // aggregate would interleave duplicate assistant/tool events into the
+      // durable log (the inbox's admission ordering protects double-PROMOTION,
+      // not double-DRIVING), and the second run's finally would clear the busy
+      // flag under the first. Mid-turn input belongs in steer (the admission
+      // inbox); replace:true above is the explicit takeover path.
+      if (inFlight) throw new Error("session busy")
       inFlight = true
-      // Live-session registration (M4 session manager): the butler hub can now
-      // interrupt THIS session (abort) and send it a steer (admit) — so
-      // `send_to_session`/`interrupt` from another butler tool are REAL.
-      const unregisterLive = hub ? hub.register(sessionId, {
-        abort: () => ctrl.abort(),
-        admit: (text) => inbox.admit({ id: crypto.randomUUID(), sessionId, prompt: text, delivery: "steer", principal: "butler" }).then(() => {}),
-      }) : undefined
-      const caller: Initiator = effPrincipal === "user" ? { kind: "user" } : asButler ? { kind: "butler", sessionId } : { kind: "parent", sessionId }
+      const effPrincipal = principal ?? (asButler ? "butler" : "parent")
       try {
-        // Per-prompt tool surface from the CURRENT policy (+ request_mode in
-        // readonly so the model can ask to leave plan mode).
-        liveSurface.length = 0
-        liveSurface.push(...applyPolicy(agentTools, currentPolicy), ...(currentPolicy === "readonly" ? [requestModeTool] : []))
-        const promptAgent: Agent = { ...agent, tools: liveSurface }
-        const result = await runSession(runtime, {
-          agent: promptAgent,
-          sessionId,
-          resolveTool: (name) => liveSurface.find((t) => t.name === name),
-          onEvent: emit,
-          signal: ctrl.signal,
-          caller,
-          runHooks: makeHookRunner(pluginRegistry),
-          contextWindowTokens: config.contextWindowTokens,
-          maxOutputTokens: config.maxOutputTokens,
-          onModelCall: (info) => traceModelCall("turn", info),
-          compactSummarize: async (headText) => {
-            // The app's own LLM summarizes the folded head (provider-agnostic —
-            // any LlmClient). A failure/timeout inside compactSession falls
-            // back to the local marker; here we only convert the stream to text.
-            const started = performance.now()
-            const stream = await llm.stream({ model: config.model, messages: [
-              { role: "system", content: [{ type: "text", text: "Summarize the conversation head in under 200 words. Capture the objective, decisions made, and current state. Output only the summary." }] },
-              { role: "user", content: [{ type: "text", text: headText }] },
-            ] })
-            let out = ""
-            for await (const ev of stream) {
-              if (ev.type === "text.delta") out += ev.text
-            }
-            const text = out.trim()
-            await traceModelCall("compaction", {
-              model: config.model,
-              durationMs: Math.round(performance.now() - started),
-              promptChars: headText.length,
-              outputChars: text.length,
-            })
-            return text
-          },
-          toolCtx: hub ? {
-            registry,
-            appendAudit,
-            interruptTarget: hub.interrupt,
-            sendToTarget: hub.send,
-            spawnFrom: hub.spawn,
-            queryTask: async (taskId) => {
-              const log = await events.read(taskId)
-              const settled = log.find((e) => e.type === "Session.Settled")
-              if (settled) {
-                const finish = (settled.data as { finish?: string }).finish
-                return { state: "settled", finish, text: await readChildText(events, taskId) }
-              }
-              return { state: log.some((e) => e.type === "Session.Created") ? "running" : "unknown" }
-            },
-            execPolicy: currentPolicy === "trusted" ? allowAllExecPolicy : execPolicy,
-          } : { registry, appendAudit, execPolicy: currentPolicy === "trusted" ? allowAllExecPolicy : execPolicy },
-        })
-        // Post-turn memory extraction (opt-in, fire-and-forget): the default
-        // pipe uses the app's own LLM client + model; runMemoryExtraction is
-        // fail-closed, so a broken LLM is a no-op, never a failed turn.
-        const memStore = config.memoryStore
-        if (memStore && config.memoryExtract?.enabled) {
-          void (async () => {
-            try {
-              const session = Session.replay(await events.read(sessionId))
-              const recent = session.messages
-                .filter((m) => m.kind === "user" || m.kind === "assistant")
-                .slice(-30)
-                .map((m) => ({ role: m.kind === "user" ? "user" : "assistant", text: m.kind === "user" ? (m as { text: string }).text : (m as { content: { type?: string; text?: string }[] }).content.filter((p) => p.type === "text").map((p) => p.text!).join("\n") }))
-                .filter((m) => m.text.trim().length > 0)
-              if (recent.length > 0 && (!config.memoryExtract?.shouldExtract || config.memoryExtract.shouldExtract({ step: result.step, finish: result.finish }, sessionId))) {
-                const pipe = createDefaultMemoryPipeline(llm, config.model)
-                const recentCount = config.memoryExtract?.recentCount ?? 30
-                await runMemoryExtraction(pipe, memStore, { messages: recent.slice(-recentCount), sessionId })
-              }
-            } catch (err) {
-              void err // best-effort; memory extraction must never poison the turn
-            }
-          })()
+        // Ambient workspace AGENTS.md is a Context Source: discovered from the
+        // session location and admitted as model-visible context BEFORE the prompt,
+        // per the "model-visible ⟺ logged" rule. It is appended only once: once a
+        // system message is already in the log we reuse it, so repeated prompts in
+        // a session do not keep re-inserting the same context.
+        await ensureSystemContext(events, sessionId, workspace, asButler ? withRoleBody(contextProvider, BUTLER_BODY) : contextProvider)
+        // user-prompt-submit (claude-code semantics): a block DENIES the
+        // prompt pre-admission — no prompt rows are admitted. (The ambient
+        // system context above is already durable by design and deduped for
+        // the next allowed prompt.) Runs BEFORE image prep so a denial never
+        // stores orphaned attachment bytes.
+        const submitVerdict = await hookRunner?.("user-prompt-submit", { sessionId, prompt: text, principal: effPrincipal })
+        if (submitVerdict?.decision === "block") throw new Error(`prompt denied by hook: ${submitVerdict.reason ?? "blocked"}`)
+        // Attachment pipeline wave 1 (docs/agent-runtime-integrations.md §5):
+        // bytes go to the content-addressed store ONCE, the log carries refs.
+        // Budget gates run here (admission time) and are DETERMINISTIC: same
+        // input always evicts the same images, oldest position first.
+        let promptText = text
+        let admittedAttachments: readonly AttachmentRef[] | undefined
+        if (images?.length && attachmentStore) {
+          const prepared = await preparePromptImages(text, images, attachmentStore)
+          promptText = prepared.prompt
+          admittedAttachments = prepared.attachments
         }
-        return { step: result.step, needsContinuation: result.needsContinuation, finish: result.finish }
+        await inbox.admit({
+          id: crypto.randomUUID(),
+          sessionId,
+          prompt: promptText,
+          delivery: "steer",
+          principal: effPrincipal,
+          ...(admittedAttachments?.length ? { attachments: admittedAttachments } : {}),
+          ...(!admittedAttachments?.length && images?.length ? { images } : {}), // no store configured → legacy inline path
+        })
+      } catch (e) {
+        inFlight = false
+        throw e
+      }
+
+      // The drain drives the turn loop over the inbox (runDrain owns ctrl +
+      // live registration; prompt owns inFlight).
+      try {
+        return await runDrain(effPrincipal)
       } finally {
-        unregisterLive?.()
-        if (current === ctrl) current = undefined
         inFlight = false
       }
     },
     isBusy: () => inFlight,
     async resume(): Promise<Session> {
       return Session.replay(await events.read(sessionId))
+    },
+    async compact() {
+      if (inFlight) throw new Error("session busy")
+      // Raise the busy flag for the fold's own duration: two concurrent manual
+      // compacts would double-fold (duplicate markers + duplicate summarizer
+      // cost), and a steer-wake drain must not start mid-fold.
+      inFlight = true
+      try {
+        return await compactSession(events, sessionId, { summarize: compactSummarize, maxTailChars: compactionTailChars({ contextWindowTokens: config.contextWindowTokens }) })
+      } finally {
+        inFlight = false
+        // A steer admitted mid-fold took the busy branch (admit-only) and
+        // nothing would drain it — the message would sit in the inbox until an
+        // unrelated prompt arrived. Wake the drain when steers are parked.
+        void inbox.hasPending(sessionId, "steer").then((pending) => {
+          if (!pending || inFlight) return
+          inFlight = true
+          void runDrain("user")
+            .catch((e) => console.error(`[session ${sessionId}] post-compact drain failed:`, e instanceof Error ? e.message : e))
+            .finally(() => {
+              inFlight = false
+            })
+        }).catch(() => {})
+      }
     },
     async listSessions(query) {
       await registry.refresh()
@@ -690,10 +854,27 @@ export async function createApp(config: AppConfig): Promise<App> {
     },
     interrupt() {
       current?.abort()
+      void hookRunner?.("interrupt", { sessionId }).catch(() => {})
     },
     async steer(text) {
-      // Admitted as a steer: the running drain promotes it at the next safe
-      // provider-turn boundary (admission inbox semantics, see specs §2.2).
+      // An IDLE session never promotes on its own — the drain IS the promoter —
+      // so a bare admit would sit unpromoted forever. When idle, wake through
+      // the prompt path (it admits with delivery:"steer" AND drives the loop),
+      // FIRE-AND-FORGET: the steer route is an admit-shaped fast call, and
+      // driving the whole drain inside it would hold the HTTP request for the
+      // entire run (no keepalives, proxy timeouts, LLM failures as 500s).
+      // When busy, a plain admit is correct: the running drain promotes it at
+      // the next safe provider-turn boundary (admission inbox semantics, §2.2).
+      // prompt() raises `inFlight` synchronously, so two steers in one tick
+      // cannot double-drive.
+      if (!inFlight) {
+        void app.prompt(text, "user").catch((e) => {
+          // A wake denial (user-prompt-submit block) must not vanish —
+          // stderr is the only surface here; the steer was not admitted.
+          console.error("[steer] wake denied:", e instanceof Error ? e.message : e)
+        })
+        return
+      }
       await inbox.admit({ id: crypto.randomUUID(), sessionId, prompt: text, delivery: "steer", principal: "user" })
     },
     async todos() {

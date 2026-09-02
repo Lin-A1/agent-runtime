@@ -211,10 +211,16 @@ export async function runDag(spec: DAGSpec, deps: DagDeps): Promise<DagOutcome> 
       slotStore.set(dagId, res.nodeId, res.slotId, { output: res.output ?? "", outputRef: res.outputRef ?? `session:${res.sessionId ?? res.nodeId}` })
     }
     // A node the prior run left 'running' is dead now (process died mid-node);
-    // the loop guards cancelled runs, but mark it pending so pump re-dispatches
-    // it (the durable NodeAborted/NodeFailed paths were never reached).
+    // mark it pending so pump re-dispatches it. The reset must be DURABLE
+    // (NodeRetried folds to pending): an in-memory-only reset would be
+    // REGRESSED by the next emit()'s full refold of the log (stale NodeStarted
+    // → running), and a node whose deps settled before the first pump would
+    // then never re-dispatch — waitForTerminal would hang forever.
     for (const id of Object.keys(prior.status)) {
-      if (status[id] === "running") status[id] = "pending"
+      if (status[id] === "running") {
+        status[id] = "pending"
+        await deps.events.append(dagId, "DAG.NodeRetried", { nodeId: id, attempt: (prior.attempts[id] ?? 0) + 1 }, "dag")
+      }
     }
   }
 

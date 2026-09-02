@@ -6,11 +6,13 @@ import { createWriteTool } from "./write"
 import { createEditTool } from "./edit"
 import { createListTool } from "./list"
 import { createSearchTool } from "./search"
-import { createBashTool } from "./bash"
+import { createBashTools } from "./bash"
 import { createMemorySearchTool, createMemoryWriteTool } from "./memory"
 import { createSkillTool } from "./skill"
 import { createTodoWriteTool } from "./todo"
 import { createGoalTools } from "./goal"
+import { createWebFetchTool } from "./webfetch"
+import { createSelfTools, type SelfAwarenessOptions } from "./self"
 
 export { createExecPolicy, createBuiltinExecPolicy, rulesFilePath, simpleHash } from "./execpolicy"
 
@@ -37,6 +39,12 @@ export interface BuiltinToolsOptions {
   /** Event store for the todo tool (durable task list). Optional — no events,
    *  no todo tool. */
   readonly events?: EventStore
+  /** Self-awareness seam (wave 9): identity/config/context facts for the
+   *  self_status + get_context_remaining + current_time + sleep tools.
+   *  Absent = the toolset is not exposed. */
+  readonly self?: SelfAwarenessOptions
+  /** Opt-in web fetch tool (wave 12): escapes the fs sandbox like bash. */
+  readonly enableWeb?: boolean
 }
 
 export function createBuiltinTools(opts: BuiltinToolsOptions): Tool[] {
@@ -47,7 +55,8 @@ export function createBuiltinTools(opts: BuiltinToolsOptions): Tool[] {
     createListTool(opts.workspace),
     createSearchTool(opts.workspace),
   ]
-  if (opts.enableBash) tools.push(createBashTool(opts.workspace))
+  if (opts.enableBash) tools.push(...createBashTools(opts.workspace))
+  if (opts.enableWeb) tools.push(createWebFetchTool())
   if (opts.memoryStore) {
     tools.push(createMemorySearchTool(opts.memoryStore))
     tools.push(createMemoryWriteTool(opts.memoryStore))
@@ -58,6 +67,9 @@ export function createBuiltinTools(opts: BuiltinToolsOptions): Tool[] {
   if (opts.events) {
     tools.push(createTodoWriteTool(opts.events))
     tools.push(...createGoalTools(opts.events))
+  }
+  if (opts.self) {
+    tools.push(...createSelfTools(opts.self))
   }
   return tools
 }

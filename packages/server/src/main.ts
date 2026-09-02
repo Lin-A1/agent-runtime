@@ -107,8 +107,15 @@ const handle = await createServer({
     maxOutputTokens: create.maxOutputTokens ?? fresh.maxOutputTokens,
     workspace: create.workspace ?? fresh.workspace,
     dataDir: create.dataDir ?? fresh.dataDir,
+    agentHome: fresh.agentHome,
+    charsPerToken: fresh.charsPerToken,
     enableBash: fresh.allowBash,
+    enableWeb: fresh.allowWeb,
     allowPluginCode: fresh.allowPluginCode,
+    // declare_dag: the butler's DAG submissions ride the same runner as the
+    // HTTP /v1/dag routes (progress projects into the declaring session's
+    // todos under its workspace).
+    dagRunner,
     // Sessions must discover plugin tools/commands/agents too — the
     // server-level pluginsDir only powers the catalog endpoints; without
     // this the skill/command seams exist but no session can consume them.
@@ -140,7 +147,7 @@ if (settings.maxOutputTokens) console.log(`  max out   : ${settings.maxOutputTok
 if (settings.uiDir) console.log(`  ui        : ${settings.uiDir} (served on this origin)`)
 console.log(`  dataDir   : ${settings.dataDir}`)
 console.log(`  memory    : ${settings.memory.on ? `on${settings.memory.vector.enabled ? " + semantic" : ""}${settings.memory.extraction ? " + extraction" : ""}` : "off"}`)
-console.log(`  bash      : ${settings.allowBash ? "on" : "off"}  plugin code: ${settings.allowPluginCode ? "trusted" : "off"}`)
+console.log(`  bash      : ${settings.allowBash ? "on" : "off"}  web: ${settings.allowWeb ? "on" : "off"}  plugin code: ${settings.allowPluginCode ? "trusted" : "off"}`)
 console.log(`  token     : ${settings.token ? "required" : "loopback-only"}`)
 
 // MCP transports own child processes/sockets — close them on shutdown.

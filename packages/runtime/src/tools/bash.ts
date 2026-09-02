@@ -6,6 +6,7 @@ import type { Tool, ToolCtx } from "@newhorse/core"
 
 const MAX_TIMEOUT = 60_000
 const MAX_OUTPUT = 60_000
+const BG_TAIL = 20_000
 
 /**
  * Execute a shell command in the workspace. M3.5 §2.2:
@@ -19,39 +20,166 @@ const MAX_OUTPUT = 60_000
  *     `isError` is reserved for infrastructure failures (spawn fail, kill).
  *   - The command is not sanitized — it IS the intent; the trust boundary is the
  *     user's switch (sanitizing would create false safety).
+ *
+ * Background trio (wave 8, ZCode Bash/BashOutput/KillShell semantics): a
+ * command started with runInBackground returns a taskId immediately; its
+ * streams accumulate in a session-scoped registry (survives across turns, dies
+ * with the process) that bash_output polls and bash_kill terminates. The same
+ * execpolicy gate applies — background is a scheduling choice, not an
+ * authorization bypass.
  */
-export function createBashTool(workspace: string): Tool {
-  return {
+
+interface BackgroundTask {
+  readonly command: string
+  readonly startedAt: number
+  stdout: string
+  stderr: string
+  done: boolean
+  exitCode: number | null
+  child: ReturnType<typeof spawn>
+}
+
+/** Keep the LAST max chars of a stream (a tail buffer — old noise is exactly
+ *  what background polling wants to skip). */
+function tailAppend(buf: string, chunk: string, max: number): string {
+  return buf.length + chunk.length <= max ? buf + chunk : (buf + chunk).slice(-max)
+}
+
+export function createBashTools(workspace: string): Tool[] {
+  const background = new Map<string, BackgroundTask>()
+
+  const gate = async (command: string, ctx?: ToolCtx): Promise<unknown> => {
+    const policy = ctx?.execPolicy
+    if (!policy) return denied("denied by execpolicy: no policy available")
+    const decision = policy.decide(command)
+    if (decision === "forbid") return denied(`denied by execpolicy: ${command}`)
+    if (decision === "prompt") {
+      const ok = await approve(policy, { id: randomUUID(), kind: "command", target: command, decision: "prompt", reason: "shell command" })
+      if (!ok) return denied(`denied by execpolicy (prompt not approved): ${command}`)
+    }
+    return undefined
+  }
+
+  const bash: Tool = {
     name: "bash",
-    description: `Execute a shell command. Working directory is the workspace root: ${workspace}`,
+    description: `Execute a shell command. Working directory is the workspace root: ${workspace}. With runInBackground:true the command starts detached and returns a taskId immediately — poll it with bash_output, stop it with bash_kill.`,
     inputSchema: {
       type: "object",
       properties: {
         command: { type: "string", description: "Shell command to run." },
-        timeoutMs: { type: "number", description: `Optional timeout in ms (clamped to ${MAX_TIMEOUT}).` },
+        timeoutMs: { type: "number", description: `Optional timeout in ms (clamped to ${MAX_TIMEOUT}). Ignored for background runs.` },
+        runInBackground: { type: "boolean", description: "Start detached and return a taskId instead of waiting (build watchers, servers, long installs)." },
       },
       required: ["command"],
     },
     execute: async (input: unknown, ctx?: ToolCtx) => {
-      const { command, timeoutMs } = (input ?? {}) as { command?: string; timeoutMs?: number }
+      const { command, timeoutMs, runInBackground } = (input ?? {}) as { command?: string; timeoutMs?: number; runInBackground?: boolean }
       if (!command) return fail("command is required")
       // M4 execpolicy: an unaudited shell command must fail closed. With no
       // injected policy (or a deny-all fallback) this refuses to run rather than
       // executing bare — the model was not authorized to run arbitrary commands.
-      const policy = ctx?.execPolicy
-      if (!policy) return denied("denied by execpolicy: no policy available")
-      const decision = policy.decide(command)
-      if (decision === "forbid") return denied(`denied by execpolicy: ${command}`)
-      if (decision === "prompt") {
-        const ok = await approve(policy, { id: randomUUID(), kind: "command", target: command, decision: "prompt", reason: "shell command" })
-        if (!ok) return denied(`denied by execpolicy (prompt not approved): ${command}`)
+      const gateResult = await gate(command, ctx)
+      if (gateResult) return gateResult
+
+      if (runInBackground) {
+        const taskId = randomUUID()
+        const child = spawnBackground(command, resolve(workspace), taskId, background)
+        return { taskId, command, running: true, note: `poll with bash_output; stop with bash_kill (${taskId.slice(0, 8)})` }
       }
+
       // Default to the hard cap when the model omits timeoutMs; clamp any
       // supplied value into [1, MAX_TIMEOUT] so a 0/negative/NaN never becomes a
       // 1ms kill-all default.
       const timeout = clamp(Math.floor(timeoutMs ?? MAX_TIMEOUT), 1, MAX_TIMEOUT)
       return run(command, resolve(workspace), timeout, ctx?.signal)
     },
+  }
+
+  const bashOutput: Tool = {
+    name: "bash_output",
+    sideEffects: false,
+    description: "Read a background task's accumulated output. Args: { taskId }. Returns running state, exit code (when settled), and the stdout/stderr tails.",
+    execute: async (input: unknown) => {
+      const { taskId } = (input ?? {}) as { taskId?: string }
+      if (!taskId) return fail("taskId is required")
+      const task = background.get(taskId)
+      if (!task) return fail(`unknown taskId (${background.size} tracked)`)
+      return {
+        taskId,
+        command: task.command,
+        running: !task.done,
+        ...(task.done ? { exitCode: task.exitCode } : {}),
+        stdout: task.stdout,
+        stderr: task.stderr,
+      }
+    },
+  }
+
+  const bashKill: Tool = {
+    name: "bash_kill",
+    description: "Terminate a background task's whole process tree. Args: { taskId }. A settled task returns killed:false.",
+    execute: async (input: unknown) => {
+      const { taskId } = (input ?? {}) as { taskId?: string }
+      if (!taskId) return fail("taskId is required")
+      const task = background.get(taskId)
+      if (!task) return fail(`unknown taskId (${background.size} tracked)`)
+      if (task.done) return { taskId, killed: false, note: "already settled" }
+      killTree(task.child)
+      task.done = true
+      return { taskId, killed: true }
+    },
+  }
+
+  return [bash, bashOutput, bashKill]
+}
+
+function spawnBackground(command: string, cwd: string, taskId: string, registry: Map<string, BackgroundTask>): ReturnType<typeof spawn> {
+  const shell = process.platform === "win32"
+    ? { cmd: "cmd", args: ["/d", "/s", "/c", command] }
+    : { cmd: "/bin/sh", args: ["-c", command] }
+  // POSIX: detached + process-group kill so grandchildren (the servers and
+  // watchers this feature exists for) die with the shell. Windows uses the
+  // taskkill /T tree-kill in killTree.
+  const child = spawn(shell.cmd, shell.args, { cwd, shell: false, stdio: ["ignore", "pipe", "pipe"], ...(process.platform === "win32" ? {} : { detached: true }) })
+  const task: BackgroundTask = { command, startedAt: Date.now(), stdout: "", stderr: "", done: false, exitCode: null, child }
+  registry.set(taskId, task)
+  child.stdout?.on("data", (chunk: Buffer) => {
+    task.stdout = tailAppend(task.stdout, chunk.toString("utf8"), BG_TAIL)
+  })
+  child.stderr?.on("data", (chunk: Buffer) => {
+    task.stderr = tailAppend(task.stderr, chunk.toString("utf8"), BG_TAIL)
+  })
+  child.on("close", (code) => {
+    task.done = true
+    task.exitCode = code
+    // Settled-entry cap: each entry holds ~40KB of tails plus a child
+    // handle — a long session must not accumulate them forever.
+    const settled = [...registry.entries()].filter(([, t]) => t.done)
+    if (settled.length > 20) {
+      for (const [id] of settled.slice(0, settled.length - 20)) registry.delete(id)
+    }
+  })
+  child.on("error", () => {
+    task.done = true
+    task.exitCode = -1
+    task.stderr = tailAppend(task.stderr, "failed to spawn", BG_TAIL)
+  })
+  return child
+}
+
+function killTree(child: ReturnType<typeof spawn>): void {
+  if (child.exitCode !== null) return
+  // Windows: taskkill /T /F kills the whole tree (proc.kill() only kills the
+  // direct child; grandchildren via cmd /c would become orphans).
+  if (process.platform === "win32" && child.pid) {
+    spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" })
+  } else if (child.pid) {
+    // Negative pid = the whole process group (requires detached:true).
+    try {
+      process.kill(-child.pid, "SIGKILL")
+    } catch {
+      child.kill("SIGKILL")
+    }
   }
 }
 
@@ -71,16 +199,7 @@ async function run(command: string, cwd: string, timeout: number, signal?: Abort
   let done = false
   let timedOut = false
 
-  const kill = () => {
-    if (child.exitCode !== null) return
-    // Windows: taskkill /T /F kills the whole tree (proc.kill() only kills the
-    // direct child; grandchildren via cmd /c would become orphans).
-    if (process.platform === "win32" && child.pid) {
-      spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" })
-    } else {
-      child.kill("SIGKILL")
-    }
-  }
+  const kill = () => killTree(child)
 
   const onAbort = () => kill()
   signal?.addEventListener("abort", onAbort, { once: true })

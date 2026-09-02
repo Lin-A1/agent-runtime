@@ -40,6 +40,7 @@ const result = await client.prompt(sessionId, "Fix the failing test", (e) => {
 | **Memory** — durable + switchable semantic search (FTS5 × cosine RRF), post-turn extraction | `memory_write/search` + `EmbeddingProvider` seam (MiniMax / OpenAI-compatible) |
 | **Tools** — read/write/edit/list/search/bash + todo/goal/memory/skill, all behind a permission floor | execpolicy: fail-closed, user-approved rules persist |
 | **Extensibility** — five-kind plugin seam, directory-as-registration (`tools/ agents/ commands/ hooks/ skills/`), `.ts` tools behind a trust switch | hooks (stop / pre-tool-use), commands (`/name`), providers |
+| **MCP ecosystem** — external MCP servers mount into the tool seam (`mcp__<server>__<tool>`) | stdio + streamable-HTTP transports; config `mcpServers` (secrets presence-redacted in settings round-trips); fail-soft: a dead server removes only its tools, never blocks session creation |
 | **Model-agnostic** — four-axis Route; openai / openai-responses / anthropic protocols | one canonical `LLMRequest`/`LLMEvent` vocabulary; provider quirks never leak |
 
 ## Reuse contract
@@ -54,7 +55,7 @@ const result = await client.prompt(sessionId, "Fix the failing test", (e) => {
 newhorse (monorepo, upstream)  ──develop──▶  agent-runtime (this repo, standalone storage/reuse)
 ```
 
-The engine packages (`schema → core / llm → plugin → memory → runtime → server / sdk`) live here; `packages/cli` is a reference shell. Runtime changes are developed upstream and synced here (`git pull upstream dev`).
+The engine packages (`schema → core / llm → plugin → memory → mcp → runtime → server / sdk`) live here; `packages/cli` is a reference shell. Runtime changes are developed upstream and synced here (`git pull upstream dev`).
 
 ## Development
 

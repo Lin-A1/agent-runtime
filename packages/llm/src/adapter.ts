@@ -27,7 +27,18 @@ export interface LlmClient {
  * to reassemble axes (e.g. reuse openaiProtocol with a Bedrock-style endpoint
  * + signature auth). `makeLlmClient` is just a convenience factory over kind.
  */
+/** baseUrl /v1 trap: providers hand out baseUrls with OR without a trailing
+ *  /v1 (MiniMax-style docs paste it), and every BUILTIN protocol path starts
+ *  with /v1 — so buildRoute strips it. Same origin either way for gateways
+ *  whose /v1 is mid-path (openrouter /api/v1). */
+export function normalizeBaseUrl(baseUrl: string): string {
+  return baseUrl.replace(/\/+$/, "").replace(/\/v1$/i, "")
+}
+
 export function makeRoute(parts: { readonly protocol: Protocol; readonly baseUrl: string; readonly path: string; readonly auth: Route["auth"]; readonly framing?: Route["framing"] }): Route {
+  // makeRoute is the public reassemble seam (e.g. a Bedrock-style endpoint
+  // whose path does NOT start with /v1) — NO normalization here: the caller's
+  // baseUrl + path are taken verbatim. buildRoute (builtin kinds) normalizes.
   return {
     protocol: parts.protocol,
     endpoint: {
@@ -57,7 +68,7 @@ function buildRoute(config: AdapterConfig): Route {
     p.authHeader === "x-api-key"
       ? { header: "x-api-key", value: config.apiKey ?? "", extraHeaders: config.extraHeaders }
       : { header: "Authorization", value: `Bearer ${config.apiKey ?? ""}`, ...(config.extraHeaders ? { extraHeaders: config.extraHeaders } : {}) }
-  return makeRoute({ protocol: p.protocol, baseUrl: config.baseUrl, path: p.path, auth })
+  return makeRoute({ protocol: p.protocol, baseUrl: normalizeBaseUrl(config.baseUrl), path: p.path, auth })
 }
 
 /**

@@ -81,20 +81,6 @@ export function createDagRunner(opts: DagRunnerOpts): DagRunner {
   const tools = createBuiltinTools({ workspace: opts.getWorkspace(), enableBash: opts.enableBash ?? false, memoryStore: opts.memoryStore, skillsDir: opts.skillsDir, events })
   const fetch = opts.fetch ?? globalThis.fetch.bind(globalThis)
 
-  async function runSpec(spec: DAGSpec, runOpts?: { workspace?: string; todoSessionId?: string }): Promise<{ dagId: string }> {
-    const { runDag } = await import("./dag-runner")
-    const runtime = { events, inbox, llm: makeLlmClient(opts.getProvider(), fetch) }
-    return runDag(spec, {
-      events,
-      inbox,
-      runtime,
-      tools,
-      workspace: runOpts?.workspace ?? opts.getWorkspace(),
-      defaultModel: opts.getDefaultModel(),
-      todoSessionId: runOpts?.todoSessionId ?? opts.todoSessionId,
-    })
-  }
-
   return {
     async run(spec, runOpts) {
       // Caller-supplied id: the endpoint returns it immediately while the

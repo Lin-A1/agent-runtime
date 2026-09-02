@@ -40,6 +40,7 @@ export const ENV = {
   token: "NEWHORSE_TOKEN",
   workspace: "NEWHORSE_WORKSPACE",
   allowBash: "NEWHORSE_ALLOW_BASH",
+  allowWeb: "NEWHORSE_ALLOW_WEB",
   allowPluginCode: "NEWHORSE_ALLOW_PLUGIN_CODE",
   memory: "NEWHORSE_MEMORY",
   memoryExtract: "NEWHORSE_MEMORY_EXTRACT",
@@ -102,6 +103,10 @@ export interface RuntimeSettings {
    *  trigger (a 32k-token model folds before it overflows, a 200k-token one
    *  does not summarize half-empty). Absent = the fixed 80k-char fallback. */
   readonly contextWindowTokens?: number
+  /** Chars-per-token ratio scaling the compaction trigger (CJK-heavy
+   *  workloads sit near 1, English near 4; default 2.5 mixed). File-layer
+   *  knob — the model catalog may later carry a per-model value. */
+  readonly charsPerToken?: number
   /** Output budget per model reply (tokens) — without it the anthropic
    *  protocol silently truncates replies at a 4096-token floor. */
   readonly maxOutputTokens?: number
@@ -110,6 +115,9 @@ export interface RuntimeSettings {
   readonly token?: string
   readonly workspace: string
   readonly allowBash: boolean
+  /** Opt-in web fetch tool (web_fetch): escapes the fs sandbox like bash,
+   *  so it is an explicit host decision. Default off. */
+  readonly allowWeb: boolean
   readonly allowPluginCode: boolean
   /** Permission level: strict (floor + approval) | trusted (full access) | readonly (plan mode). */
   readonly approvalPolicy: "strict" | "trusted" | "readonly"
@@ -146,7 +154,7 @@ export interface ConfigLayers {
   /** Process env (L5 — highest). */
   readonly env: Record<string, string | undefined>
   /** Call-site overrides (CLI flags / host code) — above env. */
-  readonly cli?: Partial<Pick<RuntimeSettings, "model" | "dataDir" | "port" | "token" | "workspace" | "allowBash" | "allowPluginCode" | "host" | "approvalPolicy" | "contextWindowTokens" | "maxOutputTokens">> & { readonly providerKind?: ProviderKind; readonly baseUrl?: string; readonly apiKey?: string }
+  readonly cli?: Partial<Pick<RuntimeSettings, "model" | "dataDir" | "port" | "token" | "workspace" | "allowBash" | "allowWeb" | "allowPluginCode" | "host" | "approvalPolicy" | "contextWindowTokens" | "maxOutputTokens">> & { readonly providerKind?: ProviderKind; readonly baseUrl?: string; readonly apiKey?: string }
   /** Home directory override (a host embedding the runtime redirects it). */
   readonly agentHome?: string
 }
@@ -160,7 +168,7 @@ const DEFAULT_HOME = () => join(process.env.HOME ?? process.env.USERPROFILE ?? "
  * subset; unknown keys are preserved on write (merge, never clobber), a
  * corrupt/missing file is an empty layer (never fails startup).
  */
-export type AgentHomeConfig = Partial<Pick<RuntimeSettings, "provider" | "model" | "contextWindowTokens" | "maxOutputTokens" | "host" | "port" | "workspace" | "approvalPolicy" | "activeProviderId" | "channels" | "mcpServers">> & {
+export type AgentHomeConfig = Partial<Pick<RuntimeSettings, "provider" | "model" | "contextWindowTokens" | "maxOutputTokens" | "charsPerToken" | "host" | "port" | "workspace" | "approvalPolicy" | "activeProviderId" | "channels" | "mcpServers">> & {
   readonly memory?: {
     readonly on?: boolean
     readonly extraction?: boolean
@@ -207,8 +215,13 @@ function readAgentHomeConfigSync(agentHome: string): AgentHomeConfig {
  *  per id with the same per-field rule (an empty-string apiKey is treated as
  *  "keep stored", never a wipe); `providersRemove` drops ids (and the active
  *  pointer when it referenced a removed preset) but is never persisted itself.
- *  Writes are serialized (read-modify-write races) and atomic (tmp + rename —
- *  a crash mid-write must not leave a corrupt file that reads as "no keys"). */
+ *  `mcpServers` (by name) / `channels` (by id) upsert entries whose secret
+ *  fields (env/headers/secret) are presence-redacted in GET responses — a
+ *  read→write client cannot echo them, so they keep the stored value on the
+ *  same "" / absent rule as apiKey; entries omitted from the patch are removed
+ *  (whole-map / whole-array shape). Writes are serialized (read-modify-write
+ *  races) and atomic (tmp + rename — a crash mid-write must not leave a
+ *  corrupt file that reads as "no keys"). */
 const configWriteQueue: Promise<unknown> = Promise.resolve()
 
 export function writeAgentHomeConfig(agentHome: string, patch: AgentHomeConfig): Promise<AgentHomeConfig> {
@@ -263,11 +276,15 @@ async function writeAgentHomeConfigInner(agentHome: string, patch: AgentHomeConf
   for (const id of removed) byId.delete(id)
   const providers = [...byId.values()] as unknown as Exclude<AgentHomeConfig["providers"], undefined>
   const activeRemoved = patch.activeProviderId === undefined && current.activeProviderId !== undefined && removed.has(current.activeProviderId)
+  const mergedMcpServers = mergeMcpServers(current.mcpServers, patch.mcpServers)
+  const mergedChannels = mergeChannels(current.channels, patch.channels)
   // providersRemove is a write-instruction, not state — never persist it; an
   // empty preset list is also dropped (absent = no presets, like a fresh file).
   // "" for activeProviderId means deactivate: clear the pointer, store nothing.
-  const { providersRemove: _drop, ...patchRest } = patch
+  const { providersRemove: _drop, mcpServers: _mcp, channels: _ch, ...patchRest } = patch
   void _drop
+  void _mcp
+  void _ch
   const clearedActive = patch.activeProviderId === ""
   const patchRestNoActive = clearedActive
     ? Object.fromEntries(Object.entries(patchRest).filter(([k]) => k !== "activeProviderId"))
@@ -280,11 +297,15 @@ async function writeAgentHomeConfigInner(agentHome: string, patch: AgentHomeConf
     ...patchRestNoActive,
     ...(patchProvider ? { provider: mergedProvider as AgentHomeConfig["provider"] } : {}),
     ...(touchesProviders ? { providers } : {}),
+    ...(mergedMcpServers ? { mcpServers: mergedMcpServers } : {}),
+    ...(mergedChannels ? { channels: mergedChannels } : {}),
     ...((activeRemoved || clearedActive) ? { activeProviderId: undefined } : {}),
     memory: mergeMemory(current.memory, patch.memory),
   } as Record<string, unknown>
   delete next.providersRemove
   if (Array.isArray(next.providers) && next.providers.length === 0) delete next.providers
+  if (next.mcpServers && Object.keys(next.mcpServers).length === 0) delete next.mcpServers
+  if (Array.isArray(next.channels) && next.channels.length === 0) delete next.channels
   if (next.activeProviderId === undefined || next.activeProviderId === "") delete next.activeProviderId
   await mkdir(agentHome, { recursive: true })
   // Atomic write: a crash mid-write leaves config.json.tmp, never a truncated
@@ -293,6 +314,59 @@ async function writeAgentHomeConfigInner(agentHome: string, patch: AgentHomeConf
   await writeFile(tmpPath, JSON.stringify(next, null, 2) + "\n", "utf8")
   await rename(tmpPath, configFilePath(agentHome))
   return next as AgentHomeConfig
+}
+
+/** Field-level merge of ONE settings entry whose secret-bearing fields are
+ *  presence-redacted in GET responses (hasEnv / hasHeaders / hasSecret): a
+ *  read→write client cannot echo the secrets themselves, so undefined or ""
+ *  keeps the stored value (the apiKey rule) and an explicit null clears it.
+ *  An empty object clears a map-shaped field (env/headers). Presence keys are
+ *  display-only and never persisted. */
+function mergeRedactedEntry(prev: Record<string, unknown> | undefined, incoming: Record<string, unknown>, secretFields: readonly string[]): Record<string, unknown> {
+  const merged = { ...prev }
+  for (const [field, value] of Object.entries(incoming)) {
+    if (field === "hasEnv" || field === "hasHeaders" || field === "hasSecret") continue
+    if (value === undefined) continue
+    if (value === null) {
+      delete merged[field]
+      continue
+    }
+    if (secretFields.includes(field) && value === "") continue
+    if (typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 0) {
+      delete merged[field]
+      continue
+    }
+    merged[field] = value
+  }
+  return merged
+}
+
+/** mcpServers upsert by server name. The patch map is the FULL desired set —
+ *  an entry omitted from it is removed (whole-map shape, unchanged from the
+ *  pre-redaction behavior); an empty merged map stores as absent. */
+function mergeMcpServers(current: AgentHomeConfig["mcpServers"], patch: AgentHomeConfig["mcpServers"]): AgentHomeConfig["mcpServers"] {
+  if (patch === undefined) return undefined
+  const out: Record<string, unknown> = {}
+  for (const [name, raw] of Object.entries(patch)) {
+    out[name] = mergeRedactedEntry(current?.[name] as unknown as Record<string, unknown> | undefined, raw as unknown as Record<string, unknown>, ["env", "headers"])
+  }
+  return out as AgentHomeConfig["mcpServers"]
+}
+
+/** channels upsert by id (array shape on the wire, like providers). The patch
+ *  array is the FULL desired set — an id omitted from it is removed; an empty
+ *  merged list stores as absent. */
+function mergeChannels(current: AgentHomeConfig["channels"], patch: AgentHomeConfig["channels"]): AgentHomeConfig["channels"] {
+  if (patch === undefined) return undefined
+  const currentById = new Map((current ?? []).map((c) => [c.id, c]))
+  return patch.flatMap((raw) => {
+    const incoming = raw as unknown as Record<string, unknown>
+    // Entries without a valid id are dropped — merging under the literal key
+    // "undefined" would persist a channel row nothing can ever address.
+    if (typeof incoming.id !== "string" || !incoming.id.trim()) return []
+    const merged = mergeRedactedEntry(currentById.get(incoming.id) as unknown as Record<string, unknown> | undefined, incoming, ["secret"])
+    return [merged as unknown as ChannelConfig]
+  })
 }
 
 /** Field-level merge of the memory subtree (the config file is the source of
@@ -368,6 +442,8 @@ export function loadRuntimeSettings(layers: ConfigLayers): RuntimeSettings {
   const model = layers.cli?.model ?? str(env, ENV.model) ?? profile?.model ?? file.model ?? "gpt-4o-mini"
   const contextWindow = str(env, ENV.contextWindow)
   const contextWindowTokens = layers.cli?.contextWindowTokens ?? (contextWindow ? Number(contextWindow) : undefined) ?? (profile?.contextWindowTokens && profile.contextWindowTokens > 0 ? profile.contextWindowTokens : undefined) ?? (file.contextWindowTokens && file.contextWindowTokens > 0 ? file.contextWindowTokens : undefined)
+  const charsPerTokenRaw = file.charsPerToken
+  const charsPerTokenValid = typeof charsPerTokenRaw === "number" && Number.isFinite(charsPerTokenRaw) && charsPerTokenRaw >= 1 && charsPerTokenRaw <= 10 ? charsPerTokenRaw : undefined
   const maxOutput = str(env, ENV.maxOutputTokens)
   const maxOutputTokens = layers.cli?.maxOutputTokens ?? (maxOutput ? Number(maxOutput) : undefined) ?? (profile?.maxOutputTokens && profile.maxOutputTokens > 0 ? profile.maxOutputTokens : undefined) ?? (file.maxOutputTokens && file.maxOutputTokens > 0 ? file.maxOutputTokens : undefined)
   const dataDir = layers.cli?.dataDir ?? str(env, ENV.dataDir) ?? join(agentHome, "data")
@@ -406,12 +482,14 @@ export function loadRuntimeSettings(layers: ConfigLayers): RuntimeSettings {
     provider,
     model,
     ...(contextWindowTokens && Number.isFinite(contextWindowTokens) && contextWindowTokens > 0 ? { contextWindowTokens } : {}),
+    ...(charsPerTokenValid !== undefined ? { charsPerToken: charsPerTokenValid } : {}),
     ...(maxOutputTokens && Number.isFinite(maxOutputTokens) && maxOutputTokens > 0 ? { maxOutputTokens } : {}),
     host: layers.cli?.host ?? str(env, ENV.host) ?? file.host ?? "127.0.0.1",
     port: layers.cli?.port ?? Number(str(env, ENV.port) ?? file.port ?? 3927),
     ...(layers.cli?.token ?? str(env, ENV.token) ? { token: layers.cli?.token ?? str(env, ENV.token) } : {}),
     workspace: layers.cli?.workspace ?? str(env, ENV.workspace) ?? file.workspace ?? process.cwd(),
     allowBash: layers.cli?.allowBash ?? flag(env, ENV.allowBash),
+    allowWeb: layers.cli?.allowWeb ?? flag(env, ENV.allowWeb),
     allowPluginCode: layers.cli?.allowPluginCode ?? flag(env, ENV.allowPluginCode),
     approvalPolicy: (layers.cli?.approvalPolicy ?? str(env, ENV.approvalPolicy) ?? file.approvalPolicy ?? "strict") as "strict" | "trusted" | "readonly",
     memory: {
@@ -426,6 +504,10 @@ export function loadRuntimeSettings(layers: ConfigLayers): RuntimeSettings {
     ...(str(env, ENV.registry) ? { registry: str(env, ENV.registry) } : {}),
     ...(file.activeProviderId ? { activeProviderId: file.activeProviderId } : {}),
     ...(providers.length > 0 ? { providers } : {}),
+    // File-layer integrations (settings PUT persists them; without this read
+    // back GET always showed "未配置" and MCP servers never mounted on restart).
+    ...(file.channels && file.channels.length > 0 ? { channels: file.channels } : {}),
+    ...(file.mcpServers && Object.keys(file.mcpServers).length > 0 ? { mcpServers: file.mcpServers } : {}),
     ...(str(env, ENV.advertiseUrl) ? { advertiseUrl: str(env, ENV.advertiseUrl) } : {}),
     ...(str(env, ENV.uiDir) ? { uiDir: str(env, ENV.uiDir) } : {}),
     ...(str(env, ENV.pluginsDir) ? { pluginsDir: str(env, ENV.pluginsDir) } : {}),

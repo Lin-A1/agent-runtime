@@ -13,6 +13,7 @@
     "@newhorse/schema": "workspace:*",
     "@newhorse/llm": "workspace:*",
     "@newhorse/memory": "workspace:*",
+    "@newhorse/mcp": "workspace:*",
     "@newhorse/core": "workspace:*"
   },
   "bin": {

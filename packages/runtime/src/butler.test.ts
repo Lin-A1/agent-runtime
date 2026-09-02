@@ -274,4 +274,41 @@ describe("butler authority", () => {
     }))
     expect((stuck as { state?: string }).state).toBe("running")
   })
+
+  it("declare_dag passes the spec through to the runtime runner and is audited", async () => {
+    const { tools, audits } = await setup()
+    const declare = tools.find((t) => t.name === "declare_dag")!
+    const spec = { nodes: { A: { id: "A", agent: { name: "a" }, input: "x" }, B: { id: "B", agent: { name: "b" }, input: "y", dependsOn: ["A"] } } }
+    const seen: unknown[] = []
+    const res = await declare.execute(
+      { spec },
+      ctx({ kind: "butler", sessionId: butlerSession }, {
+        sessionId: butlerSession,
+        declareDag: async (s) => {
+          seen.push(s)
+          return { dagId: "dag-1" }
+        },
+        appendAudit: async (e) => {
+          audits.push(e)
+        },
+      }),
+    )
+    expect(res).toMatchObject({ authorization: "allowed", dagId: "dag-1", nodes: 2 })
+    expect(seen[0]).toBe(spec) // handed to the runner untouched
+    expect(audits.some((a) => a.op === "declare_dag" && a.outcome === "allowed")).toBe(true)
+  })
+
+  it("declare_dag rejects an empty/missing node set and a missing runner", async () => {
+    const { tools } = await setup()
+    const declare = tools.find((t) => t.name === "declare_dag")!
+    const noCtx = ctx({ kind: "butler", sessionId: butlerSession })
+    await expect(declare.execute({}, noCtx)).rejects.toThrow(/spec\.nodes is required/)
+    await expect(declare.execute({ spec: { nodes: {} } }, noCtx)).rejects.toThrow(/spec\.nodes is required/)
+    await expect(declare.execute({ spec: { nodes: { A: { id: "A", input: "x" } } } }, noCtx)).rejects.toThrow(/declareDag not available/)
+    // A spec-validation failure of the runner surfaces as a tool error.
+    await expect(declare.execute(
+      { spec: { nodes: { A: { id: "A", input: "x" } } } },
+      ctx({ kind: "butler", sessionId: butlerSession }, { declareDag: async () => { throw new Error("cycle detected") }, appendAudit: async () => {} }),
+    )).rejects.toThrow("cycle detected")
+  })
 })

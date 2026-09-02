@@ -67,6 +67,12 @@ export interface ToolCtx {
   readonly spawnFrom?: (parentId: string, model?: string, prompt?: string, agentName?: string) => Promise<string>
   /** Query a child's durable state (followup_task): running vs settled vs unknown. */
   readonly queryTask?: (taskId: string) => Promise<{ state: "running" | "settled" | "unknown"; text?: string; finish?: string }>
+  /** Declare a DAG spec (declare_dag): the runtime drives the whole graph
+   *  (topo order, readiness wakeups, per-node models, crash-resumable) and
+   *  projects node progress into the declaring session's todo list. Typed
+   *  `unknown` here on purpose — the spec shape belongs to the runtime's
+   *  dag-runner, and core must not depend on it. */
+  readonly declareDag?: (spec: unknown) => Promise<{ dagId: string }>
   /** M4 execpolicy: the tool-layer authorization axis. Optional here (injected);
    * loop fills a deny-all fallback so a tool never runs unaudited. */
   readonly execPolicy?: ExecPolicy

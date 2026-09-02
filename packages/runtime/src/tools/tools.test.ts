@@ -350,3 +350,71 @@ describe("builtin tools", () => {
     expect((miss as { count?: number }).count).toBe(0)
   })
 })
+
+
+describe("bash background trio (wave 8)", () => {
+  it("runInBackground returns a taskId immediately; bash_output polls to completion; bash_kill stops a long task", async () => {
+    const root = await ws()
+    try {
+      const tools = createBuiltinTools({ workspace: root.root, enableBash: true })
+      const bash = byName(tools, "bash")
+      const output = byName(tools, "bash_output")
+      const kill = byName(tools, "bash_kill")
+
+      // Background: returns immediately with a taskId.
+      const started = (await bash.execute({ command: process.platform === "win32" ? "ping -n 30 127.0.0.1" : "sleep 30", runInBackground: true }, allowCtx)) as { taskId?: string; running?: boolean }
+      expect(started.taskId).toBeTruthy()
+      expect(started.running).toBe(true)
+
+      // Output poll: task is running (no exitCode yet).
+      const first = (await output.execute({ taskId: started.taskId }, allowCtx)) as { running?: boolean; command?: string }
+      expect(first.running).toBe(true)
+      expect(first.command).toContain("30")
+
+      // Kill the tree; output then reports settled.
+      const killed = (await kill.execute({ taskId: started.taskId }, allowCtx)) as { killed?: boolean }
+      expect(killed.killed).toBe(true)
+      for (let i = 0; i < 50; i++) {
+        const state = (await output.execute({ taskId: started.taskId }, allowCtx)) as { running?: boolean }
+        if (!state.running) break
+        await new Promise((r) => setTimeout(r, 50))
+      }
+      const settled = (await output.execute({ taskId: started.taskId }, allowCtx)) as { running?: boolean }
+      expect(settled.running).toBe(false)
+
+      // Unknown taskId fails honestly (fail() is DATA — the model self-corrects).
+      const ghost = (await output.execute({ taskId: "ghost" }, allowCtx)) as { error?: string }
+      expect(ghost.error).toContain("unknown taskId")
+    } finally {
+      // The killed process tree releases its cwd asynchronously on Windows —
+      // retry the cleanup instead of failing on EBUSY.
+      for (let i = 0; i < 10; i++) {
+        try {
+          await root.cleanup()
+          break
+        } catch {
+          await new Promise((r) => setTimeout(r, 100))
+        }
+      }
+    }
+  }, 15_000)
+
+  it("a fast background command settles on its own (echo)", async () => {
+    const root = await ws()
+    try {
+      const tools = createBuiltinTools({ workspace: root.root, enableBash: true })
+      const bash = byName(tools, "bash")
+      const output = byName(tools, "bash_output")
+      const started = (await bash.execute({ command: "echo wave8-background", runInBackground: true }, allowCtx)) as { taskId?: string }
+      let state = (await output.execute({ taskId: started.taskId }, allowCtx)) as { running?: boolean; stdout?: string }
+      for (let i = 0; i < 50 && state.running; i++) {
+        await new Promise((r) => setTimeout(r, 50))
+        state = (await output.execute({ taskId: started.taskId }, allowCtx)) as { running?: boolean; stdout?: string }
+      }
+      expect(state.running).toBe(false)
+      expect(state.stdout).toContain("wave8-background")
+    } finally {
+      await root.cleanup()
+    }
+  }, 15_000)
+})
