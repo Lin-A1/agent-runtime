@@ -576,7 +576,7 @@ async function runTurn(runtime: TurnRuntime, opts: RunOptions, request: LLMReque
  *  fraction leaves headroom for the turn's own reply + tool outputs (a turn
  *  can add a lot before the next check). */
 const COMPACT_WINDOW_FRACTION = 0.6
-const COMPACT_CHAR_FALLBACK = 80_000
+const COMPACT_CHAR_FALLBACK = 260_000
 export function compactLimit(opts: Pick<RunOptions, "compactThreshold" | "contextWindowTokens" | "charsPerToken">): number {
   if (opts.compactThreshold !== undefined) return opts.compactThreshold
   if (opts.contextWindowTokens !== undefined) return Math.floor(opts.contextWindowTokens * (opts.charsPerToken ?? 2.5) * COMPACT_WINDOW_FRACTION)
@@ -586,10 +586,10 @@ export function compactLimit(opts: Pick<RunOptions, "compactThreshold" | "contex
 /** Byte budget for the RETAINED TAIL after a fold (the trigger folds when the
  *  visible history exceeds compactLimit; the tail that survives the fold must
  *  be strictly smaller, else the trigger re-fires every turn with nothing to
- *  fold). Explicit window scaling; fixed 30k-char fallback. */
+ *  fold). Explicit window scaling; 80k-char fallback. */
 export function compactionTailChars(opts: Pick<RunOptions, "contextWindowTokens" | "charsPerToken">): number {
   if (opts.contextWindowTokens !== undefined) return Math.floor(opts.contextWindowTokens * (opts.charsPerToken ?? 2.5) * 0.3)
-  return 30_000
+  return 80_000
 }
 
 async function appendMessage(runtime: TurnRuntime, sessionId: string, message: SessionMessage): Promise<void> {

@@ -46,13 +46,24 @@ export const anthropicProtocol: Protocol = {
           results.push(...request.messages[j]!.content.flatMap<Body>(mapContentPart))
           j++
         }
-        messages.push({ role: "user", content: results })
+        // If the previous message was already user, coalesce blocks to strictly alternate roles
+        if (messages.length > 0 && messages[messages.length - 1]!.role === "user") {
+          (messages[messages.length - 1]!.content as Body[]).push(...results)
+        } else {
+          messages.push({ role: "user", content: results })
+        }
         i = j - 1
         continue
       }
 
       const parts = m.content.flatMap<Body>((part) => mapContentPart(part))
-      messages.push({ role: m.role, content: parts })
+      // Coalesce consecutive user-role messages (compaction marker / step budget notes / steers)
+      // to satisfy Anthropic's strict role-alternation requirement
+      if (m.role === "user" && messages.length > 0 && messages[messages.length - 1]!.role === "user") {
+        (messages[messages.length - 1]!.content as Body[]).push(...parts)
+      } else {
+        messages.push({ role: m.role, content: parts })
+      }
     }
 
     // max_tokens is REQUIRED by the Anthropic API — the 4096 floor exists only

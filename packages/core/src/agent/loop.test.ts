@@ -282,7 +282,7 @@ it("explicit compactThreshold wins over the window-derived budget", async () => 
 })
 
 it("compactLimit derives window-fraction budgets with explicit precedence", async () => {
-  expect(compactLimit({})).toBe(80_000)
+  expect(compactLimit({})).toBe(260_000)
   expect(compactLimit({ contextWindowTokens: 10_000 })).toBe(15_000) // 10000×2.5×0.6
   expect(compactLimit({ contextWindowTokens: 10_000, charsPerToken: 4 })).toBe(24_000)
   expect(compactLimit({ contextWindowTokens: 10_000, compactThreshold: 999 })).toBe(999)

@@ -96,7 +96,7 @@ describe("wave-7 context management", () => {
   })
 
   it("compaction breaker: a fold that leaves the view over the limit fires ONCE, not every round", async () => {
-    const giant = "g".repeat(90_000)
+    const giant = "g".repeat(300_000)
     const search: Tool = { name: "search", execute: async () => "ok" }
     const { llm } = multiRoundLLM([toolRound("c1"), toolRound("c2"), stopRound("done")])
     const { runtime, resolveTool } = makeRuntime(llm, [search])
