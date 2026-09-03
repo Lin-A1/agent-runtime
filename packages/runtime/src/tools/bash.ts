@@ -130,7 +130,38 @@ export function createBashTools(workspace: string): Tool[] {
     },
   }
 
-  return [bash, bashOutput, bashKill]
+  const bashInput: Tool = {
+    name: "bash_input",
+    description: "Write input characters to a running background task's stdin (codex write_stdin analog). Args: { taskId, chars, yield_time_ms? } — sends chars, waits up to yield_time_ms (default 1000, max 5000), returns the latest output delta.",
+    execute: async (input: unknown) => {
+      const { taskId, chars, yield_time_ms } = (input ?? {}) as { taskId?: string; chars?: string; yield_time_ms?: number }
+      if (!taskId) return fail("taskId is required")
+      if (typeof chars !== "string") return fail("chars is required")
+      const task = background.get(taskId)
+      if (!task) return fail(`unknown taskId (${background.size} tracked)`)
+      if (task.done) return fail(`task ${taskId} has already exited (code ${task.exitCode})`)
+      if (!task.child.stdin || task.child.stdin.destroyed) return fail("task stdin is closed")
+      const prevStdoutLen = task.stdout.length
+      const prevStderrLen = task.stderr.length
+      try {
+        task.child.stdin.write(chars)
+      } catch (e) {
+        return fail(`stdin write failed: ${e instanceof Error ? e.message : String(e)}`)
+      }
+      const waitMs = clamp(Math.floor(yield_time_ms ?? 1_000), 100, 5_000)
+      await new Promise((r) => setTimeout(r, waitMs))
+      return {
+        taskId,
+        running: !task.done,
+        ...(task.done ? { exitCode: task.exitCode } : {}),
+        stdout: task.stdout.slice(prevStdoutLen),
+        stderr: task.stderr.slice(prevStderrLen),
+        accumulatedStdout: task.stdout,
+      }
+    },
+  }
+
+  return [bash, bashOutput, bashKill, bashInput]
 }
 
 function spawnBackground(command: string, cwd: string, taskId: string, registry: Map<string, BackgroundTask>): ReturnType<typeof spawn> {
@@ -139,8 +170,8 @@ function spawnBackground(command: string, cwd: string, taskId: string, registry:
     : { cmd: "/bin/sh", args: ["-c", command] }
   // POSIX: detached + process-group kill so grandchildren (the servers and
   // watchers this feature exists for) die with the shell. Windows uses the
-  // taskkill /T tree-kill in killTree.
-  const child = spawn(shell.cmd, shell.args, { cwd, shell: false, stdio: ["ignore", "pipe", "pipe"], ...(process.platform === "win32" ? {} : { detached: true }) })
+  // taskkill /T tree-kill in killTree. stdin is "pipe" so bash_input can write.
+  const child = spawn(shell.cmd, shell.args, { cwd, shell: false, stdio: ["pipe", "pipe", "pipe"], ...(process.platform === "win32" ? {} : { detached: true }) })
   const task: BackgroundTask = { command, startedAt: Date.now(), stdout: "", stderr: "", done: false, exitCode: null, child }
   registry.set(taskId, task)
   child.stdout?.on("data", (chunk: Buffer) => {

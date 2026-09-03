@@ -4,6 +4,9 @@ import { discoverSkills } from "@newhorse/plugin"
 import { createReadTool } from "./read"
 import { createWriteTool } from "./write"
 import { createEditTool } from "./edit"
+import { createMultiEditTool } from "./multi-edit"
+import { createViewImageTool } from "./view-image"
+import { createAskUserTool } from "./ask-user"
 import { createListTool } from "./list"
 import { createSearchTool } from "./search"
 import { createBashTools } from "./bash"
@@ -52,8 +55,11 @@ export function createBuiltinTools(opts: BuiltinToolsOptions): Tool[] {
     createReadTool(opts.workspace),
     createWriteTool(opts.workspace),
     createEditTool(opts.workspace),
+    createMultiEditTool(opts.workspace),
+    createViewImageTool(opts.workspace),
     createListTool(opts.workspace),
     createSearchTool(opts.workspace),
+    createAskUserTool(),
   ]
   if (opts.enableBash) tools.push(...createBashTools(opts.workspace))
   if (opts.enableWeb) tools.push(createWebFetchTool())

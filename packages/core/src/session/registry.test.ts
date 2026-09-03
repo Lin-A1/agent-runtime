@@ -40,6 +40,32 @@ describe("session registry", () => {
     expect(plain?.role).toBeUndefined()
   })
 
+  it("derives the title from the first admitted prompt (user words), not the assistant reply", () => {
+    const row = fold([
+      created("s1", "/proj"),
+      { aggregate: "session", aggregate_id: "s1", seq: 1, type: "Session.PromptAdmitted", data: { id: "p1", sessionId: "s1", prompt: "帮我总结这个仓库的结构", delivery: "normal", principal: { kind: "user" }, admittedSeq: 1 } },
+      { aggregate: "session", aggregate_id: "s1", seq: 2, type: "Session.MessageAppended", data: { message: { kind: "assistant", content: [{ type: "text", text: "好的，我先读一下代码……" }] } } },
+    ])
+    expect(row?.title).toBe("帮我总结这个仓库的结构")
+  })
+
+  it("Session.Prompted also seeds the title; Session.TitleSet always wins", () => {
+    const prompted = fold([
+      created("s1", "/proj"),
+      { aggregate: "session", aggregate_id: "s1", seq: 1, type: "Session.Prompted", data: { id: "p1", sessionId: "s1", prompt: "写一个周报草稿", delivery: "normal", principal: { kind: "user" }, promotedSeq: 1 } },
+    ])
+    expect(prompted?.title).toBe("写一个周报草稿")
+
+    const explicit = fold([
+      created("s2", "/proj"),
+      { aggregate: "session", aggregate_id: "s2", seq: 1, type: "Session.PromptAdmitted", data: { id: "p1", sessionId: "s2", prompt: "原始提示词", delivery: "normal", principal: { kind: "user" }, admittedSeq: 1 } },
+      { aggregate: "session", aggregate_id: "s2", seq: 2, type: "Session.TitleSet", data: { title: "手动标题" } },
+      // a later prompt must not clobber the explicit title either
+      { aggregate: "session", aggregate_id: "s2", seq: 3, type: "Session.PromptAdmitted", data: { id: "p2", sessionId: "s2", prompt: "第二个提示词", delivery: "normal", principal: { kind: "user" }, admittedSeq: 3 } },
+    ])
+    expect(explicit?.title).toBe("手动标题")
+  })
+
   it("lists sessions filtered by workspace and status (lazy hydration)", async () => {
     const events = new MemoryEventStore()
     await events.append("s1", "Session.Created", { id: "s1", location: "/a", createdAt: 1 })

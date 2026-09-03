@@ -15,7 +15,20 @@ const allowCtx: ToolCtx = { caller: { kind: "user" }, execPolicy: allowAll }
 
 async function ws(): Promise<{ root: string; cleanup: () => Promise<void> }> {
   const root = await mkdtemp(join(tmpdir(), "nh-tools-"))
-  return { root, cleanup: () => rm(root, { recursive: true, force: true }) }
+  return {
+    root,
+    cleanup: async () => {
+      // Retry rm on Windows where a recently killed process takes milliseconds to release cwd
+      for (let i = 0; i < 5; i++) {
+        try {
+          await rm(root, { recursive: true, force: true })
+          return
+        } catch {
+          await new Promise((r) => setTimeout(r, 80))
+        }
+      }
+    },
+  }
 }
 
 function byName(tools: Tool[], name: string): Tool {
@@ -29,7 +42,7 @@ describe("builtin tools", () => {
     const { root, cleanup } = await ws()
     try {
       const base = createBuiltinTools({ workspace: root })
-      expect(base.map((t) => t.name).sort()).toEqual(["edit", "list", "read", "search", "write"])
+      expect(base.map((t) => t.name).sort()).toEqual(["ask_user", "edit", "list", "multi_edit", "read", "search", "view_image", "write"])
       const withBash = createBuiltinTools({ workspace: root, enableBash: true })
       expect(withBash.map((t) => t.name)).toContain("bash")
     } finally {
@@ -103,6 +116,87 @@ describe("builtin tools", () => {
       const out = await edit.execute({ path: "f.txt", old: "one", new: "X" }, allowCtx) as { matches: number; hits: { line: number }[] }
       expect(out.matches).toBe(3)
       expect(out.hits.length).toBeGreaterThan(0)
+    } finally {
+      await cleanup()
+    }
+  })
+
+  it("multi_edit applies N edits sequentially in memory and writes once", async () => {
+    const { root, cleanup } = await ws()
+    try {
+      await writeFile(join(root, "f.txt"), "alpha beta gamma")
+      const me = byName(createBuiltinTools({ workspace: root }), "multi_edit")
+      const res = await me.execute({
+        path: "f.txt",
+        edits: [
+          { old: "alpha", new: "1" },
+          { old: "beta", new: "2" },
+          { old: "gamma", new: "3" },
+        ],
+      }, allowCtx) as { totalEdits: number; applied: unknown[] }
+      expect(res.totalEdits).toBe(3)
+      const after = await readFile(join(root, "f.txt"), "utf8")
+      expect(after).toBe("1 2 3")
+    } finally {
+      await cleanup()
+    }
+  })
+
+  it("multi_edit fails atomic — an error leaves the file completely untouched", async () => {
+    const { root, cleanup } = await ws()
+    try {
+      const orig = "original text here"
+      await writeFile(join(root, "f.txt"), orig)
+      const me = byName(createBuiltinTools({ workspace: root }), "multi_edit")
+      const res = await me.execute({
+        path: "f.txt",
+        edits: [
+          { old: "original", new: "changed" },
+          { old: "NON_EXISTENT", new: "boom" },
+        ],
+      }, allowCtx) as { error?: string }
+      expect(res.error).toBeDefined()
+      expect(res.error).toContain("edit[1]")
+      const after = await readFile(join(root, "f.txt"), "utf8")
+      expect(after).toBe(orig)
+    } finally {
+      await cleanup()
+    }
+  })
+
+  it("view_image reads a supported image and returns base64", async () => {
+    const { root, cleanup } = await ws()
+    try {
+      const fakePng = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
+      await writeFile(join(root, "shot.png"), fakePng)
+      const vi = byName(createBuiltinTools({ workspace: root }), "view_image")
+      const res = await vi.execute({ path: "shot.png" }, allowCtx) as { mime: string; data: string; size: number }
+      expect(res.mime).toBe("image/png")
+      expect(res.size).toBe(fakePng.length)
+      expect(res.data).toBe(fakePng.toString("base64"))
+      const badExt = await vi.execute({ path: "shot.exe" }, allowCtx) as { error?: string }
+      expect(badExt.error).toContain("unsupported")
+    } finally {
+      await cleanup()
+    }
+  })
+
+  it("bash_input writes to stdin of a background task", async () => {
+    const { root, cleanup } = await ws()
+    try {
+      const tools = createBuiltinTools({ workspace: root, enableBash: true })
+      const bash = byName(tools, "bash")
+      const bashInput = byName(tools, "bash_input")
+      // Portable interactive stdin reader: `more` echoes input under cmd.exe; `cat` on POSIX
+      const cmd = process.platform === "win32" ? "more" : "cat"
+      const bg = await bash.execute({ command: cmd, runInBackground: true }, allowCtx) as { taskId: string }
+      expect(bg.taskId).toBeDefined()
+      await new Promise((r) => setTimeout(r, 200))
+      const inp = await bashInput.execute({ taskId: bg.taskId, chars: "more-test-pipe\r\n", yield_time_ms: 300 }, allowCtx) as { stdout: string }
+      expect(inp.stdout).toContain("more-test-pipe")
+      const kill = byName(tools, "bash_kill")
+      await kill.execute({ taskId: bg.taskId })
+      await new Promise((r) => setTimeout(r, 100))
     } finally {
       await cleanup()
     }

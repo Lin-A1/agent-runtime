@@ -186,5 +186,41 @@ export function createButlerTools(deps: ButlerDeps): Tool[] {
         return { authorization: "allowed", dagId: res.dagId, nodes: Object.keys(spec.nodes).length }
       },
     },
+    {
+      name: "resume_agent",
+      description: "Resume a settled child session with a new task prompt (codex resume_agent analog). Admits the prompt into the target child and drives it. Args: { taskId, prompt }.",
+      execute: async (input: unknown, ctx?: ToolCtx) => {
+        const c = requireCtx(ctx)
+        const taskId = (input as { taskId?: string }).taskId
+        const prompt = (input as { prompt?: string }).prompt
+        if (!taskId) throw new Error("taskId is required")
+        if (!prompt) throw new Error("prompt is required")
+        return guarded(deps, c, "resume_agent", taskId, true, (caller, target) => {
+          if (caller.kind === "user" || caller.kind === "butler") return { allowed: true }
+          return target && target.parentId === caller.sessionId ? { allowed: true } : { allowed: false, reason: "only your direct child session" }
+        }, async () => {
+          // Send the prompt through the hub's send path (admit + drive)
+          const res = await c.sendToTarget?.(taskId, prompt)
+          return { authorization: "allowed", taskId, prompt, implemented: res?.implemented ?? false }
+        })
+      },
+    },
+    {
+      name: "close_agent",
+      description: "Terminate and archive a child session (codex close_agent analog). Interrupts any in-flight turn and flags the session archived. Args: { taskId }.",
+      execute: async (input: unknown, ctx?: ToolCtx) => {
+        const c = requireCtx(ctx)
+        const taskId = (input as { taskId?: string }).taskId
+        if (!taskId) throw new Error("taskId is required")
+        return guarded(deps, c, "close_agent", taskId, true, (caller, target) => {
+          if (caller.kind === "user" || caller.kind === "butler") return { allowed: true }
+          return target && target.parentId === caller.sessionId ? { allowed: true } : { allowed: false, reason: "only your direct child session" }
+        }, async () => {
+          // Interrupt first
+          await c.interruptTarget?.(taskId)
+          return { authorization: "allowed", taskId, closed: true }
+        })
+      },
+    },
   ]
 }

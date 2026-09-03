@@ -73,6 +73,10 @@ export interface ToolCtx {
    *  `unknown` here on purpose — the spec shape belongs to the runtime's
    *  dag-runner, and core must not depend on it. */
   readonly declareDag?: (spec: unknown) => Promise<{ dagId: string }>
+  /** ask_user channel: raise a question for the operator through the
+   *  interactive approval surface. Absent = the session is non-interactive
+   *  (the tool must answer gracefully instead of hanging). */
+  readonly askUser?: (req: { question: string; options?: readonly string[] }) => Promise<{ allow: boolean; reply?: string }>
   /** M4 execpolicy: the tool-layer authorization axis. Optional here (injected);
    * loop fills a deny-all fallback so a tool never runs unaudited. */
   readonly execPolicy?: ExecPolicy

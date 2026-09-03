@@ -28,13 +28,16 @@ export type ExecRule =
   | { readonly type: "shell_wrapper"; readonly decision: Decision; readonly reason?: string }
   | { readonly type: "host_executable"; readonly path: string; readonly decision: Decision; readonly reason?: string }
 
-/** An interactive approval request (command or path write). */
+/** An interactive approval request (command or path write, or a question to
+ *  the operator). `question` requests carry `options` and resolve with a reply. */
 export interface ApprovalRequest {
   readonly id: string
-  readonly kind: "command" | "path" | "mode"
+  readonly kind: "command" | "path" | "mode" | "question"
   readonly target: string
   readonly decision: Decision
   readonly reason?: string
+  /** question kind only: the choices the operator can pick from. */
+  readonly options?: readonly string[]
 }
 
 /**
