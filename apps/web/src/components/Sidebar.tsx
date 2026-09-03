@@ -88,8 +88,10 @@ function Row({
   return (
     <div className="group relative flex items-center">
       <button
-        className={`flex h-8 w-full items-center gap-2 rounded-lg px-2.5 text-left text-xs transition-colors ${
-          selected ? "bg-hover-2 text-fg font-medium" : "text-dim hover:bg-hover hover:text-fg"
+        className={`flex h-8 w-full items-center gap-2 rounded-lg px-2.5 text-left text-xs transition-colors relative ${
+          selected
+            ? "bg-hover-2 text-fg font-medium before:absolute before:left-0 before:top-2 before:bottom-2 before:w-1 before:rounded-full before:bg-accent"
+            : "text-dim hover:bg-hover hover:text-fg"
         }`}
         onClick={() => navigate(`/s/${row.sessionId}`)}
       >

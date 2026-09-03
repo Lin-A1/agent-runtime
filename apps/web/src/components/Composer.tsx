@@ -47,28 +47,30 @@ export function Composer({ sessionId }: { sessionId: string }): React.ReactEleme
   }, [])
 
   const doSend = useCallback(
-    async (raw: string) => {
-      const body = raw.trim()
+    async (raw?: string) => {
+      const body = (typeof raw === "string" ? raw : taRef.current?.value ?? text).trim()
       if (!body || sending) return
       setSending(true)
       setText("")
+      if (taRef.current) taRef.current.value = ""
       setError(null)
       try {
         await send(sessionId, body)
       } catch (err) {
         setText(body)
+        if (taRef.current) taRef.current.value = body
         setError(err instanceof Error ? err.message : String(err))
       } finally {
         setSending(false)
         taRef.current?.focus()
       }
     },
-    [send, sessionId, sending],
+    [send, sessionId, sending, text],
   )
 
   return (
-    <div className="flex-none px-4 pb-5 pt-2">
-      <div className="mx-auto max-w-3xl">
+    <div className="flex-none px-4 sm:px-6 lg:px-8 pb-5 pt-2">
+      <div className="mx-auto w-full max-w-4xl lg:max-w-5xl 2xl:max-w-6xl">
         {error && <div className="mb-2 text-xs font-medium text-bad">{error}</div>}
 
         <div className="composer-elevated">
@@ -81,7 +83,7 @@ export function Composer({ sessionId }: { sessionId: string }): React.ReactEleme
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault()
-                void doSend(text)
+                void doSend()
               }
             }}
           />
@@ -110,9 +112,9 @@ export function Composer({ sessionId }: { sessionId: string }): React.ReactEleme
                   }`}
                   title="发送 (Enter)"
                   disabled={sending || !text.trim()}
-                  onClick={() => void doSend(text)}
+                  onClick={() => void doSend()}
                 >
-                  {sending ? <Loader2 size={15} className="spin text-fg" /> : <ArrowUp size={16} strokeWidth={2.4} />}
+                  {sending ? <Loader2 size={15} className="spin text-white" /> : <ArrowUp size={16} strokeWidth={2.4} />}
                 </button>
               )}
             </div>

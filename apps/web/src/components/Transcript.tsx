@@ -76,7 +76,7 @@ function ToolRow({
         {pending ? <Spinner size={11} className="text-accent" /> : getToolIcon(name)}
         <span className="font-medium text-fg">{name}</span>
         <span className="max-w-xs truncate text-faint">{summary}</span>
-        {isError && <span className="rounded bg-bad/15 px-1.5 py-0.2 text-2xs text-bad">失败</span>}
+        {isError && <span className="rounded bg-bad/15 px-1.5 py-0.5 text-2xs text-bad">失败</span>}
         {hasOutput && (
           <ChevronDown
             size={11}
@@ -86,7 +86,7 @@ function ToolRow({
       </button>
 
       {open && hasOutput && (
-        <div className="pop-in codeblock-body mt-1.5 max-h-72 overflow-auto rounded-xl border border-line p-3 text-2xs leading-relaxed shadow-sm">
+        <div className="pop-in codeblock-body mt-1.5 max-h-72 overflow-auto rounded-xl border border-line bg-bg2 p-3 text-2xs leading-relaxed shadow-sm">
           <pre className="whitespace-pre-wrap break-all font-mono text-dim">{output}</pre>
         </div>
       )}
@@ -171,6 +171,13 @@ function BlockView({
 }): React.ReactElement | null {
   if (b.kind === "text") return <Markdown text={b.text} streaming={streaming} />
   if (b.kind === "thinking") return <ThinkingBlock text={b.text} live={streaming} />
+  if (b.kind === "panel") {
+    return (
+      <div className="my-2.5">
+        <PanelCard panel={b.panel} />
+      </div>
+    )
+  }
   if (b.kind === "note") {
     const tone = b.variant === "error" ? "text-bad" : b.variant === "steer" ? "text-accent" : "text-faint"
     return (
@@ -235,14 +242,6 @@ function AssistantTurnView({ turn }: { turn: UserTurn }): React.ReactElement | n
           ),
         )}
       </div>
-
-      {turn.panels.length > 0 && (
-        <div className="my-2 flex flex-col gap-2.5">
-          {turn.panels.map((p) => (
-            <PanelCard key={p.panelId} panel={p} />
-          ))}
-        </div>
-      )}
 
       <ChangeList changes={turn.changes} />
     </div>
@@ -361,7 +360,7 @@ export function Transcript({ sessionId }: { sessionId: string }): React.ReactEle
     let alive = true
     void (async () => {
       await load()
-      if (alive) dismiss(sessionId)
+      if (alive && liveTurn) dismiss(sessionId, liveTurn.startedAt)
     })()
     return () => {
       alive = false
@@ -396,7 +395,7 @@ export function Transcript({ sessionId }: { sessionId: string }): React.ReactEle
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/* Sleek Header Bar */}
-      <div className="flex flex-none items-center justify-between border-b border-line bg-panel/60 px-5 py-3 backdrop-blur-md">
+      <div className="flex flex-none items-center justify-between border-b border-line bg-panel/60 px-6 py-3 backdrop-blur-md">
         <div className="flex min-w-0 items-center gap-2.5">
           <span
             className={`dot flex-none ${
@@ -409,15 +408,12 @@ export function Transcript({ sessionId }: { sessionId: string }): React.ReactEle
           />
           <h1 className="min-w-0 truncate text-sm font-semibold tracking-tight text-fg">{title}</h1>
         </div>
-        <div className="flex items-center gap-2 text-2xs text-ghost">
-          <span>{row?.role === "butler" ? "智能管家" : "独立任务"}</span>
-        </div>
       </div>
 
-      {/* Main chat stream container */}
+      {/* Main chat stream container (responsive wide for 2K & ultrawide) */}
       <div className="relative min-h-0 flex-1">
         <div ref={scrollRef} onScroll={onScroll} className="h-full overflow-y-auto">
-          <div className="mx-auto flex max-w-3xl flex-col px-4 py-8">
+          <div className="mx-auto flex min-h-full w-full max-w-4xl lg:max-w-5xl 2xl:max-w-6xl flex-col px-4 sm:px-6 lg:px-8 py-8">
             {loading && (
               <div className="flex justify-center py-16">
                 <Spinner size={20} />
@@ -500,7 +496,7 @@ export function Transcript({ sessionId }: { sessionId: string }): React.ReactEle
         {/* Floating scroll to bottom anchor */}
         {!sticky && (
           <button
-            className="pop-in btn absolute bottom-4 left-1/2 z-20 -translate-x-1/2 shadow-overlay backdrop-blur-md"
+            className="pop-in btn absolute bottom-4 left-1/2 z-20 -translate-x-1/2 !bg-panel/95 !border-line-strong text-fg shadow-overlay backdrop-blur-md"
             onClick={() => {
               const el = scrollRef.current
               if (el) el.scrollTop = el.scrollHeight

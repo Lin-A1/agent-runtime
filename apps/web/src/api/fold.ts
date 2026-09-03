@@ -34,6 +34,7 @@ export type TurnBlock =
   | { kind: "text"; text: string; ts?: number }
   | { kind: "thinking"; text: string }
   | ToolBlock
+  | { kind: "panel"; panel: PanelInfo; ts?: number }
   | { kind: "note"; text: string; variant: NoteVariant }
   | { kind: "modelcall"; call: ModelCallRow }
 
@@ -135,8 +136,9 @@ export function foldTranscript(events: StoredEventRow[]): TranscriptItem[] {
   // turn renders twice on a wired session (fixtures hid it by using only one
   // of the two per turn).
   const seenPromptIds = new Set<string>()
-  // tool-call blocks awaiting their result message (results arrive in order)
-  const pendingTool: ToolBlock[] = []
+  // tool-call blocks awaiting their result message (keyed by callId with FIFO fallback)
+  const pendingTools = new Map<string, ToolBlock>()
+  const pendingToolQueue: ToolBlock[] = []
   let textBuf = ""
   let textTs: number | undefined
 
@@ -230,7 +232,8 @@ export function foldTranscript(events: StoredEventRow[]): TranscriptItem[] {
                 else turn.changes.push(ch)
               }
             }
-            pendingTool.push(block)
+            if (p.id) pendingTools.set(String(p.id), block)
+            pendingToolQueue.push(block)
           }
         }
       } else if (m.kind === "tool") {
@@ -246,8 +249,10 @@ export function foldTranscript(events: StoredEventRow[]): TranscriptItem[] {
         const payloadError =
           /[{[]\s*"error"\s*:/i.test(resultText.slice(0, 200)) ||
           (typeof m.output === "object" && m.output !== null && "error" in (m.output as Record<string, unknown>))
-        const block = pendingTool.shift()
+        const callId = (m as { callId?: string }).callId
+        const block = (callId ? pendingTools.get(callId) : undefined) ?? pendingToolQueue.shift()
         if (block) {
+          if (callId) pendingTools.delete(callId)
           block.output = resultText
           if (payloadError) block.isError = true
         } else {
@@ -278,13 +283,17 @@ export function foldTranscript(events: StoredEventRow[]): TranscriptItem[] {
       continue
     }
     if (e.type === "Session.PanelPosted") {
+      flushText()
       const panel: PanelInfo = {
         panelId: String(d.panelId ?? e.seq),
         kind: String(d.kind ?? "markdown"),
         ...(d.title ? { title: String(d.title) } : {}),
         payload: (d.payload ?? {}) as Record<string, unknown>,
       }
-      if (turn) turn.panels.push(panel)
+      if (turn) {
+        turn.blocks.push({ kind: "panel", panel, ts: e.ts })
+        turn.panels.push(panel)
+      }
       continue
     }
     if (e.type === "Session.Spawned") {
@@ -432,4 +441,45 @@ export function langOf(path: string): string {
 
 export function isImageFile(f: FileContent | { path: string }): boolean {
   return /\.(png|jpe?g|gif|webp|svg)$/i.test(f.path)
+}
+
+/** Intelligent title derivation from user prompt: strips imperative/boilerplate
+ *  phrasing to yield clean, semantic topic names (4-22 chars). */
+export function deriveAutoTitle(rawPrompt: string): string {
+  let s = rawPrompt
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/[#*`>~\[\]()]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+
+  // Strip boilerplate command prefixes (tolerate following punctuation like ，, : 等)
+  const prefixes = [
+    /^(?:请问|请帮我|请用|请直接|请输出|请检索|请使用|请写|请|帮我|能否|可以帮我|帮我写一个|帮我分析一下|分析一下|介绍一下|详细介绍一下|如何理解|什么是|怎么理解|解释一下)[\s，,：:、]*/i,
+    /^(?:一句话介绍|一句话告诉我|一句话解释|用一句话介绍|用一句话告诉我|用一句话解释)[\s，,：:、]*/i,
+    /^(?:规范的|详细的|简单的|一个)[\s，,：:、]*/i,
+    /^(?:please\s+|can\s+you\s+(?:help\s+me\s+)?|how\s+to\s+|what\s+is\s+|explain\s+|tell\s+me\s+about\s+)[\s,:]*/i,
+  ]
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const re of prefixes) {
+      if (re.test(s)) {
+        s = s.replace(re, "")
+        changed = true
+      }
+    }
+  }
+
+  // Strip negative constraint suffixes
+  s = s.replace(/[\s，,。.\n\r]+.*?(?:不要使用任何工具|不要用任何工具|不要使用工具|不要解释|只返回|不要任何文字解释).*$/i, "")
+
+  // Break at natural sentence punctuation only if remaining prefix is meaningful
+  const sentenceBreak = s.search(/[\n\r，,。.]/)
+  if (sentenceBreak >= 3) {
+    s = s.slice(0, sentenceBreak)
+  }
+  s = s.trim()
+
+  if (!s || s.length < 2) return "新对话"
+  return s.length > 22 ? s.slice(0, 20) + "…" : s
 }

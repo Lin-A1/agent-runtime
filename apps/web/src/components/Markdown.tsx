@@ -242,11 +242,13 @@ function MermaidBlock({ code, isClosed = true }: { code: string; isClosed?: bool
       img.onload = () => {
         const canvas = document.createElement("canvas")
         const scale = 2
-        canvas.width = Math.max(img.naturalWidth * scale, 1200)
-        canvas.height = Math.max(img.naturalHeight * scale, 600)
+        const naturalW = img.naturalWidth || 600
+        const naturalH = img.naturalHeight || 400
+        canvas.width = Math.round(naturalW * scale)
+        canvas.height = Math.round(naturalH * scale)
         const ctx = canvas.getContext("2d")
         if (!ctx) return
-        ctx.fillStyle = document.documentElement.dataset.theme === "dark" ? "#17181a" : "#ffffff"
+        ctx.fillStyle = document.documentElement.dataset.theme === "dark" ? "#111214" : "#ffffff"
         ctx.fillRect(0, 0, canvas.width, canvas.height)
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
         URL.revokeObjectURL(url)
@@ -363,7 +365,7 @@ function CodeBlock({ lang, code }: { lang: string; code: string }): React.ReactE
           const cls = diffish ? (l.startsWith("+") ? "cline add" : l.startsWith("-") ? "cline del" : "cline") : "cline"
           return (
             <div key={n} className={cls}>
-              <span className="ln select-none opacity-40">{n + 1}</span>
+              <span className="ln select-none font-mono text-txt-ghost">{n + 1}</span>
               <span>{l || " "}</span>
             </div>
           )

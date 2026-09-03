@@ -66,6 +66,12 @@ export async function compactSession(events: EventStore, sessionId: string, opts
     if (e.type === "Session.MessageAppended") {
       messages.push((e.data as { message?: SessionMessage }).message!)
       messageSeqs.push(e.seq)
+    } else if (e.type === "Session.Prompted") {
+      const d = e.data as { id?: string; prompt?: string }
+      if (d.id && typeof d.prompt === "string") {
+        messages.push({ kind: "user", id: d.id, seq: e.seq, text: d.prompt })
+        messageSeqs.push(e.seq)
+      }
     }
   }
   // Effective keep: newest messages that fit BOTH the count cap and the byte
@@ -144,26 +150,78 @@ function localSummary(headCount: number, head: SessionMessage[]): string {
 export function projectCompacted(stored: StoredEvent[]): { messages: SessionMessage[]; boundary: number } {
   const boundaryEvent = [...stored].reverse().find((e) => e.type === "Session.Compacted")
   const boundary = boundaryEvent ? Number((boundaryEvent.data as { boundarySeq?: number }).boundarySeq ?? -1) : -1
-  const messages: SessionMessage[] = []
-  // Fold like Session.replay (Prompted promotes a user message; MessageAppended
-  // pushes its message) but SKIP the head at seq <= boundary when a boundary
-  // exists. The head is represented by the summary marker message (appended
-  // AFTER the boundary, so it survives).
-  for (const e of stored) {
-    if (boundary >= 0 && e.seq <= boundary) continue
-    switch (e.type) {
-      case "Session.MessageAppended":
-        messages.push((e.data as { message?: SessionMessage }).message!)
-        break
-      case "Session.Prompted": {
+  if (boundary < 0) {
+    const messages: SessionMessage[] = []
+    for (const e of stored) {
+      if (e.type === "Session.MessageAppended") messages.push((e.data as { message?: SessionMessage }).message!)
+      else if (e.type === "Session.Prompted") {
         const d = e.data as { id?: string; prompt?: string }
         if (d.id && typeof d.prompt === "string") messages.push({ kind: "user", id: d.id, seq: e.seq, text: d.prompt })
-        break
       }
-      default:
-        break
+    }
+    return { messages, boundary }
+  }
+
+  // With a boundary:
+  // 1. Preserve ambient system context (AGENTS.md): system instructions from
+  // the log must survive compaction as ambient root instructions
+  const systemMessages: SessionMessage[] = []
+  for (const e of stored) {
+    if (e.type === "Session.MessageAppended") {
+      const m = (e.data as { message?: SessionMessage }).message!
+      if (m.kind === "system") systemMessages.push(m)
     }
   }
+
+  // 2. Extract the compaction marker and raw messages beyond the boundary
+  let markerMsg: SessionMessage | null = null
+  const rawTail: SessionMessage[] = []
+  for (const e of stored) {
+    if (e.seq <= boundary) continue
+    if (e.type === "Session.MessageAppended") {
+      const m = (e.data as { message?: SessionMessage }).message!
+      if (m.kind === "compaction") {
+        markerMsg = m
+      } else if (m.kind !== "system") {
+        rawTail.push(m)
+      }
+    } else if (e.type === "Session.Prompted") {
+      const d = e.data as { id?: string; prompt?: string }
+      if (d.id && typeof d.prompt === "string") rawTail.push({ kind: "user", id: d.id, seq: e.seq, text: d.prompt })
+    }
+  }
+
+  // If no explicit marker was found in events, construct one from the boundary event summary
+  if (!markerMsg) {
+    const summary = String((boundaryEvent?.data as { summary?: string })?.summary ?? "[previous context folded]")
+    markerMsg = { kind: "compaction", id: crypto.randomUUID(), seq: 0, text: summary }
+  }
+
+  // 3. Clean orphan tools from rawTail: any tool message whose call was folded
+  // into the head (no matching tool-call in the visible tail) must be dropped
+  const knownCalls = new Set<string>()
+  const cleanTail: SessionMessage[] = []
+  for (const m of rawTail) {
+    if (m.kind === "assistant") {
+      const content = (m as { content?: Array<{ type?: string; id?: string }> }).content
+      if (Array.isArray(content)) {
+        for (const p of content) {
+          if (p.type === "tool-call" && p.id) knownCalls.add(p.id)
+        }
+      }
+      cleanTail.push(m)
+    } else if (m.kind === "tool") {
+      const callId = (m as { callId?: string }).callId
+      if (callId && knownCalls.has(callId)) {
+        cleanTail.push(m)
+      }
+    } else {
+      cleanTail.push(m)
+    }
+  }
+
+  // 4. Assemble: system context -> compaction marker -> clean tail
+  const messages: SessionMessage[] = [...systemMessages, markerMsg, ...cleanTail]
   return { messages, boundary }
 }
 

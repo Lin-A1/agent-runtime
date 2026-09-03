@@ -113,19 +113,16 @@ export function EmotionBall({ mood, size = 96, lite = false, interactive = false
     }
 
     const onPointerMove = (e: PointerEvent): void => handleMove(e.clientX, e.clientY)
-    const onMouseMove = (e: MouseEvent): void => handleMove(e.clientX, e.clientY)
     const onLeave = (): void => {
       engineRef.current?.clearGaze?.()
       if (hostRef.current) hostRef.current.style.transform = "perspective(600px) rotateY(0deg) rotateX(0deg)"
     }
 
     window.addEventListener("pointermove", onPointerMove, { passive: true })
-    window.addEventListener("mousemove", onMouseMove, { passive: true })
     document.addEventListener("mouseleave", onLeave)
 
     return () => {
       window.removeEventListener("pointermove", onPointerMove)
-      window.removeEventListener("mousemove", onMouseMove)
       document.removeEventListener("mouseleave", onLeave)
     }
   }, [interactive, size])

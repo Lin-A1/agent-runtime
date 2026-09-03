@@ -12,6 +12,7 @@ import { api, streamPrompt } from "../api/client"
 import type { ChatImage, PanelInfo, SessionRow, SettingsView } from "../api/types"
 import { useBus } from "../api/bus"
 import { normWorkspace } from "../lib/workspace"
+import { deriveAutoTitle } from "../api/fold"
 
 // ---------- app store ----------
 
@@ -92,6 +93,13 @@ export function AppProvider({ children }: { children: ReactNode }): React.ReactE
     if (t === "result" || t === "done" || t === "error" || t === "step") void refreshSessions()
   })
 
+  // Window event for immediate refresh from stream store
+  useEffect(() => {
+    const on = (): void => { void refreshSessions() }
+    window.addEventListener("nh-refresh-sessions", on)
+    return () => window.removeEventListener("nh-refresh-sessions", on)
+  }, [refreshSessions])
+
   const value: AppStore = { settings, sessions, sessionsError, sessionsLoading, refreshSessions, refreshSettings, workspace }
   return <AppCtx.Provider value={value}>{children}</AppCtx.Provider>
 }
@@ -120,7 +128,7 @@ interface StreamStore {
   steer: (sessionId: string, text: string) => Promise<void>
   stop: (sessionId: string) => Promise<void>
   /** Drop the settled live turn (after the folded log has been refetched). */
-  dismiss: (sessionId: string) => void
+  dismiss: (sessionId: string, startedAt?: number) => void
 }
 
 const StreamCtx = createContext<StreamStore | null>(null)
@@ -178,6 +186,21 @@ export function StreamProvider({ children }: { children: ReactNode }): React.Rea
       })
       const ctrl = new AbortController()
       aborts.current.set(sessionId, ctrl)
+
+      // Auto-title on prompt: derive clean semantic topic and persist (only on unnamed sessions)
+      void (async () => {
+        try {
+          const rows = await api.sessions()
+          const cur = rows.find((r) => r.sessionId === sessionId)
+          if (cur && (!cur.title || cur.title.startsWith("未命名") || cur.title === "未命名会话")) {
+            const autoTitle = deriveAutoTitle(text)
+            if (autoTitle && autoTitle !== cur.title) {
+              await api.setTitle(sessionId, autoTitle)
+              window.dispatchEvent(new Event("nh-refresh-sessions"))
+            }
+          }
+        } catch {}
+      })()
 
       const apply = (ev: import("../api/client").StreamEvent): void => {
         updateTurn(sessionId, (t) => {
@@ -250,9 +273,11 @@ export function StreamProvider({ children }: { children: ReactNode }): React.Rea
     [],
   )
 
-  const dismiss = useCallback((sessionId: string) => {
+  const dismiss = useCallback((sessionId: string, startedAt?: number) => {
     setLive((prev) => {
-      if (!prev.has(sessionId)) return prev
+      const cur = prev.get(sessionId)
+      if (!cur || cur.busy) return prev
+      if (startedAt !== undefined && cur.startedAt !== startedAt) return prev
       const next = new Map(prev)
       next.delete(sessionId)
       return next
