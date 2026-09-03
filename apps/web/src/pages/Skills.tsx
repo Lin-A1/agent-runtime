@@ -1,12 +1,11 @@
 /**
  * Skills — the agent skill directory: every SkillInfo as a card with name,
- * description and source path; clicking opens the body. 导入 = POST /v1/skills
- * writes pluginsDir/skills/<name>/SKILL.md（目录即注册面，落盘即可发现）。
- * 引擎没有删除端点，故只提供「复制正文/路径」，不做假按钮。
+ * description and source path; clicking opens the body. 导入 = POST /v1/skills，
+ * 删除 = DELETE /v1/skills?name=（目录即注册面，落盘即可发现，删目录即注销）。
  */
 import { useState } from "react"
 import { useApi } from "../lib/useApi"
-import { ArrowLeft, Check, Copy, FolderOpen, Plus, Sparkles, X } from "lucide-react"
+import { ArrowLeft, Check, Copy, FolderOpen, Plus, Sparkles, Trash2, X } from "lucide-react"
 import { api } from "../api/client"
 import type { SkillInfo } from "../api/types"
 import { EmptyState, Modal, PageHeader } from "../components/ui"
@@ -22,6 +21,15 @@ export function SkillsPage(): React.ReactElement {
   const [importErr, setImportErr] = useState<string | null>(null)
   const [importing, setImporting] = useState(false)
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
+
+  const removeSkill = (name: string): void => {
+    void api.deleteSkill(name).then(() => {
+      setConfirmDelete(null)
+      if (open?.name === name) setOpen(null)
+      skills.retry()
+    }).catch((e) => window.alert("删除失败：" + (e instanceof Error ? e.message : String(e))))
+  }
 
   const flashCopied = (key: string): void => {
     setCopiedKey(key)
@@ -103,6 +111,41 @@ export function SkillsPage(): React.ReactElement {
                   >
                     {copiedKey === `body:${s.name}` ? <Check size={12} className="text-ok" /> : <Copy size={12} />}
                   </button>
+                  {confirmDelete === s.name ? (
+                    <span className="flex flex-none items-center gap-1 opacity-100">
+                      <button
+                        className="btn btn-danger !px-2 !py-0.5 text-[10px]"
+                        title="确认删除（不可撤销）"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          removeSkill(s.name)
+                        }}
+                      >
+                        确认
+                      </button>
+                      <button
+                        className="icon-btn !h-5 !w-5"
+                        title="取消"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setConfirmDelete(null)
+                        }}
+                      >
+                        <X size={11} />
+                      </button>
+                    </span>
+                  ) : (
+                    <button
+                      className="icon-btn !h-6 !w-6 flex-none text-ghost opacity-0 hover:text-bad group-hover:opacity-100"
+                      title="删除此技能"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setConfirmDelete(s.name)
+                      }}
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  )}
                 </div>
                 <p className="mt-2.5 line-clamp-3 text-xs leading-relaxed text-faint">{s.description ?? "（无描述）"}</p>
                 <p className="mt-3 flex items-center gap-1 truncate border-t border-line pt-2 font-mono text-2xs text-faint" title={s.path}>
@@ -131,6 +174,21 @@ export function SkillsPage(): React.ReactElement {
             <ArrowLeft size={13} /> 返回
           </button>
           <span className="flex items-center gap-2">
+            {confirmDelete === open?.name ? (
+              <span className="flex items-center gap-1.5">
+                <span className="text-2xs text-bad">确认删除？</span>
+                <button className="btn btn-danger !py-0.5 text-2xs" onClick={() => removeSkill(open!.name)}>
+                  确认
+                </button>
+                <button className="btn !py-0.5 text-2xs" onClick={() => setConfirmDelete(null)}>
+                  取消
+                </button>
+              </span>
+            ) : (
+              <button className="btn btn-quiet text-bad" onClick={() => setConfirmDelete(open!.name)}>
+                <Trash2 size={13} /> 删除
+              </button>
+            )}
             <button className="btn" disabled={!body} onClick={() => copyText(`modal:${open?.name}`, body)}>
               {copiedKey === `modal:${open?.name}` ? <Check size={13} className="text-ok" /> : <Copy size={13} />} 复制正文
             </button>
