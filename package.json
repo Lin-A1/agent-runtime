@@ -9,7 +9,6 @@
       "packages/llm",
       "packages/plugin",
       "packages/runtime",
-      "packages/cli",
       "packages/memory",
       "packages/server",
       "packages/sdk",
