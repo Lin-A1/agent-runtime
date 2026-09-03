@@ -781,3 +781,14 @@ select {
 .pop-in {
   animation: pop-in 0.14s ease both;
 }
+
+/* mermaid diagrams: scale to the column, scroll when wider */
+.mermaid-host {
+  overflow-x: auto;
+}
+.mermaid-host svg {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 0 auto;
+}

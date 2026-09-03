@@ -1,9 +1,11 @@
-import React, { useState } from "react"
+import React, { useEffect, useState } from "react"
 
 /**
  * Minimal markdown renderer for assistant turns — headings, fenced code
- * (header + copy + line numbers + diff tint), blockquotes, lists, bold,
- * inline code, links. React-element output (no HTML injection).
+ * (header + copy + line numbers + diff tint), mermaid diagrams, blockquotes,
+ * lists, bold, inline code, links. React-element output (no HTML injection)
+ * except the mermaid SVG, which comes from mermaid's own strict-sanitized
+ * renderer.
  */
 export function Markdown({ text, streaming }: { text: string; streaming?: boolean }): React.ReactElement {
   const blocks: React.ReactElement[] = []
@@ -21,7 +23,7 @@ export function Markdown({ text, streaming }: { text: string; streaming?: boolea
         i++
       }
       i++ // closing fence
-      blocks.push(<CodeBlock key={key++} lang={lang} code={buf.join("\n")} />)
+      blocks.push(lang === "mermaid" ? <MermaidBlock key={key++} code={buf.join("\n")} /> : <CodeBlock key={key++} lang={lang} code={buf.join("\n")} />)
       continue
     }
     if (/^#{1,3}\s/.test(line)) {
@@ -90,6 +92,54 @@ export function Markdown({ text, streaming }: { text: string; streaming?: boolea
   }
   if (streaming) blocks.push(<span key="caret" className="stream-caret" />)
   return <div className="md">{blocks}</div>
+}
+
+/** Mermaid fenced block → diagram. The mermaid bundle is heavy, so it is
+ *  dynamically imported only when a diagram actually appears (streaming shows
+ *  the raw code until the block parses). Theme follows data-theme; a parse
+ *  failure falls back to the plain code display with a hint. */
+/** Models often write `flowchart LR A --> B` with statements sharing the
+ *  declaration line; mermaid's grammar wants them on their own lines. Split
+ *  the header from whatever follows (direction token first, if present). */
+function normalizeMermaid(src: string): string {
+  return src
+    .replace(/\r\n/g, "\n")
+    .replace(/^([ \t]*(?:flowchart|graph)[ \t]+(?:TB|TD|BT|RL|LR|td|tb|bt|rl|lr)?)[ \t]+(?=\S)/m, "$1\n")
+}
+
+function MermaidBlock({ code }: { code: string }): React.ReactElement {
+  const [svg, setSvg] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  useEffect(() => {
+    let alive = true
+    setSvg(null)
+    setError(null)
+    void (async () => {
+      try {
+        const { default: mermaid } = await import("mermaid")
+        const dark = document.documentElement.dataset.theme === "dark"
+        mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: dark ? "dark" : "default" })
+        const id = `mmd-${Math.random().toString(36).slice(2)}`
+        const rendered = await mermaid.render(id, normalizeMermaid(code))
+        if (alive) setSvg(rendered.svg)
+      } catch (err) {
+        if (alive) setError(err instanceof Error ? err.message : String(err))
+      }
+    })()
+    return () => {
+      alive = false
+    }
+  }, [code])
+  if (error) return <CodeBlock lang={`mermaid（渲染失败: ${error}）`} code={code} />
+  if (!svg) return <CodeBlock lang="mermaid" code={code} />
+  return (
+    <div className="codeblock">
+      <div className="codeblock-bar">
+        <span>mermaid</span>
+      </div>
+      <div className="codeblock-body mermaid-host" dangerouslySetInnerHTML={{ __html: svg }} />
+    </div>
+  )
 }
 
 function CodeBlock({ lang, code }: { lang: string; code: string }): React.ReactElement {
