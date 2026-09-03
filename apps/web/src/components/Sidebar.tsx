@@ -23,11 +23,11 @@ import {
 import { api } from "../api/client"
 import { useBusRefresh } from "../api/bus"
 import type { SessionRow, SettingsView } from "../api/types"
-import { prettyTitle, relativeTime } from "../api/fold"
+import { relativeTime, sessionDisplayName } from "../api/fold"
 import { normWorkspace, useWorkspace } from "../lib/workspace"
 import { useApi } from "../lib/useApi"
 import { EmotionBall } from "./EmotionBall"
-import { Dropdown, MenuItem, Spinner, StatusDot } from "./ui"
+import { Dropdown, MenuItem, Modal, Spinner, StatusDot } from "./ui"
 import { useTheme } from "../lib/theme"
 
 type GroupKey = "今天" | "昨天" | "本周" | "上周" | "本月" | "更早"
@@ -58,14 +58,19 @@ export function Sidebar({ onOpenRemote, collapsed, onToggleCollapse }: { onOpenR
   const [ws, setWs] = useWorkspace(settings.data?.workspace)
   const workspaces = useMemo(() => {
     const seen = new Set<string>()
-    for (const w of [settings.data?.workspace, ...(sessions.data ?? []).map((r) => r.workspace)]) {
+    // The current selection belongs in the list even when it has no sessions
+    // yet (a custom path) — otherwise reopening the switcher makes the
+    // selection look lost.
+    for (const w of [settings.data?.workspace, ws, ...(sessions.data ?? []).map((r) => r.workspace)]) {
       if (w && w !== "") seen.add(normWorkspace(w))
     }
     return [...seen]
-  }, [settings.data?.workspace, sessions.data])
+  }, [settings.data?.workspace, ws, sessions.data])
   const [query, setQuery] = useState("")
   const [showArchived, setShowArchived] = useState(false)
   const [creating, setCreating] = useState(false)
+  const [wsInputOpen, setWsInputOpen] = useState(false)
+  const [wsDraft, setWsDraft] = useState("")
 
   const newTask = (): void => {
     if (creating) return
@@ -163,28 +168,49 @@ export function Sidebar({ onOpenRemote, collapsed, onToggleCollapse }: { onOpenR
                   </span>
                 </MenuItem>
               ))}
-              {ws && (
-                <>
-                  <div className="menu-sep" />
-                  <MenuItem
-                    icon={<Plus size={14} />}
-                    onClick={() => {
-                      // 引擎默认工作区之外的自定义路径：输入一次即入库。
-                      const w = window.prompt("工作区绝对路径（引擎按此创建/过滤会话）", ws)
-                      if (w?.trim()) {
-                        setWs(w.trim())
-                        close()
-                      }
-                    }}
-                  >
-                    输入其他工作区路径…
-                  </MenuItem>
-                </>
-              )}
+              <div className="menu-sep" />
+              <MenuItem
+                icon={<Plus size={14} />}
+                onClick={() => {
+                  // 引擎默认工作区之外的自定义路径：window.prompt 在 webview
+                  // 里不可用，走真模态框。
+                  setWsDraft(ws)
+                  setWsInputOpen(true)
+                  close()
+                }}
+              >
+                输入其他工作区路径…
+              </MenuItem>
             </>
           )}
         </Dropdown>
       </div>
+
+      {/* custom workspace path — a real modal (window.prompt is dead in webviews) */}
+      <Modal open={wsInputOpen} onClose={() => setWsInputOpen(false)} title="输入工作区路径" width={420}>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault()
+            const p = wsDraft.trim()
+            if (!p) return
+            setWs(p)
+            setWsInputOpen(false)
+          }}
+        >
+          <input
+            autoFocus
+            value={wsDraft}
+            onChange={(e) => setWsDraft(e.target.value)}
+            placeholder="绝对路径，如 G:/Code/my-project"
+            className="input w-full font-mono text-xs"
+          />
+          <p className="mt-2 text-2xs leading-relaxed text-ghost">引擎按此路径创建/过滤会话；路径不存在时该工作区为空。</p>
+          <div className="mt-3 flex justify-end gap-2">
+            <button type="button" className="btn text-xs" onClick={() => setWsInputOpen(false)}>取消</button>
+            <button type="submit" className="btn btn-primary text-xs" disabled={!wsDraft.trim()}>保存</button>
+          </div>
+        </form>
+      </Modal>
 
       {/* new task + search */}
       <div className="flex items-center gap-1.5 px-3 pt-3">
@@ -252,6 +278,15 @@ export function Sidebar({ onOpenRemote, collapsed, onToggleCollapse }: { onOpenR
             ))}
           </div>
         )}
+
+        {/* honest empty state: a workspace with no sessions must not render a blank list */}
+        {!q && sessions.data && !resident && groups.size === 0 && archived.length === 0 && freeTasks.length === 0 && (
+          <div className="mt-8 px-4 text-center text-2xs leading-relaxed text-ghost">
+            该工作区还没有会话
+            <br />
+            点上方「新任务」创建
+          </div>
+        )}
       </nav>
 
       {/* footer: settings is the hub for usage/schedules/dags/skills/memory/status */}
@@ -294,7 +329,7 @@ function FreeTaskRow({ row, active, onOpen }: { row: SessionRow; active: boolean
       <Clock size={14} className="mt-0.5 flex-none text-ghost" />
       <span className="min-w-0 flex-1">
         <span className="block truncate text-[13px] text-dim group-hover:text-fg" style={active ? { color: "var(--txt)" } : undefined}>
-          {prettyTitle(row.title, "未命名任务")}
+          {sessionDisplayName(row, "未命名任务")}
         </span>
         <span className="mt-0.5 block text-2xs text-ghost">{relativeTime(row.updatedAt)}</span>
       </span>
@@ -337,8 +372,9 @@ function SessionRowView({
     onChanged?.()
   }
   const doDelete = (): void => {
-    void api.deleteSession(row.sessionId)
-    onChanged?.()
+    // Refetch AFTER the delete lands — a synchronous refetch races the DELETE
+    // and can repaint the just-deleted row until the next poll.
+    void api.deleteSession(row.sessionId).then(() => onChanged?.())
     if (location.pathname === `/session/${row.sessionId}`) navigate("/")
   }
 
@@ -358,7 +394,7 @@ function SessionRowView({
         )}
         <span className="min-w-0 flex-1">
           <span className={`flex items-center gap-1.5 truncate text-[13px] ${pinned ? "font-medium text-fg" : "text-dim group-hover:text-fg"}`} style={active ? { color: "var(--txt)" } : undefined}>
-            {prettyTitle(row.title, isButler ? "newhorse" : "未命名会话")}
+            {sessionDisplayName(row)}
           </span>
           <span className="mt-0.5 flex items-center gap-1.5 text-2xs text-ghost">
             {archived ? <Archive size={10} /> : null}

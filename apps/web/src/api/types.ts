@@ -128,10 +128,12 @@ export interface SettingsView {
 
 export interface ApprovalRequest {
   id: string
-  kind: "command" | "path" | "mode"
+  kind: "command" | "path" | "mode" | "question"
   target: string
   decision?: string
   reason?: string
+  /** question kind only: clickable choices. */
+  options?: string[]
   createdAt?: number
   expiresAt?: number
 }

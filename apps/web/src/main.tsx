@@ -7,6 +7,18 @@ import { Cover } from "./pages/Cover"
 import { SessionPage } from "./pages/Session"
 import { SettingsPage } from "./pages/Settings"
 import { NotFound } from "./pages/NotFound"
+import { setConnection } from "./api/client"
+
+// Remote-device token handoff: the share link carries ?token= (opt-in in the
+// remote-access dialog) — store it once, then strip it from the URL so it
+// never lingers in history.
+;(() => {
+  const q = new URLSearchParams(window.location.search)
+  const t = q.get("token")
+  if (!t) return
+  setConnection(window.location.origin, t)
+  window.history.replaceState(null, "", window.location.pathname + window.location.hash)
+})()
 
 // Hash routing keeps the built bundle servable from any origin/sub-path by the
 // runtime server without server-side route fallback.

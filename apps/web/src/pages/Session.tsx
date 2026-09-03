@@ -20,7 +20,7 @@ import {
 import { api, streamPrompt } from "../api/client"
 import { useBusRefresh } from "../api/bus"
 import type { ChatImage, ContextView, GoalView, PolicyLevel, SessionRow, StoredEventRow, TodoItem } from "../api/types"
-import { foldTodos, prettyTitle } from "../api/fold"
+import { foldTodos, sessionDisplayName } from "../api/fold"
 
 import { useApi } from "../lib/useApi"
 import { EmotionBall } from "../components/EmotionBall"
@@ -225,7 +225,7 @@ export function SessionPage(): React.ReactElement {
           )}
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <h1 className="truncate text-sm font-semibold text-fg">{prettyTitle(session?.title, isButler ? "newhorse 会话" : "会话")}</h1>
+              <h1 className="truncate text-sm font-semibold text-fg">{sessionDisplayName(session ?? {}, "会话")}</h1>
               {isButler && <span className="chip !py-0 !text-[10px]">常驻</span>}
               {busy && (
                 <span className="flex items-center gap-1.5 text-2xs text-warn">

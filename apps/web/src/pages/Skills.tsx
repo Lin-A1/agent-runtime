@@ -2,10 +2,11 @@
  * Skills — the agent skill directory: every SkillInfo as a card with name,
  * description and source path; clicking opens the body. 导入 = POST /v1/skills
  * writes pluginsDir/skills/<name>/SKILL.md（目录即注册面，落盘即可发现）。
+ * 引擎没有删除端点，故只提供「复制正文/路径」，不做假按钮。
  */
 import { useState } from "react"
 import { useApi } from "../lib/useApi"
-import { ArrowLeft, FolderOpen, Plus, Sparkles, X } from "lucide-react"
+import { ArrowLeft, Check, Copy, FolderOpen, Plus, Sparkles, X } from "lucide-react"
 import { api } from "../api/client"
 import type { SkillInfo } from "../api/types"
 import { EmptyState, Modal, PageHeader } from "../components/ui"
@@ -20,6 +21,25 @@ export function SkillsPage(): React.ReactElement {
   const [draft, setDraft] = useState({ name: "", description: "", body: "" })
   const [importErr, setImportErr] = useState<string | null>(null)
   const [importing, setImporting] = useState(false)
+  const [copiedKey, setCopiedKey] = useState<string | null>(null)
+
+  const flashCopied = (key: string): void => {
+    setCopiedKey(key)
+    setTimeout(() => setCopiedKey((c) => (c === key ? null : c)), 1_500)
+  }
+  const copyText = (key: string, text: string): void => {
+    void navigator.clipboard
+      .writeText(text)
+      .then(() => flashCopied(key))
+      .catch(() => {})
+  }
+  // 卡片上的「复制正文」需要先拉 body 再写剪贴板。
+  const copyBody = (s: SkillInfo): void => {
+    void api
+      .skillBody(s.name)
+      .then((r) => copyText(`body:${s.name}`, r.body ?? ""))
+      .catch(() => {})
+  }
 
   const doImport = (): void => {
     if (!draft.name.trim() || !draft.body.trim()) return
@@ -58,37 +78,66 @@ export function SkillsPage(): React.ReactElement {
         <div className="min-h-0 flex-1 overflow-y-auto p-4 md:p-6">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {list.map((s: SkillInfo) => (
-              <button
+              <div
                 key={s.name}
+                role="button"
+                tabIndex={0}
                 onClick={() => setOpen(s)}
-                className="card group p-4 text-left transition-colors hover:border-linestrong hover:bg-cardhover"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") setOpen(s)
+                }}
+                className="card group cursor-pointer p-4 text-left transition-colors hover:border-linestrong hover:bg-cardhover"
               >
                 <div className="flex items-center gap-2">
                   <span className="flex h-7 w-7 flex-none items-center justify-center rounded-md border border-line bg-bg2 text-dim">
                     <Sparkles size={14} />
                   </span>
                   <span className="min-w-0 flex-1 truncate text-sm font-medium text-fg">{s.name}</span>
+                  <button
+                    className="icon-btn !h-6 !w-6 flex-none opacity-0 group-hover:opacity-100"
+                    title="复制正文"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      copyBody(s)
+                    }}
+                  >
+                    {copiedKey === `body:${s.name}` ? <Check size={12} className="text-ok" /> : <Copy size={12} />}
+                  </button>
                 </div>
                 <p className="mt-2.5 line-clamp-3 text-xs leading-relaxed text-faint">{s.description ?? "（无描述）"}</p>
-                <p className="mt-3 flex items-center gap-1 truncate border-t border-line pt-2 font-mono text-2xs text-ghost">
-                  <FolderOpen size={10} className="flex-none" /> {s.path}
+                <p className="mt-3 flex items-center gap-1 truncate border-t border-line pt-2 font-mono text-2xs text-faint" title={s.path}>
+                  <FolderOpen size={10} className="flex-none text-dim" /> {s.path}
                 </p>
-              </button>
+              </div>
             ))}
           </div>
         </div>
       )}
 
       <Modal open={open !== null} onClose={() => setOpen(null)} title={open?.name ?? "技能"} width={640}>
-        <p className="mb-3 text-xs leading-relaxed text-faint">{open?.description}</p>
+        <p className="mb-2 text-xs leading-relaxed text-faint">{open?.description}</p>
+        {open && (
+          <div className="mb-3 flex items-center gap-2 rounded-lg border border-line bg-bg2 px-2.5 py-1.5">
+            <FolderOpen size={11} className="flex-none text-faint" />
+            <span className="min-w-0 flex-1 truncate font-mono text-2xs text-dim" title={open.path}>{open.path}</span>
+            <button className="btn !py-0.5 flex-none text-2xs" onClick={() => copyText(`path:${open.name}`, open.path)}>
+              {copiedKey === `path:${open.name}` ? <Check size={11} className="text-ok" /> : <Copy size={11} />} 路径
+            </button>
+          </div>
+        )}
         <pre className="max-h-[55vh] overflow-y-auto whitespace-pre-wrap rounded-xl bg-bg2 p-4 font-mono text-2xs leading-relaxed text-dim">{body}</pre>
         <div className="mt-3 flex items-center justify-between">
           <button className="btn" onClick={() => setOpen(null)}>
             <ArrowLeft size={13} /> 返回
           </button>
-          <button className="btn btn-quiet text-faint" onClick={() => setOpen(null)}>
-            <X size={13} /> 关闭
-          </button>
+          <span className="flex items-center gap-2">
+            <button className="btn" disabled={!body} onClick={() => copyText(`modal:${open?.name}`, body)}>
+              {copiedKey === `modal:${open?.name}` ? <Check size={13} className="text-ok" /> : <Copy size={13} />} 复制正文
+            </button>
+            <button className="btn btn-quiet text-faint" onClick={() => setOpen(null)}>
+              <X size={13} /> 关闭
+            </button>
+          </span>
         </div>
       </Modal>
 

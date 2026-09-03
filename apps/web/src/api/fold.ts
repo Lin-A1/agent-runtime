@@ -13,7 +13,7 @@
  *    MemoryStored / Interrupted / Compacted / steer → dimmed note rows.
  *  - Session.ModelCalled → trace rows (pre-review #38).
  */
-import type { ChatImage, FileContent, ModelCallRow, StoredEventRow, TodoItem } from "./types"
+import type { ChatImage, FileContent, ModelCallRow, SessionRow, StoredEventRow, TodoItem } from "./types"
 
 // --- transcript blocks ---
 
@@ -361,6 +361,14 @@ export function prettyTitle(title: string | undefined, fallback: string, max = 2
     .trim()
   if (!clean) return fallback
   return clean.length > max ? clean.slice(0, max) + "…" : clean
+}
+
+/** Display name for a session row. The resident butler session is ALWAYS
+ *  "newhorse" regardless of its derived or renamed title; every other row
+ *  pretty-prints its title with a fallback. */
+export function sessionDisplayName(row: Pick<SessionRow, "role" | "title">, fallback = "未命名会话", max = 26): string {
+  if (row.role === "butler") return "newhorse"
+  return prettyTitle(row.title, fallback, max)
 }
 
 /** data: URL for rendering a fixture/transport image (raw base64 on wire). */

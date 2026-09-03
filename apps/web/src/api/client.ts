@@ -229,7 +229,8 @@ export const api = {
   catalog: () => request<{ catalog: ModelCatalog | null }>("/v1/models/catalog").then((r) => r.catalog),
 
   approvals: () => request<{ approvals: ApprovalRequest[] }>("/v1/approvals"),
-  approve: (id: string, allow: boolean) => request<{ settled?: boolean }>(`/v1/approvals/${id}`, { method: "POST", body: { allow } }),
+  approve: (id: string, allow: boolean, reply?: string) =>
+    request<{ settled?: boolean }>(`/v1/approvals/${id}`, { method: "POST", body: { allow, ...(reply !== undefined ? { reply } : {}) } }),
 
   usage: (days = 30) => request<UsageSummary>(`/v1/usage?days=${days}`),
 
@@ -253,6 +254,7 @@ export const api = {
   setTitle: (id: string, title: string) => request<{ title: string }>(`/v1/session/${id}/title`, { method: "POST", body: { title } }),
 
   fs: (workspace?: string, path?: string) => request<{ path: string; entries: FsEntry[] }>(`/v1/fs${qs({ workspace, path })}`),
+  findFiles: (q: string, workspace?: string) => request<{ results: string[] }>(`/v1/files/find${qs({ q, workspace })}`).then((r) => r.results),
   file: (workspace: string | undefined, path: string) => request<FileContent>(`/v1/file${qs({ workspace, path })}`),
 
   skills: () => request<{ skills: SkillInfo[] }>("/v1/skills"),

@@ -10,9 +10,9 @@ import { useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { api } from "../api/client"
 import type { SessionRow } from "../api/types"
-import { prettyTitle, relativeTime } from "../api/fold"
+import { relativeTime, sessionDisplayName } from "../api/fold"
 import { useApi } from "../lib/useApi"
-import { useWorkspace } from "../lib/workspace"
+import { normWorkspace, useWorkspace } from "../lib/workspace"
 import { EmotionBall } from "../components/EmotionBall"
 import { Composer } from "../components/Composer"
 import { StatusDot } from "../components/ui"
@@ -28,16 +28,18 @@ export function Cover(): React.ReactElement {
   // The composer model chip must show the ENGINE's active model, not a default.
   const activeModel = settings.data?.model ?? "…"
 
-  const recent = (sessions.data ?? [])
-    .filter((r) => r.role !== "butler" && !r.archived)
-    .sort((a, b) => b.updatedAt - a.updatedAt)
-    .slice(0, 4)
-
-  const [busyBoot, setBusyBoot] = useState(false)
   // Cover submit: every task gets its OWN session in the selected workspace
   // (the resident butler session stays pinned in the sidebar as the
   // coordinator — it is not a catch-all conversation).
   const [ws] = useWorkspace(settings.data?.workspace)
+  // 最近会话 follows the selected workspace (same partition rule as the
+  // sidebar); free tasks without a workspace stay visible everywhere.
+  const recent = (sessions.data ?? [])
+    .filter((r) => r.role !== "butler" && !r.archived && (!r.workspace || !ws || normWorkspace(r.workspace) === ws))
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, 4)
+
+  const [busyBoot, setBusyBoot] = useState(false)
   const newTask = (draft: string): void => {
     if (busyBoot) return
     setBusyBoot(true)
@@ -104,7 +106,7 @@ export function Cover(): React.ReactElement {
                 className="card group p-4 text-left transition-colors hover:border-linestrong hover:bg-cardhover"
               >
                 <p className="line-clamp-2 min-h-[40px] text-[15px] font-semibold leading-snug text-fg">
-                  {prettyTitle(r.title, "未命名会话", 60)}
+                  {sessionDisplayName(r, "未命名会话", 60)}
                 </p>
                 <div className="mt-3 flex items-center gap-2 text-2xs text-ghost">
                   <StatusDot status={r.status} />

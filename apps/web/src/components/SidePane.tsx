@@ -540,9 +540,9 @@ function ApprovalsTab(): React.ReactElement {
     return () => clearInterval(t)
   }, [])
   useBusRefresh((f) => f.event.type === "tool", approvals.retry, 2_000)
-  const decide = (req: ApprovalRequest, allow: boolean): void => {
+  const decide = (req: ApprovalRequest, allow: boolean, reply?: string): void => {
     void api
-      .approve(req.id, allow)
+      .approve(req.id, allow, reply)
       .then(() => {
         setSettled((p) => [{ req, allow }, ...p])
         setError(null)
@@ -556,26 +556,56 @@ function ApprovalsTab(): React.ReactElement {
     <div className="p-2">
       {error && <div className="mb-2 px-1.5 text-2xs text-bad">{error}</div>}
       {pending.length === 0 && settled.length === 0 ? (
-        <EmptyState icon={<ShieldQuestion size={18} />} title="没有待审批项" hint="strict 策略下，命令执行与敏感路径写入会在这里请求确认。" />
+        <EmptyState icon={<ShieldQuestion size={18} />} title="没有待审批项" hint="strict 策略下，命令执行与敏感路径写入会在这里请求确认；模型提问（ask_user）也会出现在这里。" />
       ) : (
         <>
-          {pending.map((req) => (
-            <div key={req.id} className="mb-2 rounded-lg border border-line bg-bg2 p-2.5">
-              <div className="mb-1 flex items-center gap-1.5 text-2xs font-medium text-warn">
-                <ShieldQuestion size={12} /> {req.kind === "command" ? "命令执行" : req.kind === "path" ? "文件写入" : "模式切换"}
+          {pending.map((req) =>
+            req.kind === "question" ? (
+              <div key={req.id} className="mb-2 rounded-lg border border-line bg-bg2 p-2.5">
+                <div className="mb-1 flex items-center gap-1.5 text-2xs font-medium text-warn">
+                  <ShieldQuestion size={12} /> 模型提问
+                </div>
+                <p className="rounded-md bg-panel p-2 text-xs leading-relaxed text-fg">{req.target}</p>
+                {req.options && req.options.length > 0 ? (
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {req.options.map((opt) => (
+                      <button key={opt} className="btn btn-primary !py-1 text-2xs" onClick={() => decide(req, true, opt)}>
+                        {opt}
+                      </button>
+                    ))}
+                    <button className="btn btn-danger !py-1 text-2xs" onClick={() => decide(req, false)}>
+                      <X size={11} /> 拒绝
+                    </button>
+                  </div>
+                ) : (
+                  <div className="mt-2 flex gap-1.5">
+                    <button className="btn btn-primary !py-1 text-2xs" onClick={() => decide(req, true)}>
+                      <Check size={11} /> 同意
+                    </button>
+                    <button className="btn btn-danger !py-1 text-2xs" onClick={() => decide(req, false)}>
+                      <X size={11} /> 拒绝
+                    </button>
+                  </div>
+                )}
               </div>
-              <code className="block break-all rounded-md bg-panel p-2 font-mono text-2xs text-fg">{req.target}</code>
-              {req.reason && <p className="mt-1.5 text-2xs leading-relaxed text-faint">{req.reason}</p>}
-              <div className="mt-2 flex gap-1.5">
-                <button className="btn btn-primary !py-1 text-2xs" onClick={() => decide(req, true)}>
-                  <Check size={11} /> 允许
-                </button>
-                <button className="btn btn-danger !py-1 text-2xs" onClick={() => decide(req, false)}>
-                  <X size={11} /> 拒绝
-                </button>
+            ) : (
+              <div key={req.id} className="mb-2 rounded-lg border border-line bg-bg2 p-2.5">
+                <div className="mb-1 flex items-center gap-1.5 text-2xs font-medium text-warn">
+                  <ShieldQuestion size={12} /> {req.kind === "command" ? "命令执行" : req.kind === "path" ? "文件写入" : "模式切换"}
+                </div>
+                <code className="block break-all rounded-md bg-panel p-2 font-mono text-2xs text-fg">{req.target}</code>
+                {req.reason && <p className="mt-1.5 text-2xs leading-relaxed text-faint">{req.reason}</p>}
+                <div className="mt-2 flex gap-1.5">
+                  <button className="btn btn-primary !py-1 text-2xs" onClick={() => decide(req, true)}>
+                    <Check size={11} /> 允许
+                  </button>
+                  <button className="btn btn-danger !py-1 text-2xs" onClick={() => decide(req, false)}>
+                    <X size={11} /> 拒绝
+                  </button>
+                </div>
               </div>
-            </div>
-          ))}
+            ),
+          )}
           {settled.length > 0 && (
             <>
               <div className="label px-1.5 py-1">已处理</div>

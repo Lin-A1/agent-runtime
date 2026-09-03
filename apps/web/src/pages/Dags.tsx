@@ -1,15 +1,18 @@
 /**
  * Orchestration (DAG) — the differentiation page (no ZCode counterpart). The
  * declarative schedule and the model's dynamic spawns share one driven-child
- * foundation; here we present declared graphs: a list of DAGs and a node board
- * with the six states, per-node model (cost-down visibility, §1.5④), a jump
- * into each node's child session, and a spec JSON submission box.
+ * foundation; here we present declared graphs: a list of DAGs (auto-selects
+ * the running one) and a node board with the six states, per-node model
+ * (cost-down visibility, §1.5④), click-to-expand node detail (refetches
+ * /v1/dag/:id on expand), copyable dagId, and a spec JSON submission box.
  */
 import { useEffect, useState } from "react"
 import {
+  Check,
   CheckCircle2,
   Circle,
   CircleDashed,
+  Copy,
   GitBranch,
   Loader2,
   Play,
@@ -18,10 +21,10 @@ import {
   XCircle,
 } from "lucide-react"
 import { api } from "../api/client"
-import type { DagNodeState, DagSpec, DagStatus } from "../api/types"
+import type { DagNodeState, DagNodeStatus, DagSpec, DagStatus } from "../api/types"
 import { relativeTime } from "../api/fold"
 import { useApi } from "../lib/useApi"
-import { AsyncRegion, EmptyState, Modal, PageHeader } from "../components/ui"
+import { AsyncRegion, Chevron, EmptyState, Modal, PageHeader } from "../components/ui"
 
 const NODE_STATE: Record<DagNodeState, { label: string; color: string; icon: React.ReactNode }> = {
   pending: { label: "待就绪", color: "var(--txt-ghost)", icon: <Circle size={13} /> },
@@ -36,7 +39,9 @@ export function DagsPage(): React.ReactElement {
   const dags = useApi<DagStatus[]>(() => api.dags(), [])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [specOpen, setSpecOpen] = useState(false)
-  const selected = dags.data?.find((d) => d.dagId === selectedId) ?? dags.data?.[0] ?? null
+  const [copiedId, setCopiedId] = useState<string | null>(null)
+  // 默认选中：显式选择优先，否则自动跟随正在运行的 DAG，再次是第一个。
+  const selected = dags.data?.find((d) => d.dagId === selectedId) ?? dags.data?.find((d) => !d.done) ?? dags.data?.[0] ?? null
   const anyRunning = (dags.data ?? []).some((d) => !d.done)
   // Live progress without a bus feed for DAG state: poll while anything runs.
   useEffect(() => {
@@ -57,6 +62,16 @@ export function DagsPage(): React.ReactElement {
   ))
   const [specErr, setSpecErr] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+
+  const copyId = (id: string): void => {
+    void navigator.clipboard
+      .writeText(id)
+      .then(() => {
+        setCopiedId(id)
+        setTimeout(() => setCopiedId((c) => (c === id ? null : c)), 1_500)
+      })
+      .catch(() => {})
+  }
 
   const submitSpec = (): void => {
     let spec: DagSpec
@@ -96,7 +111,14 @@ export function DagsPage(): React.ReactElement {
       <AsyncRegion
         state={dags}
         emptyIf={(l) => l.length === 0}
-        empty={<EmptyState className="!py-24" icon={<GitBranch size={18} />} title="还没有声明式编排" hint="提交一个 DAG spec（nodes + dependsOn），或让模型在回合中用 declare_dag 自行声明。" />}
+        empty={
+          <EmptyState
+            className="!py-24"
+            icon={<GitBranch size={18} />}
+            title="还没有声明式编排"
+            hint="点击右上角提交一个 DAG spec（nodes + dependsOn），或让模型在回合中用 declare_dag 自行声明；声明后这里会实时展示每个节点的六种状态。"
+          />
+        }
       >
         {(list) => (
           <div className="grid min-h-0 flex-1 grid-cols-1 gap-0 overflow-y-auto lg:grid-cols-[320px_1fr] lg:overflow-hidden">
@@ -107,10 +129,15 @@ export function DagsPage(): React.ReactElement {
                 const active = d.nodes.some((n) => n.state === "running")
                 const isSel = selected?.dagId === d.dagId
                 return (
-                  <button
+                  <div
                     key={d.dagId}
+                    role="button"
+                    tabIndex={0}
                     onClick={() => setSelectedId(d.dagId)}
-                    className="mb-2 w-full rounded-lg border p-3 text-left transition-colors"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") setSelectedId(d.dagId)
+                    }}
+                    className="mb-2 w-full cursor-pointer rounded-lg border p-3 text-left transition-colors"
                     style={{
                       borderColor: isSel ? "var(--line-strong)" : "var(--line)",
                       background: isSel ? "var(--hover)" : "var(--card)",
@@ -119,6 +146,16 @@ export function DagsPage(): React.ReactElement {
                     <div className="flex items-center gap-2">
                       <span className={`dot flex-none ${active ? "dot-active" : d.done ? "dot-settled" : "dot-error"}`} />
                       <span className="min-w-0 flex-1 truncate font-mono text-xs text-fg">{d.dagId}</span>
+                      <button
+                        className="icon-btn !h-6 !w-6 flex-none"
+                        title="复制 dagId"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          copyId(d.dagId)
+                        }}
+                      >
+                        {copiedId === d.dagId ? <Check size={12} className="text-ok" /> : <Copy size={12} />}
+                      </button>
                     </div>
                     <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-2xs text-faint">
                       <span>{done}/{d.nodes.length} 节点完成</span>
@@ -132,7 +169,7 @@ export function DagsPage(): React.ReactElement {
                       )}
                     </div>
                     <StateBar nodes={d.nodes} />
-                  </button>
+                  </div>
                 )
               })}
             </div>
@@ -176,9 +213,29 @@ function StateBar({ nodes }: { nodes: DagStatus["nodes"] }): React.ReactElement 
 }
 
 function DagBoard({ dag }: { dag: DagStatus }): React.ReactElement {
-  // Lay nodes into flowing lanes by their order in the fold (the durable event
-  // order mirrors declaration order); a connector between cards reads as the
-  // readiness hand-off. True edges live in the submitted spec.
+  const [expanded, setExpanded] = useState<string | null>(null)
+  // 展开时拉一次 /v1/dag/:id 拿最新节点状态（节点详情 API 只有这些字段）。
+  const [fresh, setFresh] = useState<DagStatus | null>(null)
+  useEffect(() => {
+    setExpanded(null)
+    setFresh(null)
+  }, [dag.dagId])
+  useEffect(() => {
+    if (!expanded) return
+    let alive = true
+    void api
+      .dag(dag.dagId)
+      .then((d) => {
+        if (alive) setFresh(d)
+      })
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
+  }, [expanded, dag.dagId])
+
+  const nodeOf = (n: DagNodeStatus): DagNodeStatus => fresh?.nodes.find((x) => x.node === n.node) ?? n
+
   return (
     <div>
       <div className="mb-4 flex flex-wrap items-center gap-2">
@@ -195,25 +252,52 @@ function DagBoard({ dag }: { dag: DagStatus }): React.ReactElement {
       </div>
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
-        {dag.nodes.map((n) => {
+        {dag.nodes.map((raw, i) => {
+          const n = nodeOf(raw)
           const st = NODE_STATE[n.state]
+          const open = expanded === n.node
           return (
-            <div key={n.node} className="card relative p-4">
+            <div
+              key={n.node}
+              role="button"
+              tabIndex={0}
+              onClick={() => setExpanded(open ? null : n.node)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") setExpanded(open ? null : n.node)
+              }}
+              className="card relative cursor-pointer p-4 transition-colors hover:border-linestrong"
+            >
               <div className="flex items-start gap-2.5">
                 <span className="mt-0.5 flex-none" style={{ color: st.color }}>
                   {st.icon}
                 </span>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
+                    <span className="font-mono text-2xs text-ghost">#{i + 1}</span>
                     <span className="font-mono text-xs font-medium text-fg">{n.node}</span>
                     <span className="chip !py-0 !text-[10px]" style={{ color: st.color, borderColor: `${st.color}55` }}>
                       {st.label}
+                    </span>
+                    <span className="ml-auto flex-none">
+                      <Chevron open={open} />
                     </span>
                   </div>
                   <div className="mt-1.5 flex items-center gap-1.5 text-2xs text-faint">
                     <TerminalSquare size={11} />
                     <span className="truncate font-mono">{n.model ?? "继承父模型"}</span>
                   </div>
+                  {open && (
+                    <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1.5 border-t border-line pt-2.5 text-2xs">
+                      <span className="text-faint">序号</span>
+                      <span className="text-right font-mono text-dim">#{i + 1} / {dag.nodes.length}</span>
+                      <span className="text-faint">状态</span>
+                      <span className="text-right font-mono" style={{ color: st.color }}>{st.label}</span>
+                      <span className="text-faint">模型</span>
+                      <span className="truncate text-right font-mono text-dim">{n.model ?? "继承父模型"}</span>
+                      <span className="text-faint">DAG</span>
+                      <span className="truncate text-right font-mono text-ghost">{dag.dagId}</span>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

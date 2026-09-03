@@ -8,7 +8,7 @@ import { useNavigate } from "react-router-dom"
 import { BarChart3, CalendarClock, CornerDownLeft, GitBranch, Inbox, Network, Search, Settings as SettingsIcon, Square, Zap } from "lucide-react"
 import { api } from "../api/client"
 import type { CommandInfo, SessionRow } from "../api/types"
-import { prettyTitle } from "../api/fold"
+import { sessionDisplayName } from "../api/fold"
 import { useLocation } from "react-router-dom"
 import { Modal } from "./ui"
 import { useApi } from "../lib/useApi"
@@ -73,7 +73,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
       })
     }
     for (const s of sessions.data ?? []) {
-      const label = prettyTitle(s.title, s.role === "butler" ? "newhorse 会话" : "未命名会话")
+      const label = sessionDisplayName(s)
       if (!match(label) && !match(s.sessionId)) continue
       items.push({
         key: "sess:" + s.sessionId,

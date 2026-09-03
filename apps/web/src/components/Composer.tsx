@@ -57,13 +57,32 @@ export function Composer({ variant = "session", busy = false, queuedCount = 0, a
   const commands = useApi(() => api.commands(), [])
   const skills = useApi(() => api.skills(), [])
   const sessions = useApi<SessionRow[]>(() => api.sessions(), [])
-  // @ files come from the real workspace root listing (/v1/fs, sandboxed).
+  // @ files: when mentionQ is typed (≥1 char), run recursive search via
+  // /v1/files/find; when empty, fall back to the root dir listing.
+  const [searchResults, setSearchResults] = useState<string[]>([])
   const rootFiles = useApi(() => api.fs(undefined, "."), [])
 
   const slashQ = text.startsWith("/") && !text.includes(" ") ? text.slice(1).toLowerCase() : null
   const showSlash = slashQ !== null
   const mentionQ = /(^|\s)@([^\s]*)$/.exec(text)?.[2] ?? null
   const showMention = mentionQ !== null
+
+  useEffect(() => {
+    if (!mentionQ || mentionQ.trim() === "") {
+      setSearchResults([])
+      return
+    }
+    let alive = true
+    const t = setTimeout(() => {
+      void api.findFiles(mentionQ.trim()).then((res) => {
+        if (alive) setSearchResults(res)
+      }).catch(() => {})
+    }, 150)
+    return () => {
+      alive = false
+      clearTimeout(t)
+    }
+  }, [mentionQ])
 
   const submit = (): void => {
     if (disabled) return
@@ -205,14 +224,24 @@ export function Composer({ variant = "session", busy = false, queuedCount = 0, a
 
         {showMention && (
           <div className="mx-3 mb-2 max-h-56 overflow-y-auto rounded-xl border border-line bg-bg2 p-1">
-            <MentionSection icon={<FileText size={12} />} title="文件（工作区根目录）">
-              {(rootFiles.data?.entries ?? [])
-                .filter((f) => !mentionQ || f.name.toLowerCase().includes(mentionQ.toLowerCase()))
-                .slice(0, 6)
-                .map((f) => (
-                  <MentionRow key={f.name} label={f.dir ? f.name + "/" : f.name} onPick={() => insertMention(f.dir ? f.name + "/" : f.name)} />
-                ))}
-              {(rootFiles.data?.entries ?? []).length === 0 && <div className="px-2.5 py-1.5 text-2xs text-ghost">工作区为空或未配置</div>}
+            <MentionSection icon={<FileText size={12} />} title={mentionQ ? `文件搜索「${mentionQ}」` : "文件（工作区根目录）"}>
+              {mentionQ ? (
+                <>
+                  {searchResults.slice(0, 8).map((f) => (
+                    <MentionRow key={f} label={f} onPick={() => insertMention(f)} />
+                  ))}
+                  {searchResults.length === 0 && <div className="px-2.5 py-1.5 text-2xs text-ghost">没有匹配的文件</div>}
+                </>
+              ) : (
+                <>
+                  {(rootFiles.data?.entries ?? [])
+                    .slice(0, 6)
+                    .map((f) => (
+                      <MentionRow key={f.name} label={f.dir ? f.name + "/" : f.name} onPick={() => insertMention(f.dir ? f.name + "/" : f.name)} />
+                    ))}
+                  {(rootFiles.data?.entries ?? []).length === 0 && <div className="px-2.5 py-1.5 text-2xs text-ghost">工作区为空或未配置</div>}
+                </>
+              )}
             </MentionSection>
             <MentionSection icon={<Sparkles size={12} />} title="技能">
               {(skills.data?.skills ?? [])
