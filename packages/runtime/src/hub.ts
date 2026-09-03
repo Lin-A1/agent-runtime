@@ -84,7 +84,7 @@ export function createSessionHub(events: EventStore, _open: (sessionId: string) 
       // without an explicit workspace is not a "no project" orphan.
       const childWorkspace = workspace ?? process.cwd()
       await events.append(id, "Session.Created", { id, location: childWorkspace, createdAt: Date.now() })
-      await events.append(id, "Session.Spawned", { sessionId: id, parentId })
+      await events.append(id, "Session.Spawned", { sessionId: id, parentId, via: "spawn" })
       sessions.add(id)
       // Pluggable driver: when supplied, the child is actually RUN (not a dead
       // row) with the task prompt. Fire-and-forget — the driver owns

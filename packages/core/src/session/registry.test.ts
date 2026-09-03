@@ -125,6 +125,39 @@ describe("session registry", () => {
     expect(rows[0]?.outcome).toBe("allowed") // newest first
     expect(rows[1]?.reason).toContain("butler requires")
   })
+
+  it("origin folds from Session.Spawned.via; parentId/excludeChildren query filters", async () => {
+    const spawned = (id: string, parentId: string, via: "dag" | "spawn"): StoredEvent => ({
+      aggregate: "session",
+      aggregate_id: id,
+      seq: 1,
+      type: "Session.Spawned",
+      data: { sessionId: id, parentId, via },
+    })
+    const events = new MemoryEventStore()
+    await events.append("parent-1", "Session.Created", { id: "parent-1", location: "/proj", createdAt: Date.now() })
+    await events.append("child-dag", "Session.Created", { id: "child-dag", location: "/proj", createdAt: Date.now() })
+    await events.append("child-dag", "Session.Spawned", { sessionId: "child-dag", parentId: "parent-1", via: "dag" })
+    await events.append("child-spawn", "Session.Created", { id: "child-spawn", location: "/proj", createdAt: Date.now() })
+    await events.append("child-spawn", "Session.Spawned", { sessionId: "child-spawn", parentId: "parent-1", via: "spawn" })
+    await events.append("free", "Session.Created", { id: "free", location: "/proj", createdAt: Date.now() })
+    const registry = new SessionRegistry(events)
+    // Fold: origin comes from the Spawned event's via field.
+    const dagRow = await registry.get("child-dag")
+    expect(dagRow?.parentId).toBe("parent-1")
+    expect(dagRow?.origin).toBe("dag")
+    const spawnRow = await registry.get("child-spawn")
+    expect(spawnRow?.origin).toBe("spawn")
+    const freeRow = await registry.get("free")
+    expect(freeRow?.origin).toBeUndefined()
+    expect(freeRow?.parentId).toBeUndefined()
+    // Query filters: children of X / top-level-only listings.
+    const children = await registry.list({ parentId: "parent-1" })
+    expect(children.map((r) => r.sessionId).sort()).toEqual(["child-dag", "child-spawn"])
+    const top = await registry.list({ excludeChildren: true })
+    expect(top.map((r) => r.sessionId)).toContain("free")
+    expect(top.map((r) => r.sessionId)).not.toContain("child-dag")
+  })
 })
 
 describe("lifetime token usage", () => {

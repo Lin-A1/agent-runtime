@@ -20,6 +20,18 @@ export function createEditTool(workspace: string): Tool {
   return {
     name: "edit",
     description: `Exact string replace in a file. Requires "old" to match exactly once (use replaceAll for all occurrences). Path under workspace root: ${workspace}`,
+    sideEffects: true,
+    // Output layer: a diff panel per edit so a human reviews changes as they
+    // happen (人机协作 — review without opening the file).
+    presents: {
+      kind: "diff",
+      title: (input: unknown) => `edit: ${(input as { path?: string }).path ?? ""}`,
+      toPanel: (input: unknown, output: unknown) => {
+        const i = input as { path?: string; old?: string; new?: string }
+        const o = output as { replaced?: number }
+        return { path: i.path, diff: `- ${i.old}\n+ ${i.new}`, replaced: o?.replaced }
+      },
+    },
     inputSchema: {
       type: "object",
       properties: {

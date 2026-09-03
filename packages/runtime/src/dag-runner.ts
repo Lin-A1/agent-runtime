@@ -104,9 +104,19 @@ export interface DagDeps {
    * DAG ↔ todo projection (goal-layer integration): when set, the graph is
    * projected into that session's durable todo list — all active nodes as
    * `pending` when the run starts, terminal states when it ends — so a
-   * user/butler watching the session sees DAG progress as a checklist.
+   * user/butler watching the session sees DAG progress as a checklist. ALSO
+   * the parent of every node's child session (Session.Spawned {parentId,
+   * via: "dag"}): children register as tracked, follow-up-able children of
+   * the declarer rather than anonymous top-level sessions.
    */
   readonly todoSessionId?: string
+  /**
+   * Live registration for node children (M4 session manager): when supplied,
+   * each running node's child registers with the declarer's hub so
+   * interrupt / send_to_session can target it mid-run like a spawn_agent
+   * child. The app wires this to hub.register.
+   */
+  readonly registerChildLive?: (childId: string, register: { abort: () => void; admit: (text: string) => Promise<void> }) => () => void
   /** Caller-supplied fresh-run id (the server endpoint generates one so the
    *  HTTP response can return it immediately while the graph keeps driving). */
   readonly dagId?: string
@@ -313,6 +323,19 @@ export async function runDag(spec: DAGSpec, deps: DagDeps): Promise<DagOutcome> 
       // (a crash between these two writes replays as a claimed-but-no-terminal
       // node → reconciled to aborted — the honest outcome).
       await emit("DAG.NodeStarted", { nodeId: id, sessionId: childSessionId, model: resolved.model! })
+      // Parent linkage lives right before driveChildSession (Created → Spawned
+      // order, matching hub.spawn).
+      // Parent linkage (hub.spawn order: Created → Spawned, so the registry
+      // index never sees a Spawned-only orphan): the child registers as a
+      // CHILD of the declaring session — the registry folds parentId/origin,
+      // so it shows up as a tracked, follow-up-able child rather than an
+      // anonymous top-level session. Only when a declarer exists (HTTP-declared
+      // graphs without todoSessionId stay parentless). driveChildSession's
+      // Created check is idempotent and skips the duplicate.
+      if (deps.todoSessionId) {
+        await deps.events.append(childSessionId, "Session.Created", { id: childSessionId, location: workspace, createdAt: Date.now() })
+        await deps.events.append(childSessionId, "Session.Spawned", { sessionId: childSessionId, parentId: deps.todoSessionId, via: "dag" })
+      }
       // driveChildSession: Created (location=workspace) → system context →
       // admit → runSession. toolCtx carries the node execpolicy so the child
       // keeps its hands (no deny-all fallback). From here the child aggregate
@@ -333,6 +356,11 @@ export async function runDag(spec: DAGSpec, deps: DagDeps): Promise<DagOutcome> 
         toolCtx: nodeToolCtx,
         signal: ctrl.signal,
         contextProvider,
+        // Live registration: the declarer's hub can interrupt/steer the child
+        // mid-run (send_to_session / interrupt target it like a spawn child).
+        registerLive: deps.registerChildLive
+          ? (abort, admit) => deps.registerChildLive!(childSessionId, { abort, admit })
+          : undefined,
       })
 
       // A cancelled run settles with finish="interrupted" (loop returns it, does

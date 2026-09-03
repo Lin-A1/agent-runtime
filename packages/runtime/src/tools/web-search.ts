@@ -45,6 +45,16 @@ export function createWebSearchTool(): Tool {
   return {
     name: "web_search",
     sideEffects: false,
+    // Output layer: a results table panel per search (人机协作 — the human
+    // sees what the model found and can steer toward any result).
+    presents: {
+      kind: "table",
+      title: (input: unknown) => `search: ${(input as { query?: string }).query ?? ""}`,
+      toPanel: (_input: unknown, output: unknown) => {
+        const o = output as { results?: Array<{ title?: string; url?: string; snippet?: string }>; engine?: string }
+        return { engine: o.engine, rows: (o.results ?? []).map((r) => ({ title: r.title, url: r.url, snippet: r.snippet })) }
+      },
+    },
     description:
       "Search the public web without any API key (China-reachable first: cn.bing.com, Sogou, Baidu, then DuckDuckGo/Bing as fallbacks). Args: { query, maxResults? (1..10, default 5) }. Returns { results: [{ title, url, snippet }], engine }. Use it when you need fresh information beyond training data: current events, recent releases, documentation lookups, error messages. Results may be rate-limited by the backends; retry later or follow up with web_fetch on a result URL to read the page.",
     execute: async (input: unknown, ctx) => {

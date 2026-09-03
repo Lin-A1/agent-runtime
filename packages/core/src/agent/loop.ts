@@ -34,6 +34,7 @@ export type LoopEvent =
   | { readonly type: "tool-result"; readonly name: string; readonly output: unknown; readonly isError?: boolean }
   | { readonly type: "step"; readonly step: number }
   | { readonly type: "error"; readonly code: string; readonly message: string }
+  | { readonly type: "panel"; readonly panelId: string; readonly kind: string; readonly title: string; readonly payload: unknown }
   | { readonly type: "done"; readonly step: number; readonly needsContinuation: boolean; readonly finish: string }
 
 /**

@@ -45,7 +45,13 @@ export interface DagStatus {
 export interface DagRunner {
   /** Declare + run a spec (durable; awaited until the graph SETTLES — the
    *  endpoint calls this fire-and-forget and returns the dagId immediately). */
-  readonly run: (spec: DAGSpec, opts?: { workspace?: string; todoSessionId?: string }) => Promise<{ dagId: string }>
+  readonly run: (spec: DAGSpec, opts?: {
+    workspace?: string
+    todoSessionId?: string
+    /** Live registration for node children: the declaring session's hub can
+     *  interrupt/steer a running node's child (M4 session manager). */
+    registerChildLive?: (childId: string, register: { abort: () => void; admit: (text: string) => Promise<void> }) => () => void
+  }) => Promise<{ dagId: string }>
   readonly status: (dagId: string) => Promise<DagStatus | undefined>
   readonly list: () => Promise<DagStatus[]>
   /** Abort a RUNNING graph: flips pending→skipped / running→aborted and appends
@@ -139,6 +145,7 @@ export function createDagRunner(opts: DagRunnerOpts): DagRunner {
         workspace: runOpts?.workspace ?? opts.getWorkspace(),
         defaultModel: opts.getDefaultModel(),
         todoSessionId: runOpts?.todoSessionId ?? opts.todoSessionId,
+        ...(runOpts?.registerChildLive ? { registerChildLive: runOpts.registerChildLive } : {}),
         dagId,
         signal: ctrl.signal,
       })
