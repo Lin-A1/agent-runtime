@@ -13,7 +13,8 @@
       "packages/server",
       "packages/cli",
       "packages/sdk",
-      "packages/mcp"
+      "packages/mcp",
+      "apps/web"
     ]
   },
   "scripts": {
