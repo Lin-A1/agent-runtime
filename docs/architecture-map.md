@@ -44,7 +44,7 @@ newhorse（本 monorepo：引擎开发地 + 首个宿主项目 CLI）
 | execpolicy | `runtime/tools/execpolicy.ts` | ✅（14 轮审查 + bootstrap 接线） | ← bash/write/edit/read 决策；approve 持久规则 |
 | Memory（store+FTS5+语义+向量索引） | `memory/*` | ✅（语义真机：1536 维零重叠命中；model tag 防混；VectorIndex：vec0/auto↔brute↔off，scope 分区隔离，canary 自愈） | 提取管线 `extract.ts` 引擎就绪、**触发已接**（memoryExtract.enabled） |
 | Runtime server | `server/*` | ✅（SSE `: open` 立即 flush + 15s keepalive；idleTimeout 可配；**全局事件总线** `GET /v1/events/stream` 单连接扇出全部本地会话 LoopEvent+终态帧；**skill 导入** `POST /v1/skills` 写插件目录即注册） | ← createApp；→ 未来 SDK/TUI |
-| CLI | `cli/src/index.ts` | ✅（REPL + dag 子命令 + slash + /list） | ← createApp/runDag |
+| CLI | `cli/src/index.ts` | ✅ **官方交互面**（壳暂停后的决策）：REPL（steer/todos/goal/fork/compact/title/policy/context）+ 管理子命令（sessions/compact/fork/title/policy/context/archive/dag list·status·run）+ 配置统一（loadRuntimeSettings，读 agent-home 预设）+ registry 分裂脑守卫 | ← createApp/runDag/loadRuntimeSettings |
 | 三端客户端 | `apps/web`（SPA）+ `apps/desktop`（Tauri 壳 + server sidecar） | ✅（同源 UI+API；局域网/手机=同一 origin 的 PWA；设置/审批/用量热力图/定时任务/记忆/表情球管家） | ← server 全部 /v1 端点；host shell（不入 agent-runtime 同步） |
 | SessionManager（进程内 + 跨进程） | `hub.ts`（进程内）+ `session-directory.ts` + server 代理路由 | ✅（进程内真投递；跨进程 observe/steer/interrupt/SSE 代理经共享 SQLite 目录，心跳+sweep 自愈） | ← app.prompt 登记 + child registerLive；← NEWHORSE_REGISTRY |
 | DAG（声明式） | `core/agent/dag.ts` + `runtime/dag-runner.ts` | ✅（resume/slots 持久/cost-down） | → Session.Settled（统一 task）→ todo 投影 |
