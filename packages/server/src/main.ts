@@ -82,6 +82,7 @@ const handle = await createServer({
   agentHome: settings.agentHome,
   ...(settings.channels?.length ? { channels: settings.channels } : {}),
   ...(mcp?.tools.length ? { tools: mcp.tools } : {}),
+  ...(mcp && Object.keys(mcp.resourcesByServer).length > 0 ? { mcpResources: { byServer: mcp.resourcesByServer, readResource: mcp.readResource } } : {}),
   memory: settings.memory.on ? memStore : undefined,
   ...(settings.registry ? { directory, advertiseUrl: settings.advertiseUrl } : {}),
   ...(settings.uiDir ? { uiDir: settings.uiDir } : {}),

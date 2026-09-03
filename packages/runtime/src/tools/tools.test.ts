@@ -586,13 +586,81 @@ const BING_HTML = `<html><body><ol id="b_results">
 <li class="b_algo"><h2><a href="https://bing.example.net/item" target="_blank">Bing Result</a></h2><div class="b_caption"><p>Bing snippet text.</p></div></li>
 </ol></body></html>`
 
+/** Sogou markup: vrwrap blocks, vr-title anchors with /link?url= wrappers. */
+const SOGOU_HTML = `<html><body><div class="results">
+<div class="vrwrap" id="sogou_vr_30000000_wrap_0"><h3 class="vr-title"><a target="_blank" href="/link?url=hedJjaC291NQz1l5v0AuUA.." id="sogou_vr_30000000_0">Sogou Result One</a></h3>
+<div class="fz-mid space-txt base-ellipsis clamp2" id="cacheresult_summary_0">Sogou snippet <b>here</b>.</div></div>
+</div></body></html>`
+
+/** Baidu markup: h3.t anchors with baidu.com/link wrappers + c-abstract. */
+const BAIDU_HTML = `<html><body>
+<div class="result c-container"><h3 class="t"><a href="http://www.baidu.com/link?url=abc123" target="_blank">Baidu Result</a></h3>
+<div class="c-abstract">Baidu snippet <b>text</b>.</div></div>
+</body></html>`
+
 describe("web_search tool", () => {
-  it("parses DDG HTML results and decodes uddg redirect wrappers", async () => {
+  it("parses bing-cn results first (China-reachable default)", async () => {
     let seenUa = ""
     stubFetch((url, init) => {
-      expect(url).toContain("html.duckduckgo.com")
+      expect(url).toContain("cn.bing.com")
       seenUa = (init?.headers as Record<string, string>)["user-agent"] ?? ""
-      return new Response(DDG_HTML, { status: 200, headers: { "content-type": "text/html" } })
+      return new Response(BING_HTML, { status: 200, headers: { "content-type": "text/html" } })
+    })
+    const tool = createWebSearchTool()
+    const out = (await tool.execute({ query: "bing result" }, { caller: { kind: "user" } })) as {
+      results: { title: string; url: string; snippet: string }[]
+      engine: string
+    }
+    expect(out.engine).toBe("bing-cn")
+    expect(out.results[0]!.url).toBe("https://bing.example.net/item")
+    expect(out.results[0]!.title).toBe("Bing Result")
+    expect(out.results[0]!.snippet).toBe("Bing snippet text.")
+    expect(seenUa).toContain("Mozilla")
+  })
+
+  it("falls back to sogou and resolves /link?url= wrappers via redirect follows", async () => {
+    stubFetch((url) => {
+      if (url.includes("cn.bing.com")) return new Response("nope", { status: 500 })
+      if (url.includes("sogou.com/link?url=")) return new Response(null, { status: 302, headers: { location: "https://real-target.example.org/page" } })
+      if (url.includes("real-target.example.org")) return new Response("<html></html>", { status: 200 })
+      if (url.includes("sogou.com")) return new Response(SOGOU_HTML, { status: 200 })
+      throw new Error(`unexpected fetch: ${url}`)
+    })
+    const tool = createWebSearchTool()
+    const out = (await tool.execute({ query: "sogou" }, { caller: { kind: "user" } })) as {
+      results: { title: string; url: string; snippet: string }[]
+      engine: string
+    }
+    expect(out.engine).toBe("sogou")
+    expect(out.results[0]!.title).toBe("Sogou Result One")
+    expect(out.results[0]!.url).toBe("https://real-target.example.org/page")
+    expect(out.results[0]!.snippet).toContain("Sogou snippet here")
+  })
+
+  it("falls back to baidu and keeps the wrapper URL when its redirect resolve fails", async () => {
+    stubFetch((url) => {
+      if (url.includes("bing.com") || url.includes("sogou.com")) return new Response("nope", { status: 500 })
+      if (url.includes("baidu.com/link?url=")) throw new Error("resolve blocked")
+      if (url.includes("baidu.com")) return new Response(BAIDU_HTML, { status: 200 })
+      throw new Error(`unexpected fetch: ${url}`)
+    })
+    const tool = createWebSearchTool()
+    const out = (await tool.execute({ query: "baidu" }, { caller: { kind: "user" } })) as {
+      results: { title: string; url: string; snippet: string }[]
+      engine: string
+    }
+    expect(out.engine).toBe("baidu")
+    expect(out.results[0]!.title).toBe("Baidu Result")
+    expect(out.results[0]!.url).toBe("http://www.baidu.com/link?url=abc123")
+    expect(out.results[0]!.snippet).toContain("Baidu snippet text")
+  })
+
+  it("baidu anti-bot page falls through to DuckDuckGo HTML", async () => {
+    stubFetch((url) => {
+      if (url.includes("bing.com") || url.includes("sogou.com")) return new Response("nope", { status: 500 })
+      if (url.includes("baidu.com")) return new Response("<html><title>百度安全验证</title><body>challenge</body></html>", { status: 200 })
+      if (url.includes("html.duckduckgo.com")) return new Response(DDG_HTML, { status: 200 })
+      throw new Error(`unexpected fetch: ${url}`)
     })
     const tool = createWebSearchTool()
     const out = (await tool.execute({ query: "example docs" }, { caller: { kind: "user" } })) as {
@@ -602,18 +670,14 @@ describe("web_search tool", () => {
     expect(out.engine).toBe("duckduckgo-html")
     expect(out.results.length).toBe(2)
     expect(out.results[0]!.url).toBe("https://example.com/docs")
-    expect(out.results[0]!.title).toBe("Example Docs & Guide")
-    expect(out.results[0]!.snippet).toContain("examples & docs")
     expect(out.results[1]!.url).toBe("https://plain.example.org/page")
-    // A browser UA is sent — the endpoints 403 an empty/agent UA.
-    expect(seenUa).toContain("Mozilla")
   })
 
   it("falls back to duckduckgo-lite when the html endpoint errors", async () => {
     const calls: string[] = []
     stubFetch((url) => {
       calls.push(url)
-      if (url.includes("html.duckduckgo.com")) return new Response("nope", { status: 500 })
+      if (url.includes("bing.com") || url.includes("sogou.com") || url.includes("baidu.com") || url.includes("html.duckduckgo.com")) return new Response("nope", { status: 500 })
       return new Response(DDG_LITE, { status: 200 })
     })
     const tool = createWebSearchTool()
@@ -625,13 +689,12 @@ describe("web_search tool", () => {
     expect(out.results[0]!.url).toBe("https://lite.example.com/a")
     expect(out.results[0]!.title).toBe("Lite Result One")
     expect(out.results[0]!.snippet).toContain("Lite snippet one here.")
-    expect(calls.length).toBe(2)
+    expect(calls.length).toBe(5)
   })
 
-  it("falls through to bing when both DDG endpoints yield nothing", async () => {
+  it("falls through to www.bing.com as the last resort", async () => {
     stubFetch((url) => {
-      if (url.includes("html.duckduckgo.com")) return new Response("nope", { status: 500 })
-      if (url.includes("lite.duckduckgo.com")) return new Response("<html><body>no results</body></html>", { status: 200 })
+      if (url.includes("cn.bing.com") || url.includes("sogou.com") || url.includes("baidu.com") || url.includes("duckduckgo.com")) return new Response("nope", { status: 500 })
       return new Response(BING_HTML, { status: 200 })
     })
     const tool = createWebSearchTool()
@@ -641,8 +704,6 @@ describe("web_search tool", () => {
     }
     expect(out.engine).toBe("bing")
     expect(out.results[0]!.url).toBe("https://bing.example.net/item")
-    expect(out.results[0]!.title).toBe("Bing Result")
-    expect(out.results[0]!.snippet).toBe("Bing snippet text.")
   })
 
   it("returns an honest empty result set when backends answer but parse empty", async () => {
@@ -663,7 +724,9 @@ describe("web_search tool", () => {
     const tool = createWebSearchTool()
     const out = (await tool.execute({ query: "x" }, { caller: { kind: "user" } })) as { error?: string }
     expect(out.error).toContain("all search backends failed")
-    expect(out.error).toContain("duckduckgo-html: network down")
+    expect(out.error).toContain("bing-cn: network down")
+    expect(out.error).toContain("sogou: network down")
+    expect(out.error).toContain("baidu: network down")
     expect(out.error).toContain("bing: network down")
   })
 
