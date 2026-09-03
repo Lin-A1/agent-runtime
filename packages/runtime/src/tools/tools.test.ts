@@ -1,8 +1,9 @@
-import { describe, expect, it } from "bun:test"
+import { describe, expect, it, afterEach } from "bun:test"
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createBuiltinTools, createBuiltinExecPolicy } from "./index"
+import { createWebSearchTool } from "./web-search"
 import { MemoryMemoryStore } from "@newhorse/memory"
 import type { Tool, ToolCtx } from "@newhorse/core"
 import type { ExecPolicy } from "@newhorse/schema"
@@ -42,7 +43,7 @@ describe("builtin tools", () => {
     const { root, cleanup } = await ws()
     try {
       const base = createBuiltinTools({ workspace: root })
-      expect(base.map((t) => t.name).sort()).toEqual(["ask_user", "edit", "list", "multi_edit", "read", "search", "view_image", "write"])
+      expect(base.map((t) => t.name).sort()).toEqual(["ask_user", "edit", "enter_plan_mode", "list", "lsp", "multi_edit", "read", "search", "view_image", "write"])
       const withBash = createBuiltinTools({ workspace: root, enableBash: true })
       expect(withBash.map((t) => t.name)).toContain("bash")
     } finally {
@@ -180,6 +181,32 @@ describe("builtin tools", () => {
       await cleanup()
     }
   })
+
+  it("enter_plan_mode flips the session policy to readonly", async () => {
+    const tool = byName(createBuiltinTools({ workspace: process.cwd() }), "enter_plan_mode")
+    let set = ""
+    const res = await tool.execute({}, { caller: { kind: "user" }, setPolicy: async (p) => { set = p } }) as { planMode: boolean }
+    expect(res.planMode).toBe(true)
+    expect(set).toBe("readonly")
+    const noChannel = await tool.execute({}, allowCtx) as { error?: string }
+    expect(noChannel.error).toBeDefined()
+  })
+
+  it("lsp hover + definition resolve a TS symbol (real tsserver)", async () => {
+    const { root, cleanup } = await ws()
+    try {
+      await writeFile(join(root, "a.ts"), "export function addOne(n: number): number {\n  return n + 1\n}\n")
+      await writeFile(join(root, "b.ts"), "import { addOne } from \"./a\"\nconst x = addOne(41)\n")
+      const lsp = byName(createBuiltinTools({ workspace: root }), "lsp")
+      const hover = await lsp.execute({ op: "hover", path: "b.ts", line: 2, character: 15 }, allowCtx) as { hover: string }
+      expect(hover.hover).toContain("addOne")
+      const def = await lsp.execute({ op: "definition", path: "b.ts", line: 2, character: 15 }, allowCtx) as { locations: string[] }
+      expect(def.locations.length).toBeGreaterThan(0)
+      expect(def.locations[0]).toContain("a.ts:1")
+    } finally {
+      await cleanup()
+    }
+  }, 60_000)
 
   it("bash_input writes to stdin of a background task", async () => {
     const { root, cleanup } = await ws()
@@ -511,4 +538,171 @@ describe("bash background trio (wave 8)", () => {
       await root.cleanup()
     }
   }, 15_000)
+})
+
+/** web_search tests stub globalThis.fetch like webfetch.test.ts — no real
+ * network in the test suite. */
+const realFetch = globalThis.fetch
+
+afterEach(() => {
+  globalThis.fetch = realFetch
+})
+
+function stubFetch(handler: (url: string, init?: RequestInit) => Response | Promise<Response>): void {
+  globalThis.fetch = (async (input: unknown, init?: RequestInit) => handler(String(input), init)) as unknown as typeof fetch
+}
+
+/** Realistic DDG html-endpoint markup: result__a titles (one wrapped in a
+ * `uddg=` redirect, one plain), result__snippet anchors, result__url crumbs. */
+const DDG_HTML = `<!DOCTYPE html><html><body>
+<div class="result results_links results_links_deep web-result">
+  <div class="links_main links_deep result__body">
+    <h2 class="result__title">
+      <a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fdocs&amp;rut=abc123">Example Docs &amp; Guide</a>
+    </h2>
+    <a class="result__snippet" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fdocs">A snippet about <b>examples</b> &amp; docs.</a>
+    <div class="result__extras"><div class="result__extras__url"><a class="result__url" href="https://example.com/docs">example.com</a></div></div>
+  </div>
+</div>
+<div class="result results_links results_links_deep web-result">
+  <div class="links_main links_deep result__body">
+    <h2 class="result__title">
+      <a rel="nofollow" class="result__a" href="https://plain.example.org/page">Plain Href Result</a>
+    </h2>
+    <a class="result__snippet" href="https://plain.example.org/page">Second snippet here.</a>
+  </div>
+</div>
+</body></html>`
+
+/** DDG lite-endpoint markup: a plain table, single-quoted attributes. */
+const DDG_LITE = `<html><body><table>
+<tr><td><a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Flite.example.com%2Fa" class='result-link'>Lite Result One</a></td></tr>
+<tr><td class='result-snippet'>Lite snippet <b>one</b> here.</td></tr>
+<tr><td class='result-url'>lite.example.com/a</td></tr>
+</table></body></html>`
+
+/** Bing public markup: b_algo blocks with h2>a titles and caption <p>. */
+const BING_HTML = `<html><body><ol id="b_results">
+<li class="b_algo"><h2><a href="https://bing.example.net/item" target="_blank">Bing Result</a></h2><div class="b_caption"><p>Bing snippet text.</p></div></li>
+</ol></body></html>`
+
+describe("web_search tool", () => {
+  it("parses DDG HTML results and decodes uddg redirect wrappers", async () => {
+    let seenUa = ""
+    stubFetch((url, init) => {
+      expect(url).toContain("html.duckduckgo.com")
+      seenUa = (init?.headers as Record<string, string>)["user-agent"] ?? ""
+      return new Response(DDG_HTML, { status: 200, headers: { "content-type": "text/html" } })
+    })
+    const tool = createWebSearchTool()
+    const out = (await tool.execute({ query: "example docs" }, { caller: { kind: "user" } })) as {
+      results: { title: string; url: string; snippet: string }[]
+      engine: string
+    }
+    expect(out.engine).toBe("duckduckgo-html")
+    expect(out.results.length).toBe(2)
+    expect(out.results[0]!.url).toBe("https://example.com/docs")
+    expect(out.results[0]!.title).toBe("Example Docs & Guide")
+    expect(out.results[0]!.snippet).toContain("examples & docs")
+    expect(out.results[1]!.url).toBe("https://plain.example.org/page")
+    // A browser UA is sent — the endpoints 403 an empty/agent UA.
+    expect(seenUa).toContain("Mozilla")
+  })
+
+  it("falls back to duckduckgo-lite when the html endpoint errors", async () => {
+    const calls: string[] = []
+    stubFetch((url) => {
+      calls.push(url)
+      if (url.includes("html.duckduckgo.com")) return new Response("nope", { status: 500 })
+      return new Response(DDG_LITE, { status: 200 })
+    })
+    const tool = createWebSearchTool()
+    const out = (await tool.execute({ query: "lite" }, { caller: { kind: "user" } })) as {
+      results: { title: string; url: string; snippet: string }[]
+      engine: string
+    }
+    expect(out.engine).toBe("duckduckgo-lite")
+    expect(out.results[0]!.url).toBe("https://lite.example.com/a")
+    expect(out.results[0]!.title).toBe("Lite Result One")
+    expect(out.results[0]!.snippet).toContain("Lite snippet one here.")
+    expect(calls.length).toBe(2)
+  })
+
+  it("falls through to bing when both DDG endpoints yield nothing", async () => {
+    stubFetch((url) => {
+      if (url.includes("html.duckduckgo.com")) return new Response("nope", { status: 500 })
+      if (url.includes("lite.duckduckgo.com")) return new Response("<html><body>no results</body></html>", { status: 200 })
+      return new Response(BING_HTML, { status: 200 })
+    })
+    const tool = createWebSearchTool()
+    const out = (await tool.execute({ query: "bing" }, { caller: { kind: "user" } })) as {
+      results: { title: string; url: string; snippet: string }[]
+      engine: string
+    }
+    expect(out.engine).toBe("bing")
+    expect(out.results[0]!.url).toBe("https://bing.example.net/item")
+    expect(out.results[0]!.title).toBe("Bing Result")
+    expect(out.results[0]!.snippet).toBe("Bing snippet text.")
+  })
+
+  it("returns an honest empty result set when backends answer but parse empty", async () => {
+    stubFetch(() => new Response("<html><body>nothing</body></html>", { status: 200 }))
+    const tool = createWebSearchTool()
+    const out = (await tool.execute({ query: "zzz-no-match" }, { caller: { kind: "user" } })) as {
+      results: unknown[]
+      engine: string
+    }
+    expect(out.results).toEqual([])
+    expect(out.engine).toBe("bing")
+  })
+
+  it("returns a tool error naming the causes when every backend fails", async () => {
+    stubFetch(() => {
+      throw new Error("network down")
+    })
+    const tool = createWebSearchTool()
+    const out = (await tool.execute({ query: "x" }, { caller: { kind: "user" } })) as { error?: string }
+    expect(out.error).toContain("all search backends failed")
+    expect(out.error).toContain("duckduckgo-html: network down")
+    expect(out.error).toContain("bing: network down")
+  })
+
+  it("clamps maxResults to 1..10 (default 5)", async () => {
+    stubFetch(() => new Response(DDG_HTML, { status: 200 }))
+    const tool = createWebSearchTool()
+    const one = (await tool.execute({ query: "q", maxResults: 1 }, { caller: { kind: "user" } })) as { results: unknown[] }
+    expect(one.results.length).toBe(1)
+    const capped = (await tool.execute({ query: "q", maxResults: 100 }, { caller: { kind: "user" } })) as { results: unknown[] }
+    expect(capped.results.length).toBe(2)
+    const zero = (await tool.execute({ query: "q", maxResults: 0 }, { caller: { kind: "user" } })) as { results: unknown[] }
+    expect(zero.results.length).toBe(1)
+  })
+
+  it("requires a query and never hits the network without one", async () => {
+    let called = 0
+    stubFetch(() => {
+      called += 1
+      return new Response(DDG_HTML, { status: 200 })
+    })
+    const tool = createWebSearchTool()
+    const missing = (await tool.execute({}, { caller: { kind: "user" } })) as { error?: string }
+    expect(missing.error).toContain("query is required")
+    const blank = (await tool.execute({ query: "   " }, { caller: { kind: "user" } })) as { error?: string }
+    expect(blank.error).toContain("query is required")
+    expect(called).toBe(0)
+  })
+
+  it("is registered under enableWeb alongside web_fetch", async () => {
+    const { root, cleanup } = await ws()
+    try {
+      const off = createBuiltinTools({ workspace: root })
+      expect(off.some((t) => t.name === "web_search")).toBe(false)
+      expect(off.some((t) => t.name === "web_fetch")).toBe(false)
+      const on = createBuiltinTools({ workspace: root, enableWeb: true })
+      expect(on.some((t) => t.name === "web_search")).toBe(true)
+      expect(on.some((t) => t.name === "web_fetch")).toBe(true)
+    } finally {
+      await cleanup()
+    }
+  })
 })

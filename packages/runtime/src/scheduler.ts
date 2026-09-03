@@ -25,6 +25,9 @@ export interface Schedule {
   readonly lastRunAt?: number
   readonly lastResult?: "ok" | "error"
   readonly lastError?: string
+  /** Computed at read time (never persisted): next fire epoch-ms for an
+   *  enabled schedule, from lastRunAt ?? createdAt. */
+  readonly nextFireAt?: number
 }
 
 export interface ScheduleInput {
@@ -187,7 +190,9 @@ export function createScheduler(opts: { file: string; fire: (schedule: Schedule)
   return {
     async list() {
       await load()
-      return [...rows].sort((a, b) => b.createdAt - a.createdAt)
+      return [...rows]
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .map((r) => (r.enabled ? { ...r, nextFireAt: nextDue(r, r.lastRunAt ?? r.createdAt) } : r))
     },
     get(id) {
       return rows.find((r) => r.id === id)
@@ -204,8 +209,16 @@ export function createScheduler(opts: { file: string; fire: (schedule: Schedule)
       await load()
       const idx = rows.findIndex((r) => r.id === id)
       if (idx < 0) return undefined
-      validateScheduleInput({ ...rows[idx]!, ...patch } as ScheduleInput)
-      rows[idx] = { ...rows[idx]!, ...patch }
+      // Cadence-switch semantics: when the patch carries ANY cadence field it
+      // REPLACES the cadence — the other two fields are cleared, so a
+      // daily→interval switch passes the exactly-one validation instead of
+      // colliding with the stored cadence.
+      const touchesCadence = patch.intervalMinutes !== undefined || patch.dailyAt !== undefined || patch.cron !== undefined
+      const merged = (touchesCadence
+        ? { ...rows[idx]!, intervalMinutes: undefined, dailyAt: undefined, cron: undefined, ...patch }
+        : { ...rows[idx]!, ...patch }) as ScheduleInput
+      validateScheduleInput(merged)
+      rows[idx] = merged as Schedule
       await persist()
       return rows[idx]
     },

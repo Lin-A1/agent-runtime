@@ -15,7 +15,9 @@ import type { Tool } from "@newhorse/core"
 const DOWNLOAD_CAP = 2_000_000
 const MAX_CHARS_DEFAULT = 20_000
 
-function stripHtml(html: string): string {
+/** Exported so web_search strips titles/snippets with the exact same entity
+ *  and tag handling as fetched pages — one canonical HTML→text path. */
+export function stripHtml(html: string): string {
   return html
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
     .replace(/<style[\s\S]*?<\/style>/gi, " ")
@@ -110,8 +112,9 @@ export function createWebFetchTool(): Tool {
 
 /** Literal-form private/loopback refusals. Residual risk (documented): a DNS
  *  name resolving to a private IP, and non-literal IP encodings beyond the
- *  decimal/ hex forms below — a full fix needs resolve-and-pin. */
-function isRefusedHost(hostname: string): boolean {
+ *  decimal/ hex forms below — a full fix needs resolve-and-pin. Exported so
+ *  web_search applies the identical refusal to its own redirect hops. */
+export function isRefusedHost(hostname: string): boolean {
   // Private/loopback/link-local: v4 classes incl. 172.16.0.0/12; v6 loopback,
   // unspecified, ULA (fc00::/7 → fc/fd), link-local (fe80::/10).
   if (/^(localhost|127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|0\.0\.0\.0|\[::1\]|\[::\]|\[(fd|fc|fe80)[0-9a-f:]*\])/i.test(hostname)) return true

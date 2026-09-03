@@ -77,6 +77,9 @@ export interface ToolCtx {
    *  interactive approval surface. Absent = the session is non-interactive
    *  (the tool must answer gracefully instead of hanging). */
   readonly askUser?: (req: { question: string; options?: readonly string[] }) => Promise<{ allow: boolean; reply?: string }>
+  /** Switch the session's durable policy (enter_plan_mode → readonly; the
+   *  request_mode tool is the exit path). Absent = policy is host-managed. */
+  readonly setPolicy?: (policy: "strict" | "trusted" | "readonly") => Promise<void>
   /** M4 execpolicy: the tool-layer authorization axis. Optional here (injected);
    * loop fills a deny-all fallback so a tool never runs unaudited. */
   readonly execPolicy?: ExecPolicy

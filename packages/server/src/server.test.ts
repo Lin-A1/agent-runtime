@@ -1,6 +1,7 @@
 import { describe, expect, it, afterEach } from "bun:test"
 import { createServer, type ServerHandle } from "./server"
 import type { AdapterConfig } from "@newhorse/llm"
+import type { DagRunner, DagStatus } from "@newhorse/runtime"
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -439,5 +440,46 @@ describe("DELETE /v1/session/:id (hard delete)", () => {
     } finally {
       await rm(dir, { recursive: true, force: true }).catch(() => {})
     }
+  })
+})
+
+describe("POST /v1/dag/:id/abort", () => {
+  const status: DagStatus = { dagId: "d1", nodes: [{ node: "A", state: "running" }], done: false }
+  const fakeRunner: DagRunner = {
+    run: async () => ({ dagId: "d1" }),
+    status: async (id) => (id === "d1" ? status : undefined),
+    list: async () => [status],
+    abort: async (id) => {
+      if (id !== "d1") throw new Error("unknown dag id")
+      return { aborted: true }
+    },
+  }
+
+  it("aborts a running dag and reports {aborted:true}", async () => {
+    handle = await createServer({ port: 0, sessionConfig: () => ({ provider, model: "m", fetch: mockFetch("") }), dagRunner: fakeRunner })
+    const res = await fetch(`${handle.baseUrl}/v1/dag/d1/abort`, { method: "POST" })
+    expect(res.status).toBe(200)
+    expect(((await res.json()) as { aborted: boolean }).aborted).toBe(true)
+  })
+
+  it("returns 404 for an unknown dag id", async () => {
+    handle = await createServer({ port: 0, sessionConfig: () => ({ provider, model: "m", fetch: mockFetch("") }), dagRunner: fakeRunner })
+    const res = await fetch(`${handle.baseUrl}/v1/dag/nope/abort`, { method: "POST" })
+    expect(res.status).toBe(404)
+  })
+
+  it("returns 404 when no dag runner is configured", async () => {
+    handle = await createServer({ port: 0, sessionConfig: () => ({ provider, model: "m", fetch: mockFetch("") }) })
+    const res = await fetch(`${handle.baseUrl}/v1/dag/d1/abort`, { method: "POST" })
+    expect(res.status).toBe(404)
+  })
+
+  it("does not collide with GET /v1/dag/:id (node statuses still served)", async () => {
+    handle = await createServer({ port: 0, sessionConfig: () => ({ provider, model: "m", fetch: mockFetch("") }), dagRunner: fakeRunner })
+    const res = await fetch(`${handle.baseUrl}/v1/dag/d1`)
+    expect(res.status).toBe(200)
+    const st = (await res.json()) as DagStatus
+    expect(st.nodes[0]?.node).toBe("A")
+    expect(st.nodes[0]?.state).toBe("running")
   })
 })

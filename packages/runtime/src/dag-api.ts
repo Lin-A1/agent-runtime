@@ -28,6 +28,8 @@ export interface DagNodeStatus {
   readonly node: string
   readonly state: "pending" | "running" | "succeeded" | "failed" | "skipped" | "aborted"
   readonly model?: string
+  /** Declared edges from the durable DAG.Declared spec (the UI's lane grouping). */
+  readonly dependsOn?: string[]
 }
 
 export interface DagStatus {
@@ -43,33 +45,58 @@ export interface DagRunner {
   readonly run: (spec: DAGSpec, opts?: { workspace?: string; todoSessionId?: string }) => Promise<{ dagId: string }>
   readonly status: (dagId: string) => Promise<DagStatus | undefined>
   readonly list: () => Promise<DagStatus[]>
+  /** Abort a RUNNING graph: flips pending→skipped / running→aborted and appends
+   *  DAG.Aborted (see dag-runner abortGraph). Unknown id throws; an already-done
+   *  graph reports {aborted:false} instead of erroring. */
+  readonly abort: (dagId: string) => Promise<{ aborted: boolean; note?: string }>
 }
 
 /** Fold DAG events for one aggregate into node statuses. */
 function foldStatus(dagId: string, rows: Array<{ type: string; data: Record<string, unknown>; createdAt: number | null }>): DagStatus | undefined {
   if (rows.length === 0) return undefined
   const nodes = new Map<string, DagNodeStatus>()
+  // Declared edges come from the durable DAG.Declared spec — the fold keeps
+  // node STATE from lifecycle events and grafts the spec's dependsOn on top.
+  let spec: DAGSpec | undefined
   let startedAt: number | undefined
   let done = true
   for (const r of rows) {
     if (startedAt === undefined && r.createdAt !== null) startedAt = r.createdAt
-    if (r.type === "DAG.Declared") continue
-    const d = r.data as { node?: string; model?: string }
-    if (!d.node) continue
+    if (r.type === "DAG.Declared") {
+      spec = (r.data as { spec?: DAGSpec }).spec
+      continue
+    }
+    const d = r.data as { nodeId?: string; model?: string }
+    if (!d.nodeId) continue
     let state: DagNodeStatus["state"] = "pending"
     if (r.type === "DAG.NodeStarted") state = "running"
     else if (r.type === "DAG.NodeResolved") state = "succeeded"
     else if (r.type === "DAG.NodeFailed") state = "failed"
     else if (r.type === "DAG.NodeSkipped") state = "skipped"
-    const prev = nodes.get(d.node)
+    else if (r.type === "DAG.NodeAborted") state = "aborted"
+    const prev = nodes.get(d.nodeId)
     // terminal states stick
-    if (prev && (prev.state === "succeeded" || prev.state === "failed" || prev.state === "skipped")) continue
-    nodes.set(d.node, { node: d.node, state, model: d.model ?? prev?.model })
+    if (prev && (prev.state === "succeeded" || prev.state === "failed" || prev.state === "skipped" || prev.state === "aborted")) continue
+    nodes.set(d.nodeId, { node: d.nodeId, state, model: d.model ?? prev?.model })
+  }
+  // Seed declared-but-unevented nodes as pending: a freshly declared graph (or
+  // a not-yet-dispatched node) must read as not-done, never as an empty done.
+  for (const id of Object.keys(spec?.nodes ?? {})) {
+    if (!nodes.has(id)) nodes.set(id, { node: id, state: "pending" })
+  }
+  const dependsOnOf = (id: string): string[] | undefined => {
+    const deps = spec?.nodes[id]?.dependsOn
+    return deps && deps.length > 0 ? [...deps] : undefined
   }
   for (const n of nodes.values()) if (n.state === "running" || n.state === "pending") done = false
   return {
     dagId,
-    nodes: [...nodes.values()].sort((a, b) => a.node.localeCompare(b.node)),
+    nodes: [...nodes.values()]
+      .map((n) => {
+        const deps = dependsOnOf(n.node)
+        return deps ? { ...n, dependsOn: deps } : n
+      })
+      .sort((a, b) => a.node.localeCompare(b.node)),
     done,
     startedAt,
   }
@@ -80,6 +107,17 @@ export function createDagRunner(opts: DagRunnerOpts): DagRunner {
   const inbox = new MemorySessionInput(events)
   const tools = createBuiltinTools({ workspace: opts.getWorkspace(), enableBash: opts.enableBash ?? false, memoryStore: opts.memoryStore, skillsDir: opts.skillsDir, events })
   const fetch = opts.fetch ?? globalThis.fetch.bind(globalThis)
+  // One AbortController per RUNNING graph; runDag's deps.signal drives
+  // abortGraph (pending→skipped, running→aborted, durable DAG.Aborted).
+  const controllers = new Map<string, AbortController>()
+
+  const readStatus = async (dagId: string): Promise<DagStatus | undefined> => {
+    const evs = await events.read(dagId).catch(() => [])
+    return foldStatus(
+      dagId,
+      evs.map((e) => ({ type: e.type, data: e.data, createdAt: e.ts ?? null })),
+    )
+  }
 
   return {
     async run(spec, runOpts) {
@@ -87,6 +125,8 @@ export function createDagRunner(opts: DagRunnerOpts): DagRunner {
       // graph keeps driving fire-and-forget. A failed driver leaves the
       // Declared event absent — status() then reports undefined (honest).
       const dagId = crypto.randomUUID()
+      const ctrl = new AbortController()
+      controllers.set(dagId, ctrl)
       const { runDag } = await import("./dag-runner")
       void runDag(spec, {
         events,
@@ -97,18 +137,28 @@ export function createDagRunner(opts: DagRunnerOpts): DagRunner {
         defaultModel: opts.getDefaultModel(),
         todoSessionId: runOpts?.todoSessionId ?? opts.todoSessionId,
         dagId,
-      }).catch(() => {
-        // Node failures are recorded on the dag aggregate; the runner never
-        // throws past settlement.
+        signal: ctrl.signal,
       })
+        .catch(() => {
+          // Node failures are recorded on the dag aggregate; the runner never
+          // throws past settlement.
+        })
+        .finally(() => controllers.delete(dagId))
       return { dagId }
     },
-    async status(dagId) {
-      const evs = await events.read(dagId).catch(() => [])
-      return foldStatus(
-        dagId,
-        evs.map((e) => ({ type: e.type, data: e.data, createdAt: e.ts ?? null })),
-      )
+    status: readStatus,
+    async abort(dagId) {
+      // Status first: a settled graph whose controller cleanup has not run yet
+      // (settle → finally window) must read "already done", not re-abort.
+      const st = await readStatus(dagId)
+      if (!st) throw new Error("unknown dag id")
+      if (st.done) return { aborted: false, note: "already done" }
+      const ctrl = controllers.get(dagId)
+      if (ctrl) {
+        ctrl.abort()
+        return { aborted: true }
+      }
+      return { aborted: false, note: "not running" }
     },
     async list() {
       const db = new Database(join(opts.dataDir, "events.db"), { readonly: true })
