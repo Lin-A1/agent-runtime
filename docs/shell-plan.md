@@ -3,6 +3,13 @@
 > 决策记录：2026-09-03 用户拍板——技术栈沿用 React + Vite + Tailwind；基础组件（ui.tsx / Markdown / EmotionBall / fold）从 git 历史抢救复用；**页面从零搭**。CLI 保持官方门面地位，壳是薄消费方。
 > 本文是阶段 0 交付物：①页面/交互完整清单（每个元素 → 端点）；②端点响应合同（字段级，已对照 packages/server/src/server.ts 核实）；③逐项验收记录模板。
 > **规则：每个阶段结束必须跑完对应验收清单并记录，通过才进下一阶段。**
+>
+> **阶段 1 实施修订（2026-09-03，用户指示"这一版再简单一点，先打通对话即可"）**：
+> Phase 1 落地裁剪为**最小对话环**——左栏会话列表（butler 置顶 + 扁平任务列表 + 新任务）、转录（事件折叠 + 流式直播回合 + 工具行 + panel 内联卡 + 停止/steer）、极简 composer（文本 + 发送/停止）。§2 中 P4 的斜杠/@/图片/模型芯片、P5 右栏（审批/编排/面板流/todo）、P6 命令面板**延后到 Phase 2**（清单不变，代码已从本版移除，需要时从 git 历史 dfe01d1b6 恢复 apps/web 全量版重接）。
+>
+> 阶段 1 验收已通过（真实 MiniMax-M3 回合 ×3）：新任务跳转 ✓、发送 → 流式渲染 → 落账折回 ✓、busy 停止按钮 → 中断注记折回 ✓、会话自命名标题 ✓、butler 固定名置顶 ✓、panel 内联卡（web_search 表格）✓。
+>
+> 阶段 1 顺手修的源头问题：①fold 的"回合中追加"注记改为按序判定（引擎 prompt() 一律经 inbox steer 通道准入，标签不可区分，真 steer 的 Prompted 落在运行中回合的终止 StepEnded 之前）；②butler 种子改为创建前重读 registry（陈旧空读导致每次加载多种一个 butler）；③agent-home 配置修复——providers[0] 的 kind 实为 anthropic 协议（baseUrl 是 /anthropic 路径），补上 activeProviderId 并清除遗留 model "gpt-4o-mini"。
 
 ---
 
