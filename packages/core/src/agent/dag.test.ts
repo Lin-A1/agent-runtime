@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { validate, foldDAG, cascadeTerminal, readyNodes, DAGError, type DAGSpec } from "./dag"
+import { validate, foldDAG, applyDagEvent, emptyDagFoldState, cascadeTerminal, readyNodes, DAGError, type DAGSpec } from "./dag"
 import type { StoredEvent } from "@newhorse/schema"
 
 const diamond: DAGSpec = {
@@ -98,6 +98,24 @@ describe("foldDAG", () => {
     ])
     expect(d.status["B"]).toBe("pending")
     expect(d.attempts["B"]).toBe(1)
+  })
+
+  it("applyDagEvent sequentially is equivalent to foldDAG (the runner's O(1) incremental path)", () => {
+    const events = [
+      ev("DAG.Declared", { spec: diamond }, 0),
+      ev("DAG.NodeStarted", { nodeId: "A", model: "cheap" }, 1),
+      ev("DAG.NodeStarted", { nodeId: "B", model: "cheap" }, 2),
+      ev("DAG.NodeResolved", { nodeId: "A", slotId: "A", sessionId: "sA", output: "out-A" }, 3),
+      ev("DAG.NodeFailed", { nodeId: "B", reason: "boom" }, 4),
+      ev("DAG.NodeRetried", { nodeId: "B", attempt: 1 }, 5),
+      ev("DAG.NodeStarted", { nodeId: "B" }, 6),
+      ev("DAG.NodeAborted", { nodeId: "B" }, 7),
+      ev("DAG.Aborted", { dagId: "d1" }, 8),
+    ]
+    // The runner's path: start empty, apply each event as it is appended.
+    const incremental = emptyDagFoldState()
+    for (const e of events) applyDagEvent(incremental, e)
+    expect(incremental).toEqual(foldDAG(events))
   })
 })
 

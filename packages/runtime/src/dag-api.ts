@@ -30,6 +30,9 @@ export interface DagNodeStatus {
   readonly model?: string
   /** Declared edges from the durable DAG.Declared spec (the UI's lane grouping). */
   readonly dependsOn?: string[]
+  /** The node's driven child session (from NodeResolved) — pull its transcript
+   *  via GET /v1/session/:id/events to see what the node actually did. */
+  readonly childSessionId?: string
 }
 
 export interface DagStatus {
@@ -66,7 +69,7 @@ function foldStatus(dagId: string, rows: Array<{ type: string; data: Record<stri
       spec = (r.data as { spec?: DAGSpec }).spec
       continue
     }
-    const d = r.data as { nodeId?: string; model?: string }
+    const d = r.data as { nodeId?: string; model?: string; sessionId?: string }
     if (!d.nodeId) continue
     let state: DagNodeStatus["state"] = "pending"
     if (r.type === "DAG.NodeStarted") state = "running"
@@ -77,7 +80,7 @@ function foldStatus(dagId: string, rows: Array<{ type: string; data: Record<stri
     const prev = nodes.get(d.nodeId)
     // terminal states stick
     if (prev && (prev.state === "succeeded" || prev.state === "failed" || prev.state === "skipped" || prev.state === "aborted")) continue
-    nodes.set(d.nodeId, { node: d.nodeId, state, model: d.model ?? prev?.model })
+    nodes.set(d.nodeId, { node: d.nodeId, state, model: d.model ?? prev?.model, ...(d.sessionId || prev?.childSessionId ? { childSessionId: d.sessionId ?? prev?.childSessionId } : {}) })
   }
   // Seed declared-but-unevented nodes as pending: a freshly declared graph (or
   // a not-yet-dispatched node) must read as not-done, never as an empty done.

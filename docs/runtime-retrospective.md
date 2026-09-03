@@ -82,7 +82,7 @@ specs 里 m2/m3 文档标"已实现"但细节与实现漂移；docs 声称"已�
 
 1. **无合同测试套件**（§3.2 的对策，未做）——最高优先。
 2. **goal 预算只有可见性没有强制**——overBudget 不自动暂停，引擎差异化（成本控制支柱）没有闭环。
-3. **DAG emit 全量 refold O(n²)**——每次事件重读整个聚合；图大即退化。
+3. ~~DAG emit 全量 refold O(n²)~~——**已修（2026-09-03）**：core 抽出 `applyDagEvent`/`DagFoldState`，runner 的 emit 增量应用单事件（O(1)），终局 models 读数也走增量 fold；foldDAG ≡ 逐事件 apply 有等价性测试锁定。剩余 DAG 边界：跨进程调度（图由创建进程驱动）——明确为设计边界而非债务。
 4. **plan-mode 是持久档位切换**，不是 loop 级模式门（readonly 档下工具面收窄已生效，但无"计划批准后自动恢复"的闭环）。
 5. **sdk 只有 2 个测试**——要么长成 /v1 面的类型化客户端（未来任何壳的接入口），要么砍掉。
 6. **跨进程 spawn-drive 未做**（子会话由创建进程驱动；已注册可被兄弟进程 interrupt/steer/observe）。

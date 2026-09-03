@@ -201,56 +201,68 @@ function activeSet(spec: DAGSpec, dependents: Record<string, string[]>, inDegree
   return scope
 }
 
+/** The DAG aggregate fold state: everything the event log reconstructs. */
+export interface DagFoldState {
+  status: Record<string, NodeState>
+  results: Record<string, NodeResult>
+  attempts: Record<string, number>
+  models: Record<string, string>
+  aborted: boolean
+}
+
+export function emptyDagFoldState(): DagFoldState {
+  return { status: {}, results: {}, attempts: {}, models: {}, aborted: false }
+}
+
+/** Apply ONE event to the fold state — the incremental half of foldDAG.
+ *  The runner's emit() uses this per append (O(1)) instead of re-reading and
+ *  re-folding the whole aggregate (O(events) per emit → O(n²) per graph). */
+export function applyDagEvent(state: DagFoldState, e: StoredEvent): void {
+  switch (e.type) {
+    case "DAG.NodeStarted": {
+      const d = e.data as { nodeId?: string; model?: string }
+      if (d.nodeId) {
+        state.status[d.nodeId] = "running"
+        if (d.model) state.models[d.nodeId] = d.model
+      }
+      break
+    }
+    case "DAG.NodeResolved": {
+      const d = e.data as { nodeId?: string; slotId?: string; sessionId?: string; outputRef?: string; output?: string }
+      if (d.nodeId) {
+        state.status[d.nodeId] = "succeeded"
+        state.results[d.slotId ?? d.nodeId] = { nodeId: d.nodeId, slotId: d.slotId ?? d.nodeId, sessionId: d.sessionId, outputRef: d.outputRef, output: d.output, status: "succeeded" }
+      }
+      break
+    }
+    case "DAG.NodeFailed":
+      if (e.data.nodeId) state.status[e.data.nodeId as string] = "failed"
+      break
+    case "DAG.NodeSkipped":
+      if (e.data.nodeId) state.status[e.data.nodeId as string] = "skipped"
+      break
+    case "DAG.NodeAborted":
+      if (e.data.nodeId) state.status[e.data.nodeId as string] = "aborted"
+      break
+    case "DAG.NodeRetried":
+      if (e.data.nodeId) {
+        state.attempts[e.data.nodeId as string] = (e.data.attempt as number) ?? 1
+        state.status[e.data.nodeId as string] = "pending"
+      }
+      break
+    case "DAG.Aborted":
+      state.aborted = true
+      break
+    default:
+      break
+  }
+}
+
 /** The DAG aggregate fold: reconstruct status / results / aborted from events. */
 export function foldDAG(events: StoredEvent[]): { status: Record<string, NodeState>; results: Record<string, NodeResult>; aborted: boolean; attempts: Record<string, number>; models: Record<string, string> } {
-  const status: Record<string, NodeState> = {}
-  const results: Record<string, NodeResult> = {}
-  const attempts: Record<string, number> = {}
-  const models: Record<string, string> = {}
-  let aborted = false
-
-  for (const e of events) {
-    switch (e.type) {
-      case "DAG.NodeStarted": {
-        const d = e.data as { nodeId?: string; model?: string }
-        if (d.nodeId) {
-          status[d.nodeId] = "running"
-          if (d.model) models[d.nodeId] = d.model
-        }
-        break
-      }
-      case "DAG.NodeResolved": {
-        const d = e.data as { nodeId?: string; slotId?: string; sessionId?: string; outputRef?: string; output?: string }
-        if (d.nodeId) {
-          status[d.nodeId] = "succeeded"
-          results[d.slotId ?? d.nodeId] = { nodeId: d.nodeId, slotId: d.slotId ?? d.nodeId, sessionId: d.sessionId, outputRef: d.outputRef, output: d.output, status: "succeeded" }
-        }
-        break
-      }
-      case "DAG.NodeFailed":
-        if (e.data.nodeId) status[e.data.nodeId as string] = "failed"
-        break
-      case "DAG.NodeSkipped":
-        if (e.data.nodeId) status[e.data.nodeId as string] = "skipped"
-        break
-      case "DAG.NodeAborted":
-        if (e.data.nodeId) status[e.data.nodeId as string] = "aborted"
-        break
-      case "DAG.NodeRetried":
-        if (e.data.nodeId) {
-          attempts[e.data.nodeId as string] = (e.data.attempt as number) ?? 1
-          status[e.data.nodeId as string] = "pending"
-        }
-        break
-      case "DAG.Aborted":
-        aborted = true
-        break
-      default:
-        break
-    }
-  }
-
-  return { status, results, aborted, attempts, models }
+  const state = emptyDagFoldState()
+  for (const e of events) applyDagEvent(state, e)
+  return state
 }
 
 /**
