@@ -271,6 +271,7 @@ export const api = {
   dags: () => request<{ dags: DagStatus[] }>("/v1/dags").then((r) => r.dags),
   dag: (id: string) => request<DagStatus>(`/v1/dag/${id}`),
   createDag: (spec: DagSpec) => request<{ dagId: string }>("/v1/dag", { method: "POST", body: { spec } }),
+  abortDag: (id: string) => request<{ aborted: boolean; note?: string }>(`/v1/dag/${id}/abort`, { method: "POST" }),
 
   live: () => request<{ self: string; live: LiveView["live"] }>("/v1/live").then((r) => ({ self: r.self, live: r.live }) as LiveView),
   audit: (actorSessionId?: string) => request<unknown[]>(`/v1/audit${qs({ actorSessionId })}`),

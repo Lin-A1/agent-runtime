@@ -17,6 +17,7 @@ import {
   Loader2,
   Play,
   SkipForward,
+  Square,
   TerminalSquare,
   XCircle,
 } from "lucide-react"
@@ -176,7 +177,7 @@ export function DagsPage(): React.ReactElement {
 
             {/* board */}
             <div className="min-h-0 overflow-y-auto p-6">
-              {selected && <DagBoard dag={selected} />}
+              {selected && <DagBoard dag={selected} onChanged={() => dags.retry()} />}
             </div>
           </div>
         )}
@@ -212,13 +213,53 @@ function StateBar({ nodes }: { nodes: DagStatus["nodes"] }): React.ReactElement 
   )
 }
 
-function DagBoard({ dag }: { dag: DagStatus }): React.ReactElement {
+/**
+ * Group nodes into topo-depth lanes (Kahn over the declared edges): depth 0 =
+ * no dependsOn, else 1 + max(dep depths). Guards: an unknown dep is dropped
+ * (depth 0 contribution); a cycle never drains in Kahn, so cycle members stay
+ * at depth 0 instead of looping forever. Each lane entry keeps the node's
+ * original board index for the #n marker.
+ */
+function laneNodes(nodes: DagNodeStatus[]): Array<Array<{ n: DagNodeStatus; i: number }>> {
+  const known = new Set(nodes.map((n) => n.node))
+  const deps = new Map(nodes.map((n) => [n.node, (n.dependsOn ?? []).filter((d) => d !== n.node && known.has(d))]))
+  const dependents = new Map<string, string[]>()
+  const inDegree = new Map<string, number>()
+  for (const [id, ds] of deps) {
+    inDegree.set(id, ds.length)
+    for (const d of ds) dependents.set(d, [...(dependents.get(d) ?? []), id])
+  }
+  const depth = new Map<string, number>()
+  const queue = nodes.map((n) => n.node).filter((id) => (inDegree.get(id) ?? 0) === 0)
+  for (const id of queue) depth.set(id, 0)
+  while (queue.length > 0) {
+    const id = queue.shift()!
+    for (const next of dependents.get(id) ?? []) {
+      depth.set(next, Math.max(depth.get(next) ?? 0, (depth.get(id) ?? 0) + 1))
+      const deg = (inDegree.get(next) ?? 0) - 1
+      inDegree.set(next, deg)
+      if (deg === 0) queue.push(next)
+    }
+  }
+  const lanes: Array<Array<{ n: DagNodeStatus; i: number }>> = []
+  nodes.forEach((n, i) => {
+    const d = depth.get(n.node) ?? 0
+    while (lanes.length <= d) lanes.push([])
+    lanes[d]!.push({ n, i })
+  })
+  return lanes
+}
+
+function DagBoard({ dag, onChanged }: { dag: DagStatus; onChanged: () => void }): React.ReactElement {
   const [expanded, setExpanded] = useState<string | null>(null)
   // 展开时拉一次 /v1/dag/:id 拿最新节点状态（节点详情 API 只有这些字段）。
   const [fresh, setFresh] = useState<DagStatus | null>(null)
+  const [confirmAbort, setConfirmAbort] = useState(false)
+  const [aborting, setAborting] = useState(false)
   useEffect(() => {
     setExpanded(null)
     setFresh(null)
+    setConfirmAbort(false)
   }, [dag.dagId])
   useEffect(() => {
     if (!expanded) return
@@ -236,11 +277,40 @@ function DagBoard({ dag }: { dag: DagStatus }): React.ReactElement {
 
   const nodeOf = (n: DagNodeStatus): DagNodeStatus => fresh?.nodes.find((x) => x.node === n.node) ?? n
 
+  const abort = (): void => {
+    setAborting(true)
+    void api
+      .abortDag(dag.dagId)
+      .then(() => {
+        setConfirmAbort(false)
+        onChanged()
+      })
+      .catch(() => {})
+      .finally(() => setAborting(false))
+  }
+
+  const lanes = laneNodes(dag.nodes)
+
   return (
     <div>
       <div className="mb-4 flex flex-wrap items-center gap-2">
         <span className="font-mono text-sm text-fg">{dag.dagId}</span>
         <span className="chip !py-0 !text-[10px]">{dag.done ? "已完成" : "运行中"}</span>
+        {!dag.done &&
+          (confirmAbort ? (
+            <>
+              <button className="btn btn-danger !py-1 text-2xs" disabled={aborting} onClick={abort}>
+                <Square size={11} /> {aborting ? "中止中…" : "确认中止"}
+              </button>
+              <button className="btn !py-1 text-2xs" onClick={() => setConfirmAbort(false)}>
+                取消
+              </button>
+            </>
+          ) : (
+            <button className="btn !py-1 text-2xs" title="中止整张图：pending→skipped，running→aborted（持久化 DAG.Aborted）" onClick={() => setConfirmAbort(true)}>
+              <Square size={11} /> 中止
+            </button>
+          ))}
         <span className="ml-auto flex flex-wrap gap-2">
           {(Object.keys(NODE_STATE) as DagNodeState[]).map((st) => (
             <span key={st} className="flex items-center gap-1 text-2xs text-faint">
@@ -251,59 +321,70 @@ function DagBoard({ dag }: { dag: DagStatus }): React.ReactElement {
         </span>
       </div>
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
-        {dag.nodes.map((raw, i) => {
-          const n = nodeOf(raw)
-          const st = NODE_STATE[n.state]
-          const open = expanded === n.node
-          return (
-            <div
-              key={n.node}
-              role="button"
-              tabIndex={0}
-              onClick={() => setExpanded(open ? null : n.node)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") setExpanded(open ? null : n.node)
-              }}
-              className="card relative cursor-pointer p-4 transition-colors hover:border-linestrong"
-            >
-              <div className="flex items-start gap-2.5">
-                <span className="mt-0.5 flex-none" style={{ color: st.color }}>
-                  {st.icon}
-                </span>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-2xs text-ghost">#{i + 1}</span>
-                    <span className="font-mono text-xs font-medium text-fg">{n.node}</span>
-                    <span className="chip !py-0 !text-[10px]" style={{ color: st.color, borderColor: `${st.color}55` }}>
-                      {st.label}
+      {lanes.map((lane, li) => (
+        <div key={li} className={li > 0 ? "mt-6" : undefined}>
+          <div className="mb-2.5 flex items-center gap-2">
+            <span className="text-2xs font-medium text-dim">第 {li + 1} 层</span>
+            <span className="text-2xs text-ghost">{lane.length} 个节点</span>
+            <span className="h-px flex-1" style={{ background: "var(--line)" }} />
+          </div>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            {lane.map(({ n: raw, i }) => {
+              const n = nodeOf(raw)
+              const st = NODE_STATE[n.state]
+              const open = expanded === n.node
+              return (
+                <div
+                  key={n.node}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => setExpanded(open ? null : n.node)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") setExpanded(open ? null : n.node)
+                  }}
+                  className="card relative cursor-pointer p-4 transition-colors hover:border-linestrong"
+                >
+                  <div className="flex items-start gap-2.5">
+                    <span className="mt-0.5 flex-none" style={{ color: st.color }}>
+                      {st.icon}
                     </span>
-                    <span className="ml-auto flex-none">
-                      <Chevron open={open} />
-                    </span>
-                  </div>
-                  <div className="mt-1.5 flex items-center gap-1.5 text-2xs text-faint">
-                    <TerminalSquare size={11} />
-                    <span className="truncate font-mono">{n.model ?? "继承父模型"}</span>
-                  </div>
-                  {open && (
-                    <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1.5 border-t border-line pt-2.5 text-2xs">
-                      <span className="text-faint">序号</span>
-                      <span className="text-right font-mono text-dim">#{i + 1} / {dag.nodes.length}</span>
-                      <span className="text-faint">状态</span>
-                      <span className="text-right font-mono" style={{ color: st.color }}>{st.label}</span>
-                      <span className="text-faint">模型</span>
-                      <span className="truncate text-right font-mono text-dim">{n.model ?? "继承父模型"}</span>
-                      <span className="text-faint">DAG</span>
-                      <span className="truncate text-right font-mono text-ghost">{dag.dagId}</span>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-2xs text-ghost">#{i + 1}</span>
+                        <span className="font-mono text-xs font-medium text-fg">{n.node}</span>
+                        <span className="chip !py-0 !text-[10px]" style={{ color: st.color, borderColor: `${st.color}55` }}>
+                          {st.label}
+                        </span>
+                        <span className="ml-auto flex-none">
+                          <Chevron open={open} />
+                        </span>
+                      </div>
+                      <div className="mt-1.5 flex items-center gap-1.5 text-2xs text-faint">
+                        <TerminalSquare size={11} />
+                        <span className="truncate font-mono">{n.model ?? "继承父模型"}</span>
+                      </div>
+                      {open && (
+                        <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1.5 border-t border-line pt-2.5 text-2xs">
+                          <span className="text-faint">序号</span>
+                          <span className="text-right font-mono text-dim">#{i + 1} / {dag.nodes.length}</span>
+                          <span className="text-faint">状态</span>
+                          <span className="text-right font-mono" style={{ color: st.color }}>{st.label}</span>
+                          <span className="text-faint">模型</span>
+                          <span className="truncate text-right font-mono text-dim">{n.model ?? "继承父模型"}</span>
+                          <span className="text-faint">依赖</span>
+                          <span className="truncate text-right font-mono text-dim">{n.dependsOn?.length ? n.dependsOn.join(", ") : "无（根节点）"}</span>
+                          <span className="text-faint">DAG</span>
+                          <span className="truncate text-right font-mono text-ghost">{dag.dagId}</span>
+                        </div>
+                      )}
                     </div>
-                  )}
+                  </div>
                 </div>
-              </div>
-            </div>
-          )
-        })}
-      </div>
+              )
+            })}
+          </div>
+        </div>
+      ))}
     </div>
   )
 }

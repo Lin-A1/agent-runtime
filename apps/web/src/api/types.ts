@@ -162,6 +162,8 @@ export interface DagNodeStatus {
   node: string
   state: DagNodeState
   model?: string
+  /** Declared edges from the durable DAG.Declared spec (lane grouping). */
+  dependsOn?: string[]
 }
 
 export interface DagStatus {
