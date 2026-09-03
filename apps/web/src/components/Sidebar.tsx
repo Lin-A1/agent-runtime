@@ -3,9 +3,9 @@
  * top, task sessions below, 新任务 button. Refresh is bus-driven via the app
  * store. Session management (rename / archive / delete / fork) is Phase 2.
  */
-import { useMemo } from "react"
+import { useMemo, useState } from "react"
 import { useNavigate } from "react-router-dom"
-import { Plus } from "lucide-react"
+import { Plus, Trash2 } from "lucide-react"
 import { api } from "../api/client"
 import { prettyTitle } from "../api/fold"
 import type { SessionRow } from "../api/types"
@@ -20,22 +20,73 @@ function statusCls(row: SessionRow, busy: boolean): string {
   return "dot-settled"
 }
 
-function Row({ row, selected }: { row: SessionRow; selected: boolean }): React.ReactElement {
+function Row({ row, selected, onDeleteDone }: { row: SessionRow; selected: boolean; onDeleteDone: (deletedId: string) => void }): React.ReactElement {
   const navigate = useNavigate()
   const { live } = useStream()
+  const { refreshSessions } = useApp()
+  const [confirming, setConfirming] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const busy = !!live.get(row.sessionId)?.busy
   const isButler = row.role === "butler"
+
+  const doDelete = (): void => {
+    void api
+      .deleteSession(row.sessionId)
+      .then(() => {
+        setConfirming(false)
+        refreshSessions()
+        onDeleteDone(row.sessionId)
+      })
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
+  }
+
+  if (confirming || error) {
+    return (
+      <div className="flex items-center gap-1.5 rounded-lg bg-bg2 px-2.5 py-1.5 text-xs">
+        <span className="min-w-0 flex-1 truncate text-bad">{error ?? "删除该会话？不可恢复"}</span>
+        {!error && (
+          <button className="btn btn-danger flex-none !px-2 !py-0.5 !text-2xs" onClick={doDelete}>
+            确认删除
+          </button>
+        )}
+        <button
+          className="btn flex-none !px-2 !py-0.5 !text-2xs"
+          onClick={() => {
+            setConfirming(false)
+            setError(null)
+          }}
+        >
+          取消
+        </button>
+      </div>
+    )
+  }
+
   return (
-    <button
-      className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors ${
-        selected ? "bg-hover-2 text-fg" : "text-dim hover:bg-hover"
-      }`}
-      onClick={() => navigate(`/s/${row.sessionId}`)}
-    >
-      {isButler ? <EmotionBall mood={busy ? "thinking" : "idle"} size={22} lite /> : <span className={`dot flex-none ${statusCls(row, busy)}`} />}
-      <span className="min-w-0 flex-1 truncate">{isButler ? "newhorse" : prettyTitle(row.title, "未命名会话")}</span>
-      {row.origin && <span className="flex-none rounded border border-line px-1 text-2xs uppercase text-ghost">{row.origin}</span>}
-    </button>
+    <div className="group relative">
+      <button
+        className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 pr-7 text-left text-xs transition-colors ${
+          selected ? "bg-hover-2 text-fg" : "text-dim hover:bg-hover"
+        }`}
+        onClick={() => navigate(`/s/${row.sessionId}`)}
+      >
+        {isButler ? <EmotionBall mood={busy ? "thinking" : "idle"} size={22} lite /> : <span className={`dot flex-none ${statusCls(row, busy)}`} />}
+        <span className="min-w-0 flex-1 truncate">{isButler ? "newhorse" : prettyTitle(row.title, "未命名会话")}</span>
+        {row.origin && <span className="flex-none rounded border border-line px-1 text-2xs uppercase text-ghost group-hover:hidden">{row.origin}</span>}
+      </button>
+      {!isButler && (
+        <button
+          className="icon-btn absolute right-1.5 top-1/2 !h-6 !w-6 -translate-y-1/2 opacity-0 transition-opacity hover:!text-bad group-hover:opacity-100"
+          title="删除会话"
+          onClick={(e) => {
+            e.stopPropagation()
+            setConfirming(true)
+          }}
+        >
+          <Trash2 size={12} />
+        </button>
+      )}
+    </div>
   )
 }
 
@@ -49,6 +100,12 @@ export function Sidebar({ selectedId }: { selectedId?: string }): React.ReactEle
     const butlerRow = inWs.filter((r) => r.role === "butler").sort((a, b) => b.updatedAt - a.updatedAt)[0]
     return { butler: butlerRow, tasks: inWs.filter((r) => r.role !== "butler").sort((a, b) => b.updatedAt - a.updatedAt) }
   }, [sessions, workspace])
+
+  // After a delete: if the deleted row was selected, fall back to "/" so the
+  // app resolves the latest remaining session (or the cover when none is left).
+  const onDeleted = (deletedId: string): void => {
+    if (selectedId === deletedId) navigate("/")
+  }
 
   const newTask = (): void => {
     void api
@@ -81,12 +138,12 @@ export function Sidebar({ selectedId }: { selectedId?: string }): React.ReactEle
         {sessionsError && <div className="px-2 py-4 text-xs text-bad">{sessionsError}</div>}
         {butler && (
           <div className="mb-2">
-            <Row row={butler} selected={selectedId === butler.sessionId} />
+            <Row row={butler} selected={selectedId === butler.sessionId} onDeleteDone={onDeleted} />
           </div>
         )}
         <div className="flex flex-col gap-0.5">
           {tasks.map((r) => (
-            <Row key={r.sessionId} row={r} selected={selectedId === r.sessionId} />
+            <Row key={r.sessionId} row={r} selected={selectedId === r.sessionId} onDeleteDone={onDeleted} />
           ))}
         </div>
       </div>
