@@ -407,6 +407,20 @@ function flag(env: Record<string, string | undefined>, key: string): boolean {
 /** An upsert item: a full profile with every field optional except the id. */
 export type ProviderProfilePatch = Partial<Omit<ProviderProfile, "id">> & { readonly id: string }
 
+/** Infer standard context window in tokens for common model families when no explicit
+ *  budget or catalog entry is configured (reserved seam for dynamic model discovery). */
+export function inferModelContextWindow(modelId?: string): number | undefined {
+  if (!modelId) return undefined
+  const m = modelId.toLowerCase()
+  if (m.includes("minimax")) return 200_000
+  if (m.includes("claude")) return 200_000
+  if (m.includes("gpt-4") || m.includes("o1") || m.includes("o3")) return 128_000
+  if (m.includes("deepseek")) return 64_000
+  if (m.includes("qwen")) return 128_000
+  if (m.includes("glm")) return 128_000
+  return undefined
+}
+
 /** The preset activated by `activeProviderId`, if it still exists. */
 function activeProfile(file: AgentHomeConfig): ProviderProfilePatch | undefined {
   return file.activeProviderId ? (file.providers ?? []).find((p) => p.id === file.activeProviderId) : undefined
