@@ -1,4 +1,4 @@
-import { validate, foldDAG, cascadeTerminal, readyNodes, reconcile, DAGError, type DAGSpec, type DAGNode, type Topology, type NodeState } from "@newhorse/core"
+import { validate, foldDAG, applyDagEvent, emptyDagFoldState, cascadeTerminal, readyNodes, reconcile, DAGError, type DAGSpec, type DAGNode, type Topology, type NodeState } from "@newhorse/core"
 import { type Agent, type EventStore, type MemorySessionInput, type Tool, type TurnRuntime, type ToolCtx } from "@newhorse/core"
 import { createBuiltinTools, createExecPolicy, simpleHash } from "./tools"
 import { driveChildSession } from "./session-manager"
@@ -185,8 +185,12 @@ export async function runDag(spec: DAGSpec, deps: DagDeps): Promise<DagOutcome> 
     await deps.events.append(dagId, "DAG.Declared", { dagId, spec }, "dag")
   }
 
-  // Node state kept in memory for the run; durable mirror via append.
-  const status: Record<string, NodeState> = {}
+  // Node state kept in memory for the run; durable mirror via append. The
+  // fold state IS the in-memory state: emit() applies each appended event
+  // incrementally (O(1)) instead of re-reading + re-folding the aggregate
+  // (O(events) per emit → O(n²) per graph).
+  const fold = emptyDagFoldState()
+  const status = fold.status
   const running = new Map<string, AbortController>()
   const attempts = new Map<string, number>()
   const maxRetries = deps.maxRetries ?? 2
@@ -213,18 +217,19 @@ export async function runDag(spec: DAGSpec, deps: DagDeps): Promise<DagOutcome> 
     // A node the prior run left 'running' is dead now (process died mid-node);
     // mark it pending so pump re-dispatches it. The reset must be DURABLE
     // (NodeRetried folds to pending): an in-memory-only reset would be
-    // REGRESSED by the next emit()'s full refold of the log (stale NodeStarted
+    // REGRESSED by the next emit()'s refold of the log (stale NodeStarted
     // → running), and a node whose deps settled before the first pump would
     // then never re-dispatch — waitForTerminal would hang forever.
     for (const id of Object.keys(prior.status)) {
       if (status[id] === "running") {
         status[id] = "pending"
-        await deps.events.append(dagId, "DAG.NodeRetried", { nodeId: id, attempt: (prior.attempts[id] ?? 0) + 1 }, "dag")
+        const attempt = (prior.attempts[id] ?? 0) + 1
+        attempts.set(id, prior.attempts[id] ?? 0) // keep the retry budget honest across resume
+        await deps.events.append(dagId, "DAG.NodeRetried", { nodeId: id, attempt }, "dag")
       }
     }
   }
 
-  let aborted = false
   let stopped = false
 
   // DAG ↔ todo projection: declare the graph as the session's checklist.
@@ -264,12 +269,11 @@ export async function runDag(spec: DAGSpec, deps: DagDeps): Promise<DagOutcome> 
     else deps.signal.addEventListener("abort", () => void abortGraph(), { once: true })
   }
 
-  /** Emit a DAG event and apply it to the in-memory status. */
+  /** Emit a DAG event and apply it to the in-memory fold INCREMENTALLY —
+   *  append once, apply once; never re-read the aggregate. */
   const emit = async (type: string, data: Record<string, unknown>): Promise<void> => {
-    await deps.events.append(dagId, type, data, "dag")
-    const d = foldDAG(await deps.events.read(dagId))
-    Object.assign(status, d.status)
-    aborted = d.aborted || aborted
+    const event = await deps.events.append(dagId, type, data, "dag")
+    applyDagEvent(fold, event)
   }
 
   /** Emit NodeAborted at most once per node (dedupe abortGraph + runNode). */
@@ -451,7 +455,7 @@ export async function runDag(spec: DAGSpec, deps: DagDeps): Promise<DagOutcome> 
   }
   pendingSkips.length = 0
 
-  return { dagId, status, aborted, models: foldDAG(await deps.events.read(dagId)).models }
+  return { dagId, status, aborted: fold.aborted, models: fold.models }
 }
 
 /** Poll status until every node is terminal (succeeded/failed/skipped/aborted). */

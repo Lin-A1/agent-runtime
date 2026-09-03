@@ -36,17 +36,18 @@ const chain: DAGSpec = {
   },
 }
 
-async function makeRunner(fetch: Fetcher): Promise<{ runner: DagRunner; cleanup: () => Promise<void> }> {
+async function makeRunner(fetch: Fetcher): Promise<{ runner: DagRunner; events: MemoryEventStore; cleanup: () => Promise<void> }> {
   const dataDir = await mkdtemp(join(tmpdir(), "newhorse-dag-api-"))
+  const events = new MemoryEventStore()
   const runner = createDagRunner({
     dataDir,
-    events: new MemoryEventStore(),
+    events,
     getProvider: () => provider,
     getDefaultModel: () => "m",
     getWorkspace: () => dataDir,
     fetch,
   })
-  return { runner, cleanup: () => rm(dataDir, { recursive: true, force: true }) }
+  return { runner, events, cleanup: () => rm(dataDir, { recursive: true, force: true }) }
 }
 
 async function waitFor(pred: () => Promise<boolean>, ms = 10_000): Promise<void> {
@@ -75,6 +76,27 @@ describe("dag api runner", () => {
       const st = await untilDone(runner, dagId)
       expect(st.nodes.find((n) => n.node === "A")?.dependsOn).toBeUndefined()
       expect(st.nodes.find((n) => n.node === "B")?.dependsOn).toEqual(["A"])
+    } finally {
+      await cleanup()
+    }
+  })
+
+  it("status exposes each node's childSessionId (transcript pointer)", async () => {
+    const { runner, events, cleanup } = await makeRunner(okFetch)
+    try {
+      const { dagId } = await runner.run(chain)
+      const st = await untilDone(runner, dagId)
+      const a = st.nodes.find((n) => n.node === "A")?.childSessionId
+      const b = st.nodes.find((n) => n.node === "B")?.childSessionId
+      expect(a).toBeTruthy()
+      expect(b).toBeTruthy()
+      expect(a).not.toBe(b)
+      // The pointer is a REAL driven child: its log folds Created → Settled.
+      for (const id of [a, b]) {
+        const log = await events.read(id!)
+        expect(log.some((e) => e.type === "Session.Created")).toBe(true)
+        expect(log.some((e) => e.type === "Session.Settled")).toBe(true)
+      }
     } finally {
       await cleanup()
     }
