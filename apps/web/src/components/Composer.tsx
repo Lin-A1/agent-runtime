@@ -7,11 +7,12 @@
  * Data is hard-coded this pass; submit/steer/interrupt are wired to the api
  * stub names so wiring day only swaps the stub body.
  */
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import {
   ArrowUp,
   Check,
   AtSign,
+  Plug,
   ChevronDown,
   FileText,
   ImagePlus,
@@ -57,6 +58,10 @@ export function Composer({ variant = "session", busy = false, queuedCount = 0, a
   const commands = useApi(() => api.commands(), [])
   const skills = useApi(() => api.skills(), [])
   const sessions = useApi<SessionRow[]>(() => api.sessions(), [])
+  // MCP resources (@ 提及第三类): flat list across mounted servers; the
+  // mention inserts `@mcp:<server>:<uri>` and the send path inlines content.
+  const mcpRes = useApi(() => api.mcpResources(), [])
+  const mcpFlat = useMemo(() => Object.entries(mcpRes.data?.byServer ?? {}).flatMap(([server, s]) => (s.resources ?? []).map((r) => ({ server, ...r }))), [mcpRes.data])
   // @ files: when mentionQ is typed (≥1 char), run recursive search via
   // /v1/files/find; when empty, fall back to the root dir listing.
   const [searchResults, setSearchResults] = useState<string[]>([])
@@ -84,15 +89,34 @@ export function Composer({ variant = "session", busy = false, queuedCount = 0, a
     }
   }, [mentionQ])
 
-  const submit = (): void => {
+  /** MCP mentions (`@mcp:<server>:<uri>`) inline the resource content into
+   *  the prompt at send time (opencode semantics — a mention is content, not
+   *  just a name). Fail-soft: an unreadable resource stays a bare mention. */
+  const expandMentions = async (body: string): Promise<string> => {
+    const mentions = [...body.matchAll(/@mcp:([^:\s]+):(\S+)/g)]
+    if (mentions.length === 0) return body
+    let expanded = body
+    for (const m of mentions) {
+      const [, server, uri] = m
+      try {
+        const res = await api.mcpResource(server!, uri!)
+        expanded = expanded.replace(m[0], `${m[0]}\n\`\`\`\n${res.text.slice(0, 20_000)}\n\`\`\``)
+      } catch {
+        // keep the bare mention — the model can ask or read later
+      }
+    }
+    return expanded
+  }
+
+  const submit = async (): Promise<void> => {
     if (disabled) return
     const body = text.trim()
     if (!body && images.length === 0) return
     if (variant === "cover") {
-      onSend?.(body)
+      onSend?.(await expandMentions(body))
       return
     }
-    onSend?.(body, images)
+    onSend?.(await expandMentions(body), images)
     setText("")
     setImages([])
   }
@@ -191,7 +215,7 @@ export function Composer({ variant = "session", busy = false, queuedCount = 0, a
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault()
-              submit()
+              void submit()
             }
           }}
           placeholder={placeholder ?? (busy ? "回合进行中——发送将作为追加（steer），下一个安全边界晋升" : "描述一个任务…")}
@@ -259,6 +283,16 @@ export function Composer({ variant = "session", busy = false, queuedCount = 0, a
                   <MentionRow key={s.sessionId} label={s.title ?? s.sessionId} onPick={() => insertMention(s.title ?? s.sessionId)} />
                 ))}
             </MentionSection>
+            {mcpFlat.length > 0 && (
+              <MentionSection icon={<Plug size={12} />} title="MCP 资源（发送时注入内容）">
+                {mcpFlat
+                  .filter((r) => !mentionQ || (r.name ?? r.uri).toLowerCase().includes(mentionQ.toLowerCase()))
+                  .slice(0, 4)
+                  .map((r) => (
+                    <MentionRow key={`${r.server}:${r.uri}`} label={`mcp:${r.server}:${r.name ?? r.uri}`} hint={r.description} onPick={() => insertMention(`mcp:${r.server}:${r.uri}`)} />
+                  ))}
+              </MentionSection>
+            )}
           </div>
         )}
 
@@ -338,7 +372,7 @@ export function Composer({ variant = "session", busy = false, queuedCount = 0, a
                 color: (text.trim() || images.length > 0) ? "var(--bg)" : "var(--txt-faint)",
               }}
               title={variant === "cover" ? "新建会话并发送" : "发送"}
-              onClick={submit}
+              onClick={() => void submit()}
               disabled={!text.trim() && images.length === 0}
             >
               <ArrowUp size={17} strokeWidth={2.4} />

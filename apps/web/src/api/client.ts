@@ -257,6 +257,11 @@ export const api = {
   findFiles: (q: string, workspace?: string) => request<{ results: string[] }>(`/v1/files/find${qs({ q, workspace })}`).then((r) => r.results),
   file: (workspace: string | undefined, path: string) => request<FileContent>(`/v1/file${qs({ workspace, path })}`),
 
+  mcpResources: () =>
+    request<{ byServer: Record<string, { resources: Array<{ uri: string; name?: string; description?: string; mimeType?: string }>; error?: string }> }>("/v1/mcp/resources"),
+  mcpResource: (server: string, uri: string) =>
+    request<{ server: string; uri: string; text: string; mimeType?: string }>(`/v1/mcp/resource${qs({ server, uri })}`),
+
   skills: () => request<{ skills: SkillInfo[] }>("/v1/skills"),
   skillBody: (name: string) => request<{ name: string; description?: string; path?: string; body?: string }>(`/v1/skills${qs({ name })}`),
   importSkill: (name: string, body: string, description?: string) =>

@@ -96,6 +96,13 @@ export interface ServerConfig {
    *  into every session's AppConfig.tools — first same-name occurrence wins,
    *  builtins/plugins keep their precedence (runtime toolset rules). */
   readonly tools?: import("@newhorse/core").Tool[]
+  /** MCP resource surface (from the same createMcpTools mount): server name →
+   *  resources + readResource. Powers GET /v1/mcp/resources and
+   *  GET /v1/mcp/resource — absent → both routes return 404. */
+  readonly mcpResources?: {
+    readonly byServer: Record<string, { resources: ReadonlyArray<{ uri: string; name?: string; description?: string; mimeType?: string }>; error?: string }>
+    readonly readResource: (server: string, uri: string) => Promise<{ text: string; mimeType?: string }>
+  }
 }
 
 /** One session's create config (POST /v1/session body), transport DTO. */
@@ -253,6 +260,7 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
   const agentHome = config.agentHome
   const channels = config.channels
   const serverTools = config.tools
+  const mcpResources = config.mcpResources
   const apps = new Map<string, App>()
   /** Sessions this process created (directory-owned; unregistered on stop). */
   const owned = new Set<string>()
@@ -1169,6 +1177,28 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
         await walk(canon, "", 0)
         results.sort((a, b) => a.split("/").length - b.split("/").length || a.localeCompare(b))
         return json(200, { results: results.slice(0, 50) })
+      }
+
+      // GET /v1/mcp/resources — the MCP resource surface (server name →
+      // resources + per-server error when the server ships tools only).
+      if (method === "GET" && parts.length === 3 && parts[1] === "mcp" && parts[2] === "resources") {
+        if (!mcpResources) return json(404, { error: "no mcp servers configured" })
+        return json(200, { byServer: mcpResources.byServer })
+      }
+
+      // GET /v1/mcp/resource?server=&uri= — one resource's text content
+      // (resources/read through the server's live transport).
+      if (method === "GET" && parts.length === 3 && parts[1] === "mcp" && parts[2] === "resource") {
+        if (!mcpResources) return json(404, { error: "no mcp servers configured" })
+        const server = url.searchParams.get("server") ?? ""
+        const uri = url.searchParams.get("uri") ?? ""
+        if (!server || !uri) return json(400, { error: "server and uri are required" })
+        try {
+          const content = await mcpResources.readResource(server, uri)
+          return json(200, { server, uri, ...content })
+        } catch (e) {
+          return json(502, { error: `resource read failed: ${e instanceof Error ? e.message : String(e)}` })
+        }
       }
 
       // GET /v1/skills — the pluginsDir skills catalog (level 1 + body on demand).
