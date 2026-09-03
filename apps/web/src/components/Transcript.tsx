@@ -249,13 +249,37 @@ function AssistantTurnView({ turn }: { turn: UserTurn }): React.ReactElement | n
   )
 }
 
-// ---------- Live Assistant Turn ----------
+// ---------- Live Turn (User Bubble first, then streaming assistant reply) ----------
 
 function LiveTurnView({ turn }: { turn: LiveTurn }): React.ReactElement {
   const lastText = [...turn.blocks].reverse().find((b) => b.kind === "text")
 
   return (
     <div className="fade-up my-4 flex flex-col gap-2.5">
+      {/* 1. Immediate User Question Bubble (renders instantly upon send) */}
+      {turn.userPrompt && (
+        <div className="my-2 flex flex-col items-end gap-2">
+          <div className="flex max-w-[88%] items-start gap-2.5">
+            <div className="user-bubble min-w-0">
+              <div className="whitespace-pre-wrap text-sm leading-relaxed text-fg select-text">{turn.userPrompt}</div>
+              {turn.images && turn.images.length > 0 && (
+                <div className="mt-2.5 flex flex-wrap gap-2">
+                  {turn.images.map((img, i) => (
+                    <img
+                      key={i}
+                      src={imageUrl(img)}
+                      alt=""
+                      className="max-h-48 rounded-xl border border-line object-contain shadow-sm"
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 2. Assistant Streaming Reply */}
       <div className="flex items-center gap-2 text-2xs font-medium text-faint">
         <span className="flex h-4 w-4 items-center justify-center rounded-full bg-accent/20 text-accent ring-1 ring-accent/40 animate-pulse">
           <Sparkles size={10} />

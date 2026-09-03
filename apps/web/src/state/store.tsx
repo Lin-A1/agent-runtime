@@ -105,6 +105,8 @@ export type LiveBlock =
   | { kind: "note"; text: string; variant: "steer" | "error" | "info" }
 
 export interface LiveTurn {
+  userPrompt: string
+  images?: ChatImage[]
   blocks: LiveBlock[]
   panels: PanelInfo[]
   step: number
@@ -171,7 +173,7 @@ export function StreamProvider({ children }: { children: ReactNode }): React.Rea
       // create (updateTurn only patches an existing entry)
       setLive((prev) => {
         const next = new Map(prev)
-        next.set(sessionId, { blocks: [], panels: [], step: 0, busy: true, startedAt: Date.now() })
+        next.set(sessionId, { userPrompt: text, images, blocks: [], panels: [], step: 0, busy: true, startedAt: Date.now() })
         return next
       })
       const ctrl = new AbortController()

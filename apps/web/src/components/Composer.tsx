@@ -95,20 +95,24 @@ export function Composer({ sessionId }: { sessionId: string }): React.ReactEleme
             <div className="flex items-center gap-2">
               {busy ? (
                 <button
-                  className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-bad text-white shadow-sm transition-all hover:bg-bad/90 hover:scale-105 active:scale-95"
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-xl bg-bad text-white shadow-md transition-all hover:opacity-90 hover:scale-105 active:scale-95"
                   title="中断当前回合"
                   onClick={() => void stop(sessionId)}
                 >
-                  <Square size={12} fill="currentColor" />
+                  <Square size={13} fill="currentColor" />
                 </button>
               ) : (
                 <button
-                  className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-accent text-on-accent shadow-sm transition-all hover:opacity-90 hover:scale-105 active:scale-95 disabled:opacity-30 disabled:scale-100 disabled:cursor-not-allowed"
+                  className={`inline-flex h-8 w-8 items-center justify-center rounded-xl transition-all ${
+                    text.trim()
+                      ? "bg-accent text-white shadow-md hover:opacity-90 hover:scale-105 active:scale-95"
+                      : "bg-hover-2 text-fg/40 border border-line cursor-not-allowed"
+                  }`}
                   title="发送 (Enter)"
                   disabled={sending || !text.trim()}
                   onClick={() => void doSend(text)}
                 >
-                  {sending ? <Loader2 size={13} className="spin" /> : <ArrowUp size={14} strokeWidth={2.4} />}
+                  {sending ? <Loader2 size={15} className="spin text-fg" /> : <ArrowUp size={16} strokeWidth={2.4} />}
                 </button>
               )}
             </div>

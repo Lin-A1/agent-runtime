@@ -14,88 +14,93 @@
   --font-sans: ui-sans-serif, system-ui, "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Noto Sans CJK SC", sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", "Microsoft YaHei UI", monospace;
 
-  /* ---- dark (default) ---- */
-  --bg: #161616; /* ZCode dark background */
-  --bg2: #1c1c1c; /* oc-2 surface-base (inset wells) */
-  --panel: #202020; /* ZCode header/panel */
-  --sidebar: #111111; /* near ZCode sidebar (neutral-950) */
-  --card: #232323; /* oc-2 surface-raised */
-  --card-hover: #2a2a2a;
-  --line: rgba(255, 255, 255, 0.08);
-  --line-strong: rgba(255, 255, 255, 0.16);
-  --txt: #ededed; /* oc-2 text-strong */
-  --txt-dim: #a0a0a0; /* oc-2 text-base */
-  --txt-faint: #707070; /* oc-2 text-weak */
-  --txt-ghost: #505050; /* oc-2 text-weaker */
-  --accent: #0ea5e9; /* ZCode brand (sky-500) */
-  --accent-strong: #38bdf8;
-  --accent-soft: rgba(14, 165, 233, 0.14);
+  /* ---- dark (default) — aligned with beautifului & Linear Obsidian ---- */
+  --bg: #111214;
+  --bg2: #16171a;
+  --panel: #18191c;
+  --sidebar: #141517;
+  --surface: #1e2023;
+  --card: #1f2125;
+  --card-hover: #26282d;
+  --line: #26282c;
+  --line-strong: #33363d;
+  --txt: #f4f4f6;
+  --txt-dim: #a1a4ad;
+  --txt-faint: #6c6f78;
+  --txt-ghost: #464850;
+  --accent: #2563eb;
+  --accent-strong: #3b82f6;
+  --accent-soft: rgba(37, 99, 235, 0.18);
   --on-accent: #ffffff;
-  --ok: #2dd4bf; /* ZCode trajectory assistant teal */
-  --warn: #f59e0b; /* ZCode trajectory tool-call amber */
-  --bad: #fc533a; /* oc-2 error */
-  --hover: rgba(255, 255, 255, 0.06);
-  --hover-2: rgba(255, 255, 255, 0.1); /* ZCode selected */
-  --sel: rgba(255, 255, 255, 0.1);
-  --scrim: rgba(0, 0, 0, 0.55);
-  --accent-glow: rgba(14, 165, 233, 0.22);
+  --ok: #22c55e;
+  --warn: #f59e0b;
+  --bad: #ef4444;
+  --hover: rgba(255, 255, 255, 0.05);
+  --hover-2: rgba(255, 255, 255, 0.09);
+  --sel: rgba(255, 255, 255, 0.09);
+  --scrim: rgba(0, 0, 0, 0.65);
+  --accent-glow: rgba(37, 99, 235, 0.25);
 
-  /* trajectory semantics (ZCode) — one color per transcript role */
+  /* trajectory semantics — one color per transcript role */
   --traj-user: #60a5fa;
-  --traj-assistant: #2dd4bf;
+  --traj-assistant: #34d399;
   --traj-reasoning: #a78bfa;
-  --traj-tool: #f59e0b;
+  --traj-tool: #fbbf24;
   --traj-tool-result: #38bdf8;
 
-  /* diff (oc-2 dark) */
-  --diff-add-bg: rgba(46, 160, 67, 0.16);
-  --diff-del-bg: rgba(248, 81, 73, 0.15);
-  --diff-add-fg: #7ee2a8;
-  --diff-del-fg: #ff9d96;
+  /* diff */
+  --diff-add-bg: rgba(34, 197, 94, 0.15);
+  --diff-del-bg: rgba(239, 68, 68, 0.15);
+  --diff-add-fg: #4ade80;
+  --diff-del-fg: #f87171;
 
-  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3), 0 4px 12px rgba(0, 0, 0, 0.25);
-  --shadow-overlay: 0 8px 32px rgba(0, 0, 0, 0.5), 0 0 0 1px var(--line);
+  --shadow-card: 0 0 0 1px var(--line), 0 1px 2px rgba(0, 0, 0, 0.25), 0 2px 6px rgba(0, 0, 0, 0.2);
+  --shadow-raised: 0 0 0 1px var(--line), 0 4px 16px rgba(0, 0, 0, 0.35);
+  --shadow-overlay: 0 0 0 1px var(--line-strong), 0 12px 36px rgba(0, 0, 0, 0.6);
 }
 
 [data-theme="light"] {
-  --bg: #f8f8f8; /* ZCode light background */
-  --bg2: #f1f2f3;
+  /* ---- light — aligned with beautifului pure canvas ---- */
+  --bg: #fafafb;
+  --bg2: #f4f4f6;
   --panel: #ffffff;
-  --sidebar: #f2f2f3;
+  --sidebar: #f2f3f5;
+  --surface: #ffffff;
   --card: #ffffff;
-  --card-hover: #f4f5f6;
-  --line: rgba(0, 0, 0, 0.08);
-  --line-strong: rgba(0, 0, 0, 0.16);
-  --txt: #171717;
-  --txt-dim: #6f6f6f;
-  --txt-faint: #8f8f8f;
-  --txt-ghost: #c7c7c7;
-  --accent: #0a0a0a; /* ZCode light brand: black */
-  --accent-strong: #333333;
-  --accent-soft: rgba(0, 0, 0, 0.06);
+  --card-hover: #f7f8f9;
+  --line: #e4e6ea;
+  --line-strong: #d3d6dd;
+  --txt: #141517;
+  --txt-dim: #5c5f66;
+  --txt-faint: #8a8d96;
+  --txt-ghost: #b8bbc2;
+  --accent: #18191c;
+  --accent-strong: #2c2e33;
+  --accent-soft: rgba(0, 0, 0, 0.07);
   --on-accent: #ffffff;
-  --ok: #0abe00; /* oc-2 light success */
+  --ok: #16a34a;
   --warn: #d97706;
-  --bad: #e5484d;
+  --bad: #dc2626;
   --hover: rgba(0, 0, 0, 0.04);
-  --hover-2: rgba(0, 0, 0, 0.08);
-  --sel: rgba(0, 0, 0, 0.08);
+  --hover-2: rgba(0, 0, 0, 0.07);
+  --sel: rgba(0, 0, 0, 0.07);
   --scrim: rgba(0, 0, 0, 0.35);
   --accent-glow: rgba(0, 0, 0, 0.12);
 
   --traj-user: #2563eb;
-  --traj-assistant: #0d9488;
+  --traj-assistant: #059669;
   --traj-reasoning: #7c3aed;
   --traj-tool: #d97706;
   --traj-tool-result: #0284c7;
 
-  --diff-add-bg: rgba(46, 160, 67, 0.14);
-  --diff-del-bg: rgba(248, 81, 73, 0.12);
-  --diff-add-fg: #1a7f37;
-  --diff-del-fg: #cf222e;
+  --diff-add-bg: rgba(34, 197, 94, 0.12);
+  --diff-del-bg: rgba(239, 68, 68, 0.12);
+  --diff-add-fg: #15803d;
+  --diff-del-fg: #b91c1c;
 
-  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.05), 0 4px 12px rgba(0, 0, 0, 0.05);
-  --shadow-overlay: 0 8px 32px rgba(0, 0, 0, 0.14), 0 0 0 1px var(--line);
+  --shadow-card: 0 0 0 1px var(--line), 0 1px 2px rgba(0, 0, 0, 0.04), 0 2px 5px rgba(0, 0, 0, 0.03);
+  --shadow-raised: 0 0 0 1px var(--line), 0 4px 14px rgba(0, 0, 0, 0.06);
+  --shadow-overlay: 0 0 0 1px var(--line-strong), 0 10px 30px rgba(0, 0, 0, 0.12);
 }
 
 /* ---- base ---- */
