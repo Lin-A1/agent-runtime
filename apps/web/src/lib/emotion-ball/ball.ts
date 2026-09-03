@@ -159,6 +159,118 @@ import { EB_RINGS as RD } from "./rings";
     var fxFront = el('g', { 'pointer-events': 'none' });
     svg.appendChild(fxFront);
 
+    /* ---- 天体星环系统 (Planetary Ring System) ----
+     * 优雅地环绕在头部中心 HEAD_C，倾斜穿插：
+     * 后半环挂在 fxBack (球体后)，前半环挂在 fxFront (球体前)
+     * 伴星微粒沿轨道公转，穿梭于球体前后。无任何杂质碎花，纯净科技天体感。
+     */
+    var hasRing = opts.hasRing !== false;
+    var planetaryRing = null;
+
+    if (hasRing) {
+      var cx = HEAD_C, cy = HEAD_C;
+      var tiltDeg = -22;
+
+      var pGradB = el('linearGradient', { id: id + 'prB', x1: '0%', y1: '0%', x2: '100%', y2: '0%' });
+      pGradB.appendChild(el('stop', { offset: '0%', 'stop-color': '#818cf8', 'stop-opacity': '0.15' }));
+      pGradB.appendChild(el('stop', { offset: '50%', 'stop-color': '#c7d2fe', 'stop-opacity': '0.5' }));
+      pGradB.appendChild(el('stop', { offset: '100%', 'stop-color': '#38bdf8', 'stop-opacity': '0.15' }));
+      defs.appendChild(pGradB);
+
+      var pGradF = el('linearGradient', { id: id + 'prF', x1: '0%', y1: '0%', x2: '100%', y2: '0%' });
+      pGradF.appendChild(el('stop', { offset: '0%', 'stop-color': '#818cf8', 'stop-opacity': '0.4' }));
+      pGradF.appendChild(el('stop', { offset: '35%', 'stop-color': '#ffffff', 'stop-opacity': '0.95' }));
+      pGradF.appendChild(el('stop', { offset: '70%', 'stop-color': '#a5f3fc', 'stop-opacity': '0.8' }));
+      pGradF.appendChild(el('stop', { offset: '100%', 'stop-color': '#38bdf8', 'stop-opacity': '0.35' }));
+      defs.appendChild(pGradF);
+
+      var Rx = 126, Ry = 32;
+      var rx = 104, ry = 26;
+      var Rx2 = 134, Ry2 = 34;
+
+      // 后半环 (位于身体后方, y <= cy)
+      var ringBackGroup = el('g', {
+        transform: 'rotate(' + tiltDeg + ' ' + cx.toFixed(2) + ' ' + cy.toFixed(2) + ')'
+      });
+      var dBack = 'M ' + (cx - Rx).toFixed(2) + ' ' + cy.toFixed(2) +
+                  ' A ' + Rx + ' ' + Ry + ' 0 0 1 ' + (cx + Rx).toFixed(2) + ' ' + cy.toFixed(2) +
+                  ' L ' + (cx + rx).toFixed(2) + ' ' + cy.toFixed(2) +
+                  ' A ' + rx + ' ' + ry + ' 0 0 0 ' + (cx - rx).toFixed(2) + ' ' + cy.toFixed(2) + ' Z';
+      var ringBackPath = el('path', { d: dBack, fill: 'url(#' + id + 'prB)', opacity: '0.75' });
+      var dBackLine = 'M ' + (cx - Rx2).toFixed(2) + ' ' + cy.toFixed(2) +
+                      ' A ' + Rx2 + ' ' + Ry2 + ' 0 0 1 ' + (cx + Rx2).toFixed(2) + ' ' + cy.toFixed(2);
+      var ringBackLine = el('path', { d: dBackLine, fill: 'none', stroke: '#c7d2fe', 'stroke-width': '0.8', opacity: '0.4' });
+      ringBackGroup.appendChild(ringBackPath);
+      ringBackGroup.appendChild(ringBackLine);
+
+      var satBack = el('circle', { r: '2.4', fill: '#e0e7ff', opacity: '0' });
+      ringBackGroup.appendChild(satBack);
+      fxBack.appendChild(ringBackGroup);
+
+      // 前半环 (位于身体前方, y >= cy)
+      var ringFrontGroup = el('g', {
+        transform: 'rotate(' + tiltDeg + ' ' + cx.toFixed(2) + ' ' + cy.toFixed(2) + ')'
+      });
+      var dFront = 'M ' + (cx + Rx).toFixed(2) + ' ' + cy.toFixed(2) +
+                   ' A ' + Rx + ' ' + Ry + ' 0 0 1 ' + (cx - Rx).toFixed(2) + ' ' + cy.toFixed(2) +
+                   ' L ' + (cx - rx).toFixed(2) + ' ' + cy.toFixed(2) +
+                   ' A ' + rx + ' ' + ry + ' 0 0 0 ' + (cx + rx).toFixed(2) + ' ' + cy.toFixed(2) + ' Z';
+      var ringFrontPath = el('path', { d: dFront, fill: 'url(#' + id + 'prF)', opacity: '0.9' });
+      var dFrontLine = 'M ' + (cx + Rx2).toFixed(2) + ' ' + cy.toFixed(2) +
+                       ' A ' + Rx2 + ' ' + Ry2 + ' 0 0 1 ' + (cx - Rx2).toFixed(2) + ' ' + cy.toFixed(2);
+      var ringFrontLine = el('path', { d: dFrontLine, fill: 'none', stroke: '#ffffff', 'stroke-width': '1.2', opacity: '0.85' });
+      ringFrontGroup.appendChild(ringFrontPath);
+      ringFrontGroup.appendChild(ringFrontLine);
+
+      var satFrontGlow = el('circle', { r: '5.5', fill: '#38bdf8', opacity: '0' });
+      var satFront = el('circle', { r: '2.8', fill: '#ffffff', opacity: '0' });
+      ringFrontGroup.appendChild(satFrontGlow);
+      ringFrontGroup.appendChild(satFront);
+      fxFront.appendChild(ringFrontGroup);
+
+      var ringAngle = 0.5;
+      var pulseEnergy = 0;
+
+      planetaryRing = {
+        pulse: function () {
+          pulseEnergy = 1;
+        },
+        update: function (dt, breatheScale, isThinking) {
+          ringAngle = (ringAngle + dt * (isThinking ? 1.5 : 0.6)) % TAU;
+          if (pulseEnergy > 0) {
+            pulseEnergy = Math.max(0, pulseEnergy - dt * 1.5);
+          }
+          var midR = (Rx + rx) * 0.5;
+          var midRy = (Ry + ry) * 0.5;
+          var sx = cx + Math.cos(ringAngle) * midR;
+          var sy = cy + Math.sin(ringAngle) * midRy;
+          var isFront = Math.sin(ringAngle) >= 0;
+
+          if (isFront) {
+            satBack.setAttribute('opacity', '0');
+            satFront.setAttribute('cx', sx.toFixed(2));
+            satFront.setAttribute('cy', sy.toFixed(2));
+            satFront.setAttribute('opacity', (0.95 + pulseEnergy * 0.05).toFixed(2));
+            satFrontGlow.setAttribute('cx', sx.toFixed(2));
+            satFrontGlow.setAttribute('cy', sy.toFixed(2));
+            satFrontGlow.setAttribute('opacity', (0.35 + pulseEnergy * 0.45).toFixed(2));
+          } else {
+            satFront.setAttribute('opacity', '0');
+            satFrontGlow.setAttribute('opacity', '0');
+            satBack.setAttribute('cx', sx.toFixed(2));
+            satBack.setAttribute('cy', sy.toFixed(2));
+            satBack.setAttribute('opacity', (0.4 + pulseEnergy * 0.2).toFixed(2));
+          }
+
+          var scale = (1 + (breatheScale - 1) * 0.4) * (1 + pulseEnergy * 0.05);
+          ringBackGroup.setAttribute('transform-origin', cx.toFixed(2) + 'px ' + cy.toFixed(2) + 'px');
+          ringFrontGroup.setAttribute('transform-origin', cx.toFixed(2) + 'px ' + cy.toFixed(2) + 'px');
+          ringBackPath.style.opacity = (0.7 + (isThinking ? 0.2 : 0) + pulseEnergy * 0.25).toFixed(2);
+          ringFrontPath.style.opacity = (0.85 + (isThinking ? 0.15 : 0) + pulseEnergy * 0.15).toFixed(2);
+        }
+      };
+    }
+
     /* 眼睛基准中心：默认表情环的质心 */
     var BASE_C = [centroid(EXPR[0][0]), centroid(EXPR[0][1])];
 
@@ -334,31 +446,10 @@ import { EB_RINGS as RD } from "./rings";
       trails.splice(idx, 1);
     }
 
-    /* ---- 撒花：一次性物理粒子爆发 ---- */
+    /* ---- 星环能量脉冲 (替代旧版五彩杂花碎片) ---- */
     function burst(count) {
-      if (lite) return;
-      count = count || 20;
-      for (var i = 0; i < count && confPieces.length < 60; i++) {
-        var ang = (i / count) * TAU + rand(-0.35, 0.35);
-        var spd = rand(170, 360);
-        var star = Math.random() < 0.18;
-        var round = !star && Math.random() < 0.3;
-        var node;
-        if (star) node = el('path', { d: STAR_PATH, fill: STAR_GOLD });
-        else if (round) node = el('circle', { r: 1, fill: CONFETTI_COLORS[(Math.random() * CONFETTI_COLORS.length) | 0] });
-        else node = el('rect', { x: -0.5, y: -0.5, width: 1, height: 1, rx: 0.24, fill: CONFETTI_COLORS[(Math.random() * CONFETTI_COLORS.length) | 0] });
-        fxFront.appendChild(node);
-        confPieces.push({
-          x: HEAD_C + Math.cos(ang) * rand(96, 116),
-          y: HEAD_C + Math.sin(ang) * rand(96, 116),
-          vx: Math.cos(ang) * spd,
-          vy: Math.sin(ang) * spd - rand(20, 75),
-          life: 0, max: rand(0.45, 0.85),
-          r: star ? rand(4, 7) : rand(3.5, 8),
-          rot: rand(0, 360), vr: rand(-260, 260),
-          stretch: (!star && !round) ? 1.9 : 1,
-          el: node
-        });
+      if (planetaryRing) {
+        planetaryRing.pulse();
       }
     }
 
@@ -585,27 +676,10 @@ import { EB_RINGS as RD } from "./rings";
         rb.gradEl.setAttribute('y2', headP.y.toFixed(1));
       }
 
-      /* ---- 撒花更新：速度衰减 0.94^60dt + 微重力 40/s ---- */
-      for (var ci = confPieces.length - 1; ci >= 0; ci--) {
-        var pc = confPieces[ci];
-        pc.life += dt;
-        if (pc.life >= pc.max) {
-          pc.el.remove();
-          confPieces.splice(ci, 1);
-          continue;
-        }
-        pc.x += pc.vx * dt;
-        pc.y += pc.vy * dt;
-        var drag = Math.pow(0.94, 60 * dt);
-        pc.vx *= drag;
-        pc.vy = pc.vy * drag + 40 * dt;
-        pc.rot += pc.vr * dt;
-        var u = pc.life / pc.max;
-        var fd = u < 0.1 ? u / 0.1 : Math.pow(1 - (u - 0.1) / 0.9, 1.7);
-        var sz = Math.max(pc.r * (1 - 0.4 * u), 0.5);
-        pc.el.setAttribute('opacity', fd.toFixed(3));
-        pc.el.setAttribute('transform',
-          'translate(' + r2(pc.x) + ' ' + r2(pc.y) + ') rotate(' + r2(pc.rot) + ') scale(' + r2(sz) + ' ' + r2(sz * pc.stretch) + ')');
+      /* ---- 星环动画更新 (轨道公转 + 呼吸跟随 + 思考加速) ---- */
+      if (planetaryRing) {
+        var isThinking = b.orbit > 0 || (pose && pose.isThinking);
+        planetaryRing.update(dt, b.scale || 1, isThinking);
       }
     }
 

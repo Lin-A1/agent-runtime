@@ -1,14 +1,35 @@
 /**
- * Transcript — the folded event log + the live turn in one column. History
- * folds from GET /v1/session/:id/events; locally-initiated turns render from
- * the StreamProvider's live turn until the settled log refetch lands, then
- * the live turn is dismissed. Minimal version: conversation loop only
- * (send → stream → settle → history), no chrome.
+ * Transcript — high-end chat stream:
+ * - Empty State: exclusive celestial hero planetary Emo Ball (floating gentle,
+ *   full interactive animation, planetary orbit ring, starter prompt pills)
+ * - User Message: modern clean bubble with subtle card elevation & avatar
+ * - Assistant Output: pro typography ladder, sleek tool capsules, codeblocks
+ * - Seamless live-to-history transition with no duplicate cards
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Brain, ChevronDown, FileDiff, Wrench } from "lucide-react"
+import {
+  Brain,
+  ChevronDown,
+  Code2,
+  Compass,
+  FileDiff,
+  FileText,
+  Globe,
+  Sparkles,
+  Terminal,
+  Wrench,
+} from "lucide-react"
 import { api } from "../api/client"
-import { foldTranscript, imageUrl, prettyTitle, toolSummary, type FileChange, type ToolBlock, type TurnBlock, type UserTurn } from "../api/fold"
+import {
+  foldTranscript,
+  imageUrl,
+  prettyTitle,
+  toolSummary,
+  type FileChange,
+  type ToolBlock,
+  type TurnBlock,
+  type UserTurn,
+} from "../api/fold"
 import type { StoredEventRow } from "../api/types"
 import { useBus } from "../api/bus"
 import { useApp, useStream, type LiveTurn } from "../state/store"
@@ -17,26 +38,55 @@ import { Markdown } from "./Markdown"
 import { PanelCard } from "./PanelCard"
 import { EmotionBall } from "./EmotionBall"
 
-// ---------- tool row ----------
+// ---------- Tool icon mapping ----------
+function getToolIcon(name: string): React.ReactElement {
+  const lc = name.toLowerCase()
+  if (lc.includes("bash") || lc.includes("command")) return <Terminal size={12} className="text-amber-500" />
+  if (lc.includes("search")) return <Globe size={12} className="text-sky-400" />
+  if (lc.includes("read") || lc.includes("file")) return <FileText size={12} className="text-indigo-400" />
+  if (lc.includes("edit") || lc.includes("write")) return <Code2 size={12} className="text-emerald-400" />
+  return <Wrench size={12} className="text-dim" />
+}
 
-function ToolRow({ name, summary, output, isError, pending }: { name: string; summary: string; output?: string; isError?: boolean; pending?: boolean }): React.ReactElement {
+// ---------- Tool row (sleek capsule -> terminal drop) ----------
+
+function ToolRow({
+  name,
+  summary,
+  output,
+  isError,
+  pending,
+}: {
+  name: string
+  summary: string
+  output?: string
+  isError?: boolean
+  pending?: boolean
+}): React.ReactElement {
   const [open, setOpen] = useState(false)
+  const hasOutput = output !== undefined
+
   return (
-    <div className="min-w-0">
+    <div className="my-1 min-w-0">
       <button
-        onClick={() => output !== undefined && setOpen((v) => !v)}
-        className={`flex w-full min-w-0 items-center gap-2 rounded-lg border px-2.5 py-1.5 text-left text-xs transition-colors ${
-          isError ? "border-line bg-bad/5 text-fg" : "border-line bg-bg2 text-dim hover:bg-hover"
-        }`}
+        onClick={() => hasOutput && setOpen((v) => !v)}
+        className={`tool-capsule ${isError ? "!border-bad/40 !bg-bad/5 text-bad" : ""}`}
+        title={hasOutput ? (open ? "点击折叠输出" : "点击展开输出") : "工具运行中…"}
       >
-        {pending ? <Spinner size={12} /> : <Wrench size={12} className="flex-none text-faint" />}
-        <span className="flex-none font-medium text-fg">{name}</span>
-        <span className="min-w-0 flex-1 truncate text-faint">{summary}</span>
-        {isError && <span className="flex-none rounded bg-bad/15 px-1.5 text-2xs text-bad">错误</span>}
-        {output !== undefined && <ChevronDown size={12} className={`flex-none text-ghost transition-transform ${open ? "rotate-180" : ""}`} />}
+        {pending ? <Spinner size={11} className="text-accent" /> : getToolIcon(name)}
+        <span className="font-medium text-fg">{name}</span>
+        <span className="max-w-xs truncate text-faint">{summary}</span>
+        {isError && <span className="rounded bg-bad/15 px-1.5 py-0.2 text-2xs text-bad">失败</span>}
+        {hasOutput && (
+          <ChevronDown
+            size={11}
+            className={`flex-none text-ghost transition-transform duration-150 ${open ? "rotate-180" : ""}`}
+          />
+        )}
       </button>
-      {open && output !== undefined && (
-        <div className="codeblock-body mt-1 max-h-72 overflow-auto rounded-lg p-2.5 text-2xs leading-relaxed">
+
+      {open && hasOutput && (
+        <div className="pop-in codeblock-body mt-1.5 max-h-72 overflow-auto rounded-xl border border-line p-3 text-2xs leading-relaxed shadow-sm">
           <pre className="whitespace-pre-wrap break-all font-mono text-dim">{output}</pre>
         </div>
       )}
@@ -49,36 +99,48 @@ function ToolBlockView({ b, pending }: { b: Omit<ToolBlock, "summary">; pending?
   return <ToolRow name={b.name} summary={toolSummary(b.name, input)} output={b.output} isError={b.isError} pending={pending} />
 }
 
-// ---------- thinking ----------
+// ---------- Thinking block ----------
 
 function ThinkingBlock({ text, live }: { text: string; live?: boolean }): React.ReactElement {
   const [open, setOpen] = useState(false)
   useEffect(() => {
     if (live) setOpen(true)
   }, [live])
+
   return (
-    <div>
-      <button onClick={() => setOpen((v) => !v)} className="flex items-center gap-1.5 text-2xs text-faint hover:text-dim">
-        <Brain size={12} />
-        <span>思考{live ? "中…" : "过程"}</span>
-        <ChevronDown size={11} className={`transition-transform ${open ? "rotate-180" : ""}`} />
+    <div className="my-1.5">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="inline-flex items-center gap-1.5 rounded-lg border border-line/60 bg-hover/40 px-2 py-1 text-2xs text-faint transition-colors hover:text-dim"
+      >
+        <Brain size={12} className="text-purple-400/80" />
+        <span>思考过程{live ? "…" : ""}</span>
+        <ChevronDown size={11} className={`transition-transform duration-150 ${open ? "rotate-180" : ""}`} />
       </button>
-      {open && <div className="mt-1 whitespace-pre-wrap border-l-2 border-line pl-3 text-xs leading-relaxed text-faint">{text}</div>}
+      {open && (
+        <div className="pop-in mt-1.5 whitespace-pre-wrap rounded-xl border-l-2 border-purple-400/40 bg-hover/20 p-3 text-xs leading-relaxed text-dim/90 shadow-sm">
+          {text}
+        </div>
+      )}
     </div>
   )
 }
 
-// ---------- per-turn file changes ----------
+// ---------- File changes ----------
 
 function ChangeList({ changes }: { changes: FileChange[] }): React.ReactElement | null {
   const [open, setOpen] = useState<string | null>(null)
   if (changes.length === 0) return null
+
   return (
-    <div className="flex flex-col gap-1">
+    <div className="my-2 flex flex-col gap-1">
       {changes.map((c) => (
         <div key={c.path} className="min-w-0">
-          <button onClick={() => setOpen(open === c.path ? null : c.path)} className="flex w-full min-w-0 items-center gap-2 rounded-lg border border-line bg-bg2 px-2.5 py-1.5 text-left text-xs hover:bg-hover">
-            <FileDiff size={12} className="flex-none text-faint" />
+          <button
+            onClick={() => setOpen(open === c.path ? null : c.path)}
+            className="flex w-full min-w-0 items-center gap-2 rounded-lg border border-line bg-card px-2.5 py-1.5 text-left text-xs transition-colors hover:bg-hover"
+          >
+            <FileDiff size={12} className="flex-none text-accent" />
             <span className="min-w-0 flex-1 truncate font-mono text-dim">{c.path}</span>
             <span className="flex-none font-mono text-2xs text-ok">+{c.added}</span>
             <span className="flex-none font-mono text-2xs text-bad">−{c.removed}</span>
@@ -98,16 +160,22 @@ function ChangeList({ changes }: { changes: FileChange[] }): React.ReactElement 
   )
 }
 
-// ---------- blocks ----------
+// ---------- General blocks ----------
 
-function BlockView({ b, streaming }: { b: TurnBlock | { kind: "note"; text: string; variant: string }; streaming?: boolean }): React.ReactElement | null {
+function BlockView({
+  b,
+  streaming,
+}: {
+  b: TurnBlock | { kind: "note"; text: string; variant: string }
+  streaming?: boolean
+}): React.ReactElement | null {
   if (b.kind === "text") return <Markdown text={b.text} streaming={streaming} />
   if (b.kind === "thinking") return <ThinkingBlock text={b.text} live={streaming} />
   if (b.kind === "note") {
     const tone = b.variant === "error" ? "text-bad" : b.variant === "steer" ? "text-accent" : "text-faint"
     return (
-      <div className={`flex items-start gap-1.5 text-xs ${tone}`}>
-        <span className="mt-0.5 flex-none">›</span>
+      <div className={`my-1 flex items-start gap-1.5 text-xs ${tone}`}>
+        <span className="mt-0.5 flex-none font-mono">›</span>
         <span className="min-w-0 break-words">{b.text}</span>
       </div>
     )
@@ -115,68 +183,111 @@ function BlockView({ b, streaming }: { b: TurnBlock | { kind: "note"; text: stri
   return null
 }
 
-// ---------- user turn ----------
+// ---------- User Turn ----------
 
 function UserTurnView({ turn }: { turn: UserTurn }): React.ReactElement {
   return (
-    <div className="fade-up flex flex-col gap-2">
-      <div className="flex items-start gap-2.5">
-        <div className="mt-0.5 flex h-6 w-6 flex-none items-center justify-center rounded-md bg-hover-2 text-2xs font-semibold text-dim">你</div>
-        <div className="min-w-0 flex-1">
-          {turn.text ? <div className="whitespace-pre-wrap break-words text-sm leading-relaxed text-fg">{turn.text}</div> : null}
+    <div className="fade-up my-4 flex flex-col items-end gap-2">
+      <div className="flex max-w-[88%] items-start gap-2.5">
+        <div className="user-bubble min-w-0">
+          {turn.text ? (
+            <div className="whitespace-pre-wrap text-sm leading-relaxed text-fg select-text">{turn.text}</div>
+          ) : null}
           {turn.images && turn.images.length > 0 && (
-            <div className="mt-2 flex flex-wrap gap-2">
+            <div className="mt-2.5 flex flex-wrap gap-2">
               {turn.images.map((img, i) => (
-                <img key={i} src={imageUrl(img)} alt="" className="max-h-40 rounded-lg border border-line object-contain" />
+                <img
+                  key={i}
+                  src={imageUrl(img)}
+                  alt=""
+                  className="max-h-48 rounded-xl border border-line object-contain shadow-sm"
+                />
               ))}
             </div>
           )}
         </div>
       </div>
-      {turn.blocks.length > 0 && (
-        <div className="ml-3 flex flex-col gap-2.5 border-l border-line pl-3.5">
-          {turn.blocks.map((b, i) => (b.kind === "tool" ? <ToolBlockView key={i} b={b} /> : <BlockView key={i} b={b} />))}
-        </div>
-      )}
+    </div>
+  )
+}
+
+// ---------- Assistant Turn (History) ----------
+
+function AssistantTurnView({ turn }: { turn: UserTurn }): React.ReactElement | null {
+  const hasContent = turn.blocks.length > 0 || turn.panels.length > 0 || turn.changes.length > 0
+  if (!hasContent) return null
+
+  return (
+    <div className="fade-up my-4 flex flex-col gap-2.5">
+      <div className="flex items-center gap-2 text-2xs font-medium text-faint">
+        <span className="flex h-4 w-4 items-center justify-center rounded-full bg-accent/15 text-accent ring-1 ring-accent/30">
+          <Sparkles size={10} />
+        </span>
+        <span className="font-semibold text-fg">newhorse</span>
+      </div>
+
+      <div className="assistant-bubble min-w-0 pl-1">
+        {turn.blocks.map((b, i) =>
+          b.kind === "tool" ? (
+            <ToolBlockView key={i} b={b} />
+          ) : (
+            <BlockView key={i} b={b} />
+          ),
+        )}
+      </div>
+
       {turn.panels.length > 0 && (
-        <div className="ml-3 flex flex-col gap-2 border-l border-line pl-3.5">
+        <div className="my-2 flex flex-col gap-2.5">
           {turn.panels.map((p) => (
             <PanelCard key={p.panelId} panel={p} />
           ))}
         </div>
       )}
-      <div className="ml-3">
-        <ChangeList changes={turn.changes} />
-      </div>
+
+      <ChangeList changes={turn.changes} />
     </div>
   )
 }
 
-// ---------- live turn ----------
+// ---------- Live Assistant Turn ----------
 
 function LiveTurnView({ turn }: { turn: LiveTurn }): React.ReactElement {
   const lastText = [...turn.blocks].reverse().find((b) => b.kind === "text")
+
   return (
-    <div className="fade-up ml-3 flex flex-col gap-2.5 border-l border-line pl-3.5">
-      {turn.blocks.map((b, i) => {
-        if (b.kind === "tool") return <ToolBlockView key={i} b={{ kind: "tool", name: b.name, input: b.input, output: b.output, isError: b.isError }} pending={b.output === undefined} />
-        const streaming = b.kind === "thinking" || b === lastText
-        return <BlockView key={i} b={b} streaming={streaming || undefined} />
-      })}
+    <div className="fade-up my-4 flex flex-col gap-2.5">
+      <div className="flex items-center gap-2 text-2xs font-medium text-faint">
+        <span className="flex h-4 w-4 items-center justify-center rounded-full bg-accent/20 text-accent ring-1 ring-accent/40 animate-pulse">
+          <Sparkles size={10} />
+        </span>
+        <span className="font-semibold text-fg">newhorse</span>
+        {turn.busy && <span className="text-ghost">· 正在生成…</span>}
+      </div>
+
+      <div className="assistant-bubble min-w-0 pl-1">
+        {turn.blocks.map((b, i) => {
+          if (b.kind === "tool") {
+            return (
+              <ToolBlockView
+                key={i}
+                b={{ kind: "tool", name: b.name, input: b.input, output: b.output, isError: b.isError }}
+                pending={b.output === undefined}
+              />
+            )
+          }
+          const streaming = b.kind === "thinking" || b === lastText
+          return <BlockView key={i} b={b} streaming={streaming || undefined} />
+        })}
+      </div>
+
       {turn.panels.map((p) => (
         <PanelCard key={p.panelId} panel={p} />
       ))}
-      {turn.busy && (
-        <div className="flex items-center gap-2 text-xs text-faint">
-          <Spinner size={12} />
-          <span>生成中…</span>
-        </div>
-      )}
     </div>
   )
 }
 
-// ---------- the transcript ----------
+// ---------- The Transcript Component ----------
 
 export function Transcript({ sessionId }: { sessionId: string }): React.ReactElement {
   const { sessions } = useApp()
@@ -204,7 +315,7 @@ export function Transcript({ sessionId }: { sessionId: string }): React.ReactEle
     void load()
   }, [sessionId, load])
 
-  // Other-writer refresh (CLI / butler / another tab): refetch this log.
+  // Bus refresh on turn settlement / tool / step events
   const lastLoad = useRef(0)
   useBus((frame) => {
     if (frame.sessionId !== sessionId) return
@@ -220,8 +331,7 @@ export function Transcript({ sessionId }: { sessionId: string }): React.ReactEle
   const liveTurn = live.get(sessionId)
   const settled = liveTurn !== undefined && !liveTurn.busy
 
-  // Settled locally-initiated turn: refetch the log FIRST, then drop the live
-  // turn — the folded history replaces it with no gap and no double render.
+  // Settled locally-initiated turn: refetch log first, then drop live turn
   useEffect(() => {
     if (!settled) return
     let alive = true
@@ -236,14 +346,15 @@ export function Transcript({ sessionId }: { sessionId: string }): React.ReactEle
 
   const items = useMemo(() => foldTranscript(events ?? []), [events])
 
-  // --- auto scroll ---
+  // --- Auto scroll ---
   const scrollRef = useRef<HTMLDivElement>(null)
   const [sticky, setSticky] = useState(true)
   const onScroll = useCallback(() => {
     const el = scrollRef.current
     if (!el) return
-    setSticky(el.scrollHeight - el.scrollTop - el.clientHeight < 90)
+    setSticky(el.scrollHeight - el.scrollTop - el.clientHeight < 120)
   }, [])
+
   useEffect(() => {
     const el = scrollRef.current
     if (!el || !sticky) return
@@ -254,38 +365,118 @@ export function Transcript({ sessionId }: { sessionId: string }): React.ReactEle
   const title = row ? (row.role === "butler" ? "newhorse" : prettyTitle(row.title, "未命名会话")) : sessionId.slice(0, 12)
   const empty = !loading && !error && events !== null && events.length <= 1 && !liveTurn
 
+  const onSelectPrompt = (promptText: string): void => {
+    window.dispatchEvent(new CustomEvent("nh-fill-prompt", { detail: promptText }))
+  }
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex flex-none items-center gap-2 border-b border-line px-4 py-2.5">
-        <span className={`dot ${liveTurn?.busy || row?.status === "active" ? "dot-active" : row?.status === "interrupted" ? "dot-error" : "dot-settled"}`} />
-        <h1 className="min-w-0 truncate text-sm font-semibold text-fg">{title}</h1>
+      {/* Sleek Header Bar */}
+      <div className="flex flex-none items-center justify-between border-b border-line bg-panel/60 px-5 py-3 backdrop-blur-md">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span
+            className={`dot flex-none ${
+              liveTurn?.busy || row?.status === "active"
+                ? "dot-active"
+                : row?.status === "interrupted"
+                ? "dot-error"
+                : "dot-settled"
+            }`}
+          />
+          <h1 className="min-w-0 truncate text-sm font-semibold tracking-tight text-fg">{title}</h1>
+        </div>
+        <div className="flex items-center gap-2 text-2xs text-ghost">
+          <span>{row?.role === "butler" ? "智能管家" : "独立任务"}</span>
+        </div>
       </div>
+
+      {/* Main chat stream container */}
       <div className="relative min-h-0 flex-1">
         <div ref={scrollRef} onScroll={onScroll} className="h-full overflow-y-auto">
-          <div className="mx-auto flex max-w-3xl flex-col gap-6 px-4 py-6">
+          <div className="mx-auto flex max-w-3xl flex-col px-4 py-8">
             {loading && (
-              <div className="flex justify-center py-10">
-                <Spinner size={18} />
+              <div className="flex justify-center py-16">
+                <Spinner size={20} />
               </div>
             )}
-            {error && <EmptyState title="转录加载失败" hint={error} action={<button className="btn" onClick={() => void load()}>重试</button>} />}
+
+            {error && (
+              <EmptyState
+                title="转录加载失败"
+                hint={error}
+                action={
+                  <button className="btn mt-2" onClick={() => void load()}>
+                    重试
+                  </button>
+                }
+              />
+            )}
+
+            {/* Exclusive Planetary Hero Empty State — only place with the live Emo Ball */}
             {empty && (
-              <div className="flex flex-col items-center gap-4 py-16 text-center">
-                <EmotionBall mood="listening" size={110} lite />
-                <div>
-                  <p className="text-base font-semibold text-fg">有什么可以帮忙的？</p>
-                  <p className="mt-1 text-xs text-faint">输入任务开始对话</p>
+              <div className="pop-in my-auto flex flex-col items-center py-12 text-center">
+                <div className="float-gentle mb-4">
+                  <EmotionBall mood="listening" size={136} interactive hasRing />
+                </div>
+                <h2 className="text-xl font-bold tracking-tight text-fg">newhorse 随时就绪</h2>
+                <p className="mt-1.5 max-w-md text-xs leading-relaxed text-dim">
+                  模型无关的智能体引擎。支持调用工具、读写代码、检索网络并实时呈现可视化面板。
+                </p>
+
+                {/* Prompt starter pills */}
+                <div className="mt-8 flex flex-wrap justify-center gap-2.5">
+                  <button
+                    className="prompt-pill"
+                    onClick={() => onSelectPrompt("请读取当前仓库结构，分析并总结代码工程模块。")}
+                  >
+                    <Compass size={13} className="text-accent" />
+                    <span>读取当前仓库结构并总结</span>
+                  </button>
+                  <button
+                    className="prompt-pill"
+                    onClick={() =>
+                      onSelectPrompt("请使用 web_search 检索最新的 LLM Agent 架构发展趋势并列出要点。")
+                    }
+                  >
+                    <Globe size={13} className="text-sky-400" />
+                    <span>检索前沿 Agent 架构趋势</span>
+                  </button>
+                  <button
+                    className="prompt-pill"
+                    onClick={() =>
+                      onSelectPrompt("请用规范的 Mermaid flowchart TD 语法绘制一个多代理协作拓扑图。")
+                    }
+                  >
+                    <Code2 size={13} className="text-emerald-400" />
+                    <span>绘制多 Agent 架构拓扑图</span>
+                  </button>
                 </div>
               </div>
             )}
-            {!loading && !error && items.map((it, i) => (it.kind === "user" ? <UserTurnView key={i} turn={it} /> : <BlockView key={i} b={it} />))}
+
+            {/* Chat message stream */}
+            {!loading &&
+              !error &&
+              items.map((it, i) =>
+                it.kind === "user" ? (
+                  <div key={`turn-${i}`}>
+                    <UserTurnView turn={it} />
+                    <AssistantTurnView turn={it} />
+                  </div>
+                ) : (
+                  <BlockView key={`note-${i}`} b={it} />
+                ),
+              )}
+
             {liveTurn && <LiveTurnView turn={liveTurn} />}
-            <div className="h-2 flex-none" />
+            <div className="h-6 flex-none" />
           </div>
         </div>
+
+        {/* Floating scroll to bottom anchor */}
         {!sticky && (
           <button
-            className="btn absolute bottom-3 left-1/2 z-10 -translate-x-1/2 shadow-overlay"
+            className="pop-in btn absolute bottom-4 left-1/2 z-20 -translate-x-1/2 shadow-overlay backdrop-blur-md"
             onClick={() => {
               const el = scrollRef.current
               if (el) el.scrollTop = el.scrollHeight

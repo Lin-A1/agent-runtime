@@ -20,16 +20,20 @@ function Cover(): React.ReactElement {
   const navigate = useNavigate()
   const { workspace, refreshSessions } = useApp()
   return (
-    <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-6">
-      <div className="flex flex-col items-center gap-3 text-center">
-        <EmotionBall mood="listening" size={130} interactive />
+    <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-6 p-6">
+      <div className="flex flex-col items-center gap-4 text-center">
+        <div className="float-gentle">
+          <EmotionBall mood="listening" size={144} interactive hasRing />
+        </div>
         <div>
-          <p className="text-lg font-semibold text-fg">newhorse</p>
-          <p className="mt-1 max-w-sm text-xs leading-relaxed text-faint">发一个任务，它会读、写、跑命令、查网页。</p>
+          <h2 className="text-xl font-bold tracking-tight text-fg">newhorse</h2>
+          <p className="mt-1.5 max-w-sm text-xs leading-relaxed text-dim">
+            模型无关的智能体引擎。支持代码编写、文件检索、网络查询与动态渲染。
+          </p>
         </div>
       </div>
       <button
-        className="btn btn-primary"
+        className="btn btn-primary px-5 py-2 text-sm shadow-md"
         onClick={() => {
           void api
             .createSession(undefined, workspace || undefined)
@@ -40,7 +44,7 @@ function Cover(): React.ReactElement {
             .catch(() => {})
         }}
       >
-        <MessageSquarePlus size={14} /> 新任务
+        <MessageSquarePlus size={15} /> 新任务
       </button>
     </div>
   )

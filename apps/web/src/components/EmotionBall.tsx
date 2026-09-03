@@ -44,13 +44,22 @@ interface Props {
   lite?: boolean
   /** Pointer gaze + click-to-spin (cover hero only). */
   interactive?: boolean
+  /** Whether to render the celestial planetary ring (星环). Only true on main hero stage. Defaults to false. */
+  hasRing?: boolean
   className?: string
 }
 
-export function EmotionBall({ mood, size = 96, lite = false, interactive = false, className }: Props): React.ReactElement {
+export function EmotionBall({ mood, size = 96, lite = false, interactive = false, hasRing = false, className }: Props): React.ReactElement {
   const hostRef = useRef<HTMLDivElement>(null)
   // engine is vendored untyped code; keep the handle loose
-  const engineRef = useRef<{ setEmotion: (id: string) => boolean; setGaze: (x: number, y: number) => unknown; spin: (t?: number) => unknown; burst?: () => unknown; destroy: () => void } | null>(null)
+  const engineRef = useRef<{
+    setEmotion: (id: string) => boolean
+    setGaze: (x: number, y: number) => unknown
+    clearGaze?: () => unknown
+    spin: (t?: number) => unknown
+    burst?: () => unknown
+    destroy: () => void
+  } | null>(null)
   const moodRef = useRef(mood)
 
   useEffect(() => {
@@ -59,8 +68,9 @@ export function EmotionBall({ mood, size = 96, lite = false, interactive = false
     const engine = createEmotionBall(host, {
       emotion: MOOD_ID[moodRef.current],
       lite,
+      hasRing,
       ...(lite ? {} : { idle: { standbyAfter: 60_000, sleepAfter: 180_000, standbyId: "02", sleepId: "00" } }),
-      eyeScale: size < 56 ? 1.3 : 1,
+      eyeScale: size < 56 ? 1.25 : 1,
     })
     engineRef.current = engine
     return () => {
@@ -69,7 +79,7 @@ export function EmotionBall({ mood, size = 96, lite = false, interactive = false
     }
     // size only matters at construction; mood changes flow through setEmotion
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lite])
+  }, [lite, hasRing])
 
   useEffect(() => {
     moodRef.current = mood
@@ -79,24 +89,58 @@ export function EmotionBall({ mood, size = 96, lite = false, interactive = false
 
   useEffect(() => {
     if (!interactive) return
-    const onMove = (e: PointerEvent): void => {
+    const host = hostRef.current
+    if (!host) return
+
+    const handleMove = (clientX: number, clientY: number): void => {
       const engine = engineRef.current
-      const host = hostRef.current
-      if (!engine || !host) return
-      const r = host.getBoundingClientRect()
-      const nx = (e.clientX - (r.left + r.width / 2)) / (window.innerWidth / 2)
-      const ny = (e.clientY - (r.top + r.height / 2)) / (window.innerHeight / 2)
-      engine.setGaze(Math.max(-1, Math.min(1, nx)), Math.max(-1, Math.min(1, ny)))
+      const currentHost = hostRef.current
+      if (!engine || !currentHost) return
+      const r = currentHost.getBoundingClientRect()
+      const cx = r.left + r.width / 2
+      const cy = r.top + r.height / 2
+      const dx = clientX - cx
+      const dy = clientY - cy
+
+      // Responsive gaze radius: 260px saturation so eyes track naturally across screen
+      const maxRadius = Math.max(size * 2.2, 280)
+      const nx = Math.max(-1, Math.min(1, dx / maxRadius))
+      const ny = Math.max(-1, Math.min(1, dy / maxRadius))
+      engine.setGaze(nx, ny)
+
+      // Subtle 3D tilt tracking for head/planet body
+      currentHost.style.transform = `perspective(600px) rotateY(${nx * 10}deg) rotateX(${-ny * 8}deg)`
     }
-    window.addEventListener("pointermove", onMove)
-    return () => window.removeEventListener("pointermove", onMove)
-  }, [interactive])
+
+    const onPointerMove = (e: PointerEvent): void => handleMove(e.clientX, e.clientY)
+    const onMouseMove = (e: MouseEvent): void => handleMove(e.clientX, e.clientY)
+    const onLeave = (): void => {
+      engineRef.current?.clearGaze?.()
+      if (hostRef.current) hostRef.current.style.transform = "perspective(600px) rotateY(0deg) rotateX(0deg)"
+    }
+
+    window.addEventListener("pointermove", onPointerMove, { passive: true })
+    window.addEventListener("mousemove", onMouseMove, { passive: true })
+    document.addEventListener("mouseleave", onLeave)
+
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove)
+      window.removeEventListener("mousemove", onMouseMove)
+      document.removeEventListener("mouseleave", onLeave)
+    }
+  }, [interactive, size])
 
   return (
     <div
       ref={hostRef}
       className={className}
-      style={{ width: size, height: size, cursor: interactive ? "pointer" : undefined, flex: "none" }}
+      style={{
+        width: size,
+        height: size,
+        cursor: interactive ? "pointer" : undefined,
+        flex: "none",
+        transition: "transform 0.12s cubic-bezier(0.16, 1, 0.3, 1)",
+      }}
       onClick={interactive ? () => engineRef.current?.spin(1) : undefined}
       role={interactive ? "img" : undefined}
       aria-label={interactive ? "newhorse" : undefined}
