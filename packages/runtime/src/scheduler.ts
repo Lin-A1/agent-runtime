@@ -203,7 +203,7 @@ export function createScheduler(opts: { file: string; fire: (schedule: Schedule)
       const s: Schedule = { ...input, enabled: input.enabled ?? true, id: crypto.randomUUID(), createdAt: Date.now() }
       rows.push(s)
       await persist()
-      return s
+      return s.enabled ? { ...s, nextFireAt: nextDue(s, s.lastRunAt ?? s.createdAt) } : s
     },
     async update(id, patch) {
       await load()
