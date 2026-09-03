@@ -452,7 +452,7 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
     // Transport-level extra tools (mounted MCP servers) merge ADDITIVELY after
     // the session factory's own tools — runtime precedence (first same-name
     // occurrence wins, builtins last) resolves collisions deterministically.
-    const app = await createApp({ ...base, sessionId: id, onApprove: config.onApprove ?? config.approvals?.gate, ...(serverTools?.length ? { tools: [...(base.tools ?? []), ...serverTools] } : {}) })
+    const app = await createApp({ ...base, sessionId: id, onApprove: config.onApprove ?? config.approvals?.gate, ...(config.approvals ? { onAsk: (q: { question: string; options?: readonly string[] }) => config.approvals!.ask({ id: crypto.randomUUID(), kind: "question", target: q.question, decision: "prompt", ...(q.options ? { options: q.options } : {}) }) } : {}), ...(serverTools?.length ? { tools: [...(base.tools ?? []), ...serverTools] } : {}) })
     if (directory) {
       // Register cross-process ownership. register returns the PREVIOUS row:
       // a foreign FRESH row means a sibling owns this id and our pre-check
@@ -536,15 +536,19 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
     port,
     idleTimeout: config.idleTimeout ?? 120,
     async fetch(req) {
-      // Token gate (constant-time). Without a token, only loopback binds.
+      const url = new URL(req.url)
+      const parts = url.pathname.split("/").filter(Boolean)
+      // Token gate (constant-time) — API ONLY: the static shell (index.html +
+      // assets) must load without a token so a remote device can reach the
+      // page and enter its token there (the token then rides every /v1 call
+      // as Bearer). Without a token, only loopback binds at all.
+      const isApi = parts[0] === "v1"
       if (token) {
-        if (!constantTimeEqual(bearer(req) ?? "", token)) return json(401, { error: "unauthorized" })
+        if (isApi && !constantTimeEqual(bearer(req) ?? "", token)) return json(401, { error: "unauthorized" })
       } else if (host !== "127.0.0.1" && host !== "::1") {
         return json(403, { error: "loopback-only (no token; bind 127.0.0.1 or provide token)" })
       }
 
-      const url = new URL(req.url)
-      const parts = url.pathname.split("/").filter(Boolean)
       const method = req.method
       // The built client UI (SPA) — one origin with the API.
       if (parts[0] !== "v1") {
@@ -1108,6 +1112,48 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
         return json(200, { path: rel, size: stat.size, encoding: binary ? "base64" : "utf8", content, ...(truncated ? { truncated: true } : {}) })
       }
 
+      // GET /v1/files/find?workspace=&q= — recursive filename search for the
+      // client's @-mention picker (opencode fs.find shape, dumb+fast v1):
+      // case-insensitive substring on the relative path, dirs skipped in
+      // results, symlinks never followed, ≤8 deep, ≤5000 entries walked,
+      // ≤50 results sorted shallow-first.
+      if (method === "GET" && parts.length === 3 && parts[1] === "files" && parts[2] === "find") {
+        if (!settings) return json(404, { error: "no settings controller configured" })
+        const ws = url.searchParams.get("workspace") ?? settings.get().workspace
+        const q = (url.searchParams.get("q") ?? "").trim().toLowerCase()
+        if (!q) return json(200, { results: [] })
+        const rootAbs = resolve(ws)
+        let canon = rootAbs
+        try {
+          canon = await realpath(rootAbs)
+        } catch {
+          return json(200, { results: [] })
+        }
+        const results: string[] = []
+        let visited = 0
+        const walk = async (dir: string, rel: string, depth: number): Promise<void> => {
+          if (results.length >= 50 || depth > 8 || visited > 5000) return
+          let entries
+          try {
+            entries = await readdir(dir, { withFileTypes: true })
+          } catch {
+            return
+          }
+          for (const d of entries) {
+            if (results.length >= 50 || visited > 5000) return
+            visited++
+            if (d.name.startsWith(".") || d.name === "node_modules") continue
+            if (d.isSymbolicLink()) continue
+            const p = rel ? rel + "/" + d.name : d.name
+            if (d.isDirectory()) await walk(join(canon, p), p, depth + 1)
+            else if (p.toLowerCase().includes(q)) results.push(p)
+          }
+        }
+        await walk(canon, "", 0)
+        results.sort((a, b) => a.split("/").length - b.split("/").length || a.localeCompare(b))
+        return json(200, { results: results.slice(0, 50) })
+      }
+
       // GET /v1/skills — the pluginsDir skills catalog (level 1 + body on demand).
       if (method === "GET" && parts.length === 2 && parts[1] === "skills") {
         if (!pluginsDir) return json(404, { error: "no pluginsDir configured" })
@@ -1207,12 +1253,13 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
         return json(200, { approvals: approvals.pending() })
       }
 
-      // POST /v1/approvals/:id {allow} — settle one pending approval.
+      // POST /v1/approvals/:id {allow, reply?} — settle one pending approval;
+      // a question-kind request carries the operator's answer in `reply`.
       if (method === "POST" && parts.length === 3 && parts[1] === "approvals") {
         if (!approvals) return json(404, { error: "no approval hub configured" })
-        const parsed = await readJsonOr400<{ allow?: boolean }>(req)
+        const parsed = await readJsonOr400<{ allow?: boolean; reply?: string }>(req)
         if ("error" in parsed) return json(400, parsed)
-        const settled = approvals.resolve(parts[2]!, parsed.allow === true)
+        const settled = approvals.resolve(parts[2]!, parsed.allow === true, typeof parsed.reply === "string" ? parsed.reply : undefined)
         return json(settled ? 200 : 404, settled ? { settled: true } : { error: "unknown or already-settled approval id" })
       }
 

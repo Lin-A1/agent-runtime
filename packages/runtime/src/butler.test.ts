@@ -311,4 +311,34 @@ describe("butler authority", () => {
       ctx({ kind: "butler", sessionId: butlerSession }, { declareDag: async () => { throw new Error("cycle detected") }, appendAudit: async () => {} }),
     )).rejects.toThrow("cycle detected")
   })
+
+  it("resume_agent and close_agent audit and delegate through ToolCtx", async () => {
+    const { tools, audits, registry, events } = await setup()
+    // Prepare a direct child session
+    const childId = "c-target"
+    await events.append(childId, "Session.Created", { id: childId, location: "/c", createdAt: Date.now() })
+    await events.append(childId, "Session.Spawned", { sessionId: childId, parentId: "b1" })
+
+    const resume = tools.find((t) => t.name === "resume_agent")!
+    const close = tools.find((t) => t.name === "close_agent")!
+
+    let sent = ""
+    let interrupted = ""
+    const parentCtx = ctx({ kind: "parent", sessionId: "b1" }, {
+      registry,
+      sendToTarget: async (id, text) => { sent = `${id}:${text}`; return { implemented: true, pending: true } },
+      interruptTarget: async (id) => { interrupted = id; return { implemented: true, pending: false } },
+    })
+
+    const rRes = await resume.execute({ taskId: childId, prompt: "continue work" }, parentCtx) as { authorization: string }
+    expect(rRes.authorization).toBe("allowed")
+    expect(sent).toBe("c-target:continue work")
+    expect(audits.some((a) => a.op === "resume_agent" && a.targetSessionId === childId)).toBe(true)
+
+    const cRes = await close.execute({ taskId: childId }, parentCtx) as { authorization: string; closed: boolean }
+    expect(cRes.authorization).toBe("allowed")
+    expect(cRes.closed).toBe(true)
+    expect(interrupted).toBe("c-target")
+    expect(audits.some((a) => a.op === "close_agent" && a.targetSessionId === childId)).toBe(true)
+  })
 })

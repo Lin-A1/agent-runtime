@@ -117,7 +117,7 @@ Known follow-ups (outside M1): a `runId` associating events with a specific `pro
 
 ## 11. Butler authority model (M2b)
 
-The butler is a privileged LLM session with extra tools. Its agency must be bound by a trust boundary before any code is trusted (see `specs/v2/m2b-butler-authority.md`).
+The butler is a privileged LLM session with extra tools. Its agency must be bound by a trust boundary before any code is trusted (the M2b authority spec is superseded — this section is the record).
 
 - `Initiator` is **runtime-injected** into `ToolCtx` by the loop, never self-reported by the model: `butler`/`parent` from the running session, `user` only from a transport-level principal on the prompt. A model cannot forge `{kind:"user"}`.
 - **user authority** comes from `app.prompt(text, principal)` where the transport stamps a prompt (human TTY) as `user`; the derived caller kind gates butler tools for that one round. It is one-shot, never inferred from prompt text.
@@ -129,7 +129,7 @@ The butler is a privileged LLM session with extra tools. Its agency must be boun
 
 ## 12. Declarative DAG scheduling (M3)
 
-A node is one subagent delegation; edges are declared deps; execution is ready-queue + event wakeup with no join blocking; each node picks its own model (cost balance). The graph is drawn forward and is the execution spec, not a background-task list or a post-hoc lineage (see `specs/v2/m3-dag-scheduling.md`).
+A node is one subagent delegation; edges are declared deps; execution is ready-queue + event wakeup with no join blocking; each node picks its own model (cost balance). The graph is drawn forward and is the execution spec, not a background-task list or a post-hoc lineage (the M3 spec is superseded — this section is the record).
 
 - **Load-bearing pillars** (what makes it "declarative", not a re-skin):
   1. `DAGRun` is an event-sourced aggregate — `DAG.Declared`/`NodeStarted`/`NodeResolved`/`NodeFailed`/`NodeSkipped`/`NodeAborted`/`NodeRetried`/`Aborted` folded by `foldDAG`; a `replayDag(events, dagId)` entry rebuilds the whole graph from the log, reconciling any node still `running` (process died mid-node) to `aborted`.

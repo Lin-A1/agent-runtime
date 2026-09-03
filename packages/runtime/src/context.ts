@@ -74,23 +74,30 @@ export function withRoleBody(base: SessionContextProvider, body: string): Sessio
  * admission inbox's #inFlight pattern): a concurrent caller awaits the first's
  * append instead of starting a second.
  */
-const systemInFlight = new Map<string, Promise<void>>()
+const systemInFlight = new WeakMap<EventStore, Map<string, Promise<void>>>()
 
 export async function ensureSystemContext(events: EventStore, sessionId: string, workspace: string, contextProvider: SessionContextProvider = defaultContextProvider): Promise<void> {
   const existing = await events.read(sessionId)
   if (existing.some((e) => e.type === "Session.MessageAppended" && (e.data as { message?: { kind?: string } }).message?.kind === "system")) return
 
-  const pending = systemInFlight.get(sessionId)
+  // Dedupe is per (store, session): two dataDirs can host the same stable
+  // session id (same workspace), and each must get its own system context.
+  let byStore = systemInFlight.get(events)
+  if (!byStore) {
+    byStore = new Map()
+    systemInFlight.set(events, byStore)
+  }
+  const pending = byStore.get(sessionId)
   if (pending) {
     await pending
     return
   }
   const inflight = doEnsure(events, sessionId, workspace, contextProvider)
-  systemInFlight.set(sessionId, inflight)
+  byStore.set(sessionId, inflight)
   try {
     await inflight
   } finally {
-    if (systemInFlight.get(sessionId) === inflight) systemInFlight.delete(sessionId)
+    if (byStore.get(sessionId) === inflight) byStore.delete(sessionId)
   }
 }
 

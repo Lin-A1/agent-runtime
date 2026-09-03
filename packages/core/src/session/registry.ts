@@ -183,6 +183,17 @@ export function fold(stored: StoredEvent[]): SessionRow | undefined {
         parentId = d.parentId
         break
       }
+      case "Session.PromptAdmitted":
+      case "Session.Prompted": {
+        // Title precedence: TitleSet (explicit) > the user's own prompt words
+        // (first admitted/promoted prompt) > first user message > first
+        // assistant text. Prompts admitted via the inbox never produce a user
+        // MessageAppended, so without this the title collapses onto the
+        // ASSISTANT reply — the exact wrong speaker.
+        const d = event.data as { prompt?: string }
+        if (!title && typeof d.prompt === "string" && d.prompt.trim()) title = clip(d.prompt)
+        break
+      }
       case "Session.MessageAppended": {
         const d = event.data as { message?: SessionMessage }
         // Only touch updatedAt; MessageAppended carries no turn boundary, so we
@@ -214,7 +225,10 @@ export function fold(stored: StoredEvent[]): SessionRow | undefined {
 
 function excerpt(content: readonly unknown[]): string {
   const firstText = content.find((p) => (p as { type?: string }).type === "text")
-  const text = (firstText as { text?: string } | undefined)?.text ?? ""
+  return clip((firstText as { text?: string } | undefined)?.text ?? "")
+}
+
+function clip(text: string): string {
   return text.length > 80 ? text.slice(0, 80) + "…" : text
 }
 

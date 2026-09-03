@@ -82,6 +82,9 @@ export interface AppConfig {
   /** M4 execpolicy: interactive approval gate injected by the transport. When
    * absent, a `prompt` resolves to `forbid` (fail-closed). */
   readonly onApprove?: (req: ApprovalRequest) => Promise<boolean>
+  /** ask_user channel (approval hub's question half). Absent = the session is
+   * non-interactive and ask_user answers gracefully instead of hanging. */
+  readonly onAsk?: (req: { question: string; options?: readonly string[] }) => Promise<{ allow: boolean; reply?: string }>
   /**
    * Memory seam (Phase 4 reserve): when supplied, the memory tools
    * (memory_search / memory_write) are exposed. Absent = no memory tools.
@@ -497,6 +500,9 @@ export async function createApp(config: AppConfig): Promise<App> {
           }
           const agentDef = agentName ? agentDefinitions[agentName] : undefined
           const resolved = resolveAgent(agentDef, { tools: agentTools, model: config.model }, model)
+          // Tracks whether the durable Settled append already happened — the
+          // catch path must not append a second one (queryTask reads the first).
+          let settledDurable = false
           try {
             // Subagent lifecycle hooks (claude-code SubagentStart/Stop shape):
             // observational, errors isolated by the hook runner itself.
@@ -519,6 +525,7 @@ export async function createApp(config: AppConfig): Promise<App> {
             // child's text into the parent's inbox as a steer so the parent's
             // next turn can consume the result (result promotion).
             await events.append(childId, "Session.Settled", { sessionId: childId, finish: driven.finish, needsContinuation: false })
+            settledDurable = true
             void hookRunner?.("subagent-stop", { childId, parentId, finish: driven.finish }).catch(() => {})
             if (driven.settled) {
               await inbox.admit({ id: crypto.randomUUID(), sessionId: parentId, prompt: `[child ${childId} result]\n${driven.text}`, delivery: "steer", principal: "parent" })
@@ -530,9 +537,10 @@ export async function createApp(config: AppConfig): Promise<App> {
           } catch (err) {
             // A rejected driver would otherwise leave the child un-setled
             // (followup_task reports "running" forever) and the parent without
-            // any promotion. Surface it as a durable failure on both ends.
+            // any promotion. Surface it as a durable failure on both ends —
+            // but never double-append Settled when the success path already did.
             const message = err instanceof Error ? err.message : String(err)
-            await events.append(childId, "Session.Settled", { sessionId: childId, finish: "error", needsContinuation: false })
+            if (!settledDurable) await events.append(childId, "Session.Settled", { sessionId: childId, finish: "error", needsContinuation: false })
             await inbox.admit({ id: crypto.randomUUID(), sessionId: parentId, prompt: `[child ${childId} failed]\n${message}`, delivery: "steer", principal: "parent" })
           }
         },
@@ -558,7 +566,10 @@ export async function createApp(config: AppConfig): Promise<App> {
   // (interrupt / user-prompt-submit) and the hub's subagent lifecycle all
   // share it — a hook registered once is observable everywhere.
   const hookRunner = makeHookRunner(pluginRegistry)
-  const rulesFile = config.dataDir ? rulesFilePath(config.dataDir, workspace) : join(process.cwd(), "..", "..", ".execpolicy-rules.json")
+  // Rules persist under the session's data home; the last-resort fallback is
+  // the agent home's data dir (NEVER a cwd-relative path — co-located
+  // processes would share one rules file).
+  const rulesFile = rulesFilePath(config.dataDir ?? join(config.agentHome ?? process.cwd(), "data"), workspace)
   const execPolicy: ExecPolicy = createExecPolicy({
     rulesFile,
     rules: config.execRules,
@@ -697,6 +708,7 @@ export async function createApp(config: AppConfig): Promise<App> {
           interruptTarget: hub.interrupt,
           sendToTarget: hub.send,
           spawnFrom: hub.spawn,
+          ...(config.onAsk ? { askUser: config.onAsk } : {}),
           queryTask: async (taskId) => {
             const log = await events.read(taskId)
             const settled = log.find((e) => e.type === "Session.Settled")
@@ -710,7 +722,7 @@ export async function createApp(config: AppConfig): Promise<App> {
             ? { declareDag: (spec: unknown) => dagRunner.run(spec as DAGSpec, { workspace, todoSessionId: sessionId }) }
             : {}),
           execPolicy: currentPolicy === "trusted" ? allowAllExecPolicy : execPolicySession,
-        } : { registry, appendAudit, execPolicy: currentPolicy === "trusted" ? allowAllExecPolicy : execPolicySession },
+        } : { registry, appendAudit, ...(config.onAsk ? { askUser: config.onAsk } : {}), execPolicy: currentPolicy === "trusted" ? allowAllExecPolicy : execPolicySession },
       })
       // Post-turn memory extraction (opt-in, fire-and-forget): the default
       // pipe uses the app's own LLM client + model; runMemoryExtraction is
