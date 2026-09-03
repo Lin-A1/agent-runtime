@@ -198,7 +198,7 @@ export interface App {
    * Change the approval policy (host/operator action). Durably recorded
    * (Session.PolicyChanged) and effective from the next prompt.
    */
-  readonly setPolicy: (policy: "strict" | "trusted" | "readonly") => Promise<void>
+  readonly setPolicy: (policy: "strict" | "trusted" | "readonly", by?: "host" | "model") => Promise<void>
 }
 
 /** Per-prompt image budget gates (deterministic; docs §5):
@@ -708,6 +708,7 @@ export async function createApp(config: AppConfig): Promise<App> {
           interruptTarget: hub.interrupt,
           sendToTarget: hub.send,
           spawnFrom: hub.spawn,
+          setPolicy: (p) => app.setPolicy(p, "model"),
           ...(config.onAsk ? { askUser: config.onAsk } : {}),
           queryTask: async (taskId) => {
             const log = await events.read(taskId)
@@ -722,7 +723,7 @@ export async function createApp(config: AppConfig): Promise<App> {
             ? { declareDag: (spec: unknown) => dagRunner.run(spec as DAGSpec, { workspace, todoSessionId: sessionId }) }
             : {}),
           execPolicy: currentPolicy === "trusted" ? allowAllExecPolicy : execPolicySession,
-        } : { registry, appendAudit, ...(config.onAsk ? { askUser: config.onAsk } : {}), execPolicy: currentPolicy === "trusted" ? allowAllExecPolicy : execPolicySession },
+        } : { registry, appendAudit, setPolicy: (p) => app.setPolicy(p, "model"), ...(config.onAsk ? { askUser: config.onAsk } : {}), execPolicy: currentPolicy === "trusted" ? allowAllExecPolicy : execPolicySession },
       })
       // Post-turn memory extraction (opt-in, fire-and-forget): the default
       // pipe uses the app's own LLM client + model; runMemoryExtraction is
@@ -898,11 +899,11 @@ export async function createApp(config: AppConfig): Promise<App> {
     policy() {
       return currentPolicy
     },
-    async setPolicy(policy) {
+    async setPolicy(policy, by: "host" | "model" = "host") {
       const from = currentPolicy
       if (from === policy) return
       currentPolicy = policy
-      await events.append(sessionId, "Session.PolicyChanged", { sessionId, from, to: policy, by: "host", ts: Date.now() })
+      await events.append(sessionId, "Session.PolicyChanged", { sessionId, from, to: policy, by, ts: Date.now() })
     },
     async runCommand(text) {
       // Slash command (transport entry): "/name args". The seam is the plugin

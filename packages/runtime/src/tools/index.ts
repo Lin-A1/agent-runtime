@@ -7,6 +7,8 @@ import { createEditTool } from "./edit"
 import { createMultiEditTool } from "./multi-edit"
 import { createViewImageTool } from "./view-image"
 import { createAskUserTool } from "./ask-user"
+import { createEnterPlanModeTool } from "./plan-mode"
+import { createLspTool } from "./lsp"
 import { createListTool } from "./list"
 import { createSearchTool } from "./search"
 import { createBashTools } from "./bash"
@@ -15,6 +17,7 @@ import { createSkillTool } from "./skill"
 import { createTodoWriteTool } from "./todo"
 import { createGoalTools } from "./goal"
 import { createWebFetchTool } from "./webfetch"
+import { createWebSearchTool } from "./web-search"
 import { createSelfTools, type SelfAwarenessOptions } from "./self"
 
 export { createExecPolicy, createBuiltinExecPolicy, rulesFilePath, simpleHash } from "./execpolicy"
@@ -46,7 +49,7 @@ export interface BuiltinToolsOptions {
    *  self_status + get_context_remaining + current_time + sleep tools.
    *  Absent = the toolset is not exposed. */
   readonly self?: SelfAwarenessOptions
-  /** Opt-in web fetch tool (wave 12): escapes the fs sandbox like bash. */
+  /** Opt-in web tools (wave 12: web_fetch + web_search): escape the fs sandbox like bash. */
   readonly enableWeb?: boolean
 }
 
@@ -60,9 +63,11 @@ export function createBuiltinTools(opts: BuiltinToolsOptions): Tool[] {
     createListTool(opts.workspace),
     createSearchTool(opts.workspace),
     createAskUserTool(),
+    createEnterPlanModeTool(),
+    createLspTool(opts.workspace),
   ]
   if (opts.enableBash) tools.push(...createBashTools(opts.workspace))
-  if (opts.enableWeb) tools.push(createWebFetchTool())
+  if (opts.enableWeb) tools.push(createWebFetchTool(), createWebSearchTool())
   if (opts.memoryStore) {
     tools.push(createMemorySearchTool(opts.memoryStore))
     tools.push(createMemoryWriteTool(opts.memoryStore))

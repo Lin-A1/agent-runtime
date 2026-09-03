@@ -8,7 +8,7 @@ import { listModels } from "@newhorse/llm"
 import type { AdapterConfig, Fetcher } from "@newhorse/llm"
 import type { StoredEvent, ApprovalRequest } from "@newhorse/schema"
 import { join, resolve, sep } from "node:path"
-import { readdir, realpath, mkdir, writeFile, rename } from "node:fs/promises"
+import { readdir, realpath, mkdir, writeFile, rename, rm } from "node:fs/promises"
 import { Buffer } from "node:buffer"
 
 /**
@@ -832,12 +832,17 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
 
       // --- client-facing surfaces (settings / models / approvals / usage / schedules) ---
 
-      // GET /v1/memory?q= — the client's memory browser.
+      // GET /v1/memory?q=&type=&sort= — the client's memory browser.
       if (method === "GET" && parts.length === 2 && parts[1] === "memory") {
         if (!memory) return json(404, { error: "no memory store configured" })
         const q = url.searchParams.get("q") ?? ""
         const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit") ?? 50)))
-        const rows: MemoryRecord[] = await memory.search(q, limit)
+        const type = url.searchParams.get("type")
+        const sort = url.searchParams.get("sort")
+        let rows: MemoryRecord[] = await memory.search(q, type ? limit * 3 : limit)
+        if (type) rows = rows.filter((r) => r.type === type).slice(0, limit)
+        if (sort === "priority") rows = [...rows].sort((a, b) => b.priority - a.priority)
+        if (sort === "latest") rows = [...rows].sort((a, b) => b.createdAt - a.createdAt)
         return json(200, { memories: rows })
       }
 
@@ -875,6 +880,18 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
         if (!dagRunner) return json(404, { error: "no dag runner configured" })
         const st = await dagRunner.status(parts[2]!)
         return st ? json(200, st) : json(404, { error: "unknown dag id" })
+      }
+
+      // POST /v1/dag/:id/abort — abort a running graph (durable DAG.Aborted;
+      // pending→skipped, running→aborted). An already-done graph is a 200 with
+      // {aborted:false}; an unknown id is a 404.
+      if (method === "POST" && parts.length === 4 && parts[1] === "dag" && parts[3] === "abort") {
+        if (!dagRunner) return json(404, { error: "no dag runner configured" })
+        try {
+          return json(200, await dagRunner.abort(parts[2]!))
+        } catch {
+          return json(404, { error: "unknown dag id" })
+        }
       }
 
       // GET /v1/session/:id/goal — folded goal + persisted usage.
@@ -1164,6 +1181,21 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
           return hit ? json(200, hit) : json(404, { error: "unknown skill" })
         }
         return json(200, { skills: skills.map((sk) => ({ name: sk.name, description: sk.description, path: sk.path })) })
+      }
+
+      // DELETE /v1/skills?name= — remove an imported skill's directory
+      // (directory-as-registration: deletion is removal from the same dir).
+      if (method === "DELETE" && parts.length === 2 && parts[1] === "skills") {
+        if (!pluginsDir) return json(404, { error: "no pluginsDir configured" })
+        const name = (url.searchParams.get("name") ?? "").trim()
+        if (!/^[a-z0-9][a-z0-9._-]*$/i.test(name)) return json(400, { error: "skill name must be a slug (letters, digits, -, _)" })
+        const dir = join(pluginsDir, "skills", name)
+        try {
+          await rm(dir, { recursive: true, force: true })
+        } catch (e) {
+          return json(500, { error: `skill delete failed: ${e instanceof Error ? e.message : String(e)}` })
+        }
+        return json(200, { removed: true, name })
       }
 
       // POST /v1/skills — import a skill through the directory seam:
