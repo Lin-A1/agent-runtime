@@ -536,7 +536,7 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
         signal?.removeEventListener("abort", onAbort)
         unsubscribe()
       })
-    return new Response(sse.stream, { headers: { "content-type": "text/event-stream" } })
+    return new Response(sse.stream, { headers: { "content-type": "text/event-stream", "cache-control": "no-cache" } })
   }
 
   const server = Bun.serve({
@@ -707,7 +707,16 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
       if (method === "GET" && parts.length === 2 && parts[1] === "sessions") {
         const ws = url.searchParams.get("workspace") ?? undefined
         const st = url.searchParams.get("status") ?? undefined
-        const query: RegistryQuery = ws || st ? { ...(ws ? { workspace: ws } : {}), ...(st ? { status: st as RegistryQuery["status"] } : {}) } : {}
+        const pid = url.searchParams.get("parentId") ?? undefined
+        const exCh = url.searchParams.get("excludeChildren")
+        const query: RegistryQuery | undefined = ws || st || pid || exCh !== null
+          ? {
+              ...(ws ? { workspace: ws } : {}),
+              ...(st ? { status: st as RegistryQuery["status"] } : {}),
+              ...(pid ? { parentId: pid } : {}),
+              ...(exCh !== null ? { excludeChildren: exCh !== "false" } : {}),
+            }
+          : undefined
         if (settings) {
           try {
             const db = new Database(join(settings.get().dataDir, "events.db"), { readonly: true })
