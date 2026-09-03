@@ -36,6 +36,16 @@ export function createWebFetchTool(): Tool {
   return {
     name: "web_fetch",
     sideEffects: false,
+    // Output layer: every successful fetch presents a url panel (the shell's
+    // side-browser preview shows the page the model just read).
+    presents: {
+      kind: "url",
+      title: (_input: unknown, output: unknown) => (output as { url?: string }).url ?? "web_fetch",
+      toPanel: (_input: unknown, output: unknown) => {
+        const o = output as { url?: string; contentType?: string; text?: string }
+        return { url: o.url, contentType: o.contentType, preview: (o.text ?? "").slice(0, 4_000) }
+      },
+    },
     description:
       "Fetch a public https URL and return its text content (HTML stripped to text; JSON/plain pass through). Args: { url, maxChars? }. Limits: 10s timeout, 2MiB download, private/loopback hosts refused. Use it to read documentation, APIs, or any page the task needs.",
     execute: async (input: unknown, ctx) => {

@@ -681,17 +681,44 @@ export async function createApp(config: AppConfig): Promise<App> {
       admit: (text) => inbox.admit({ id: crypto.randomUUID(), sessionId, prompt: text, delivery: "steer", principal: "butler" }).then(() => {}),
     }) : undefined
     const caller: Initiator = principal === "user" ? { kind: "user" } : asButler ? { kind: "butler", sessionId } : { kind: "parent", sessionId }
+    // Output layer (the panel seam): tools declaring `presents` derive a
+    // durable Session.PanelPosted + a live `panel` LoopEvent per successful
+    // result — shells render them in a dedicated surface (right column),
+    // the CLI prints a text line. Failure results never present. The maps
+    // fill per prompt (liveSurface is rebuilt each drain).
+    const presentsByTool = new Map<string, NonNullable<Tool["presents"]>>()
+    const lastToolInput = new Map<string, unknown>()
+    const appendPanel = async (p: NonNullable<Tool["presents"]>, input: unknown, output: unknown): Promise<void> => {
+      const panelId = crypto.randomUUID()
+      const payload = p.toPanel(input, output)
+      const title = p.title?.(input, output) ?? `${p.kind} panel`
+      await events.append(sessionId, "Session.PanelPosted", { sessionId, panelId, kind: p.kind, title, payload, ts: Date.now() })
+      emit({ type: "panel", panelId, kind: p.kind, title, payload })
+    }
+    const onLoopEvent = (ev: AppEvent): void => {
+      if (ev.type === "tool") lastToolInput.set(ev.name, ev.input)
+      else if (ev.type === "tool-result" && !ev.isError) {
+        const p = presentsByTool.get(ev.name)
+        if (p) void appendPanel(p, lastToolInput.get(ev.name), ev.output).catch(() => {})
+      }
+      emit(ev)
+    }
     try {
       // Per-prompt tool surface from the CURRENT policy (+ request_mode in
       // readonly so the model can ask to leave plan mode).
       liveSurface.length = 0
       liveSurface.push(...applyPolicy(agentTools, currentPolicy), ...(currentPolicy === "readonly" ? [requestModeTool] : []))
+      // Output layer (the panel seam): refill the presents map from THIS
+      // prompt's live surface (it is rebuilt per drain).
+      presentsByTool.clear()
+      for (const t of liveSurface) if (t.presents) presentsByTool.set(t.name, t.presents)
+      lastToolInput.clear()
       const promptAgent: Agent = { ...agent, tools: liveSurface }
       const result = await runSession(runtime, {
         agent: promptAgent,
         sessionId,
         resolveTool: (name) => liveSurface.find((t) => t.name === name),
-        onEvent: emit,
+        onEvent: onLoopEvent,
         signal: ctrl.signal,
         caller,
         runHooks: hookRunner,
@@ -720,7 +747,17 @@ export async function createApp(config: AppConfig): Promise<App> {
             return { state: log.some((e) => e.type === "Session.Created") ? "running" : "unknown" }
           },
           ...(dagRunner
-            ? { declareDag: (spec: unknown) => dagRunner.run(spec as DAGSpec, { workspace, todoSessionId: sessionId }) }
+            ? {
+                declareDag: (spec: unknown) =>
+                  dagRunner.run(spec as DAGSpec, {
+                    workspace,
+                    todoSessionId: sessionId,
+                    // Node children live-register with THIS session's hub: the
+                    // declarer can interrupt/steer a running node's child like
+                    // a spawn_agent child (trackable + communicable, not dead rows).
+                    registerChildLive: (childId, register) => hub!.register(childId, register),
+                  }),
+              }
             : {}),
           execPolicy: currentPolicy === "trusted" ? allowAllExecPolicy : execPolicySession,
         } : { registry, appendAudit, setPolicy: (p) => app.setPolicy(p, "model"), ...(config.onAsk ? { askUser: config.onAsk } : {}), execPolicy: currentPolicy === "trusted" ? allowAllExecPolicy : execPolicySession },

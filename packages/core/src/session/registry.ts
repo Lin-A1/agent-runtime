@@ -22,6 +22,9 @@ export interface SessionRow {
   readonly status: SessionStatus
   readonly model?: string
   readonly parentId?: string
+  /** How the session came to be (Session.Spawned.via): "dag" = a DAG node's
+   *  driven child, "spawn" = a butler spawn_agent child. Absent = top-level. */
+  readonly origin?: "dag" | "spawn"
   readonly createdAt: number
   readonly updatedAt: number
   readonly archived?: boolean
@@ -63,6 +66,10 @@ export interface RegistryQuery {
   readonly workspace?: string
   readonly status?: SessionStatus
   readonly projectId?: string
+  /** Only children of this parent (spawn_agent / DAG-node children). */
+  readonly parentId?: string
+  /** Exclude child sessions entirely (a top-level-only listing). */
+  readonly excludeChildren?: boolean
 }
 
 /**
@@ -86,6 +93,8 @@ export class SessionRegistry {
     if (query?.workspace) rows = rows.filter((r) => r.workspace === query.workspace)
     if (query?.status) rows = rows.filter((r) => r.status === query.status)
     if (query?.projectId) rows = rows.filter((r) => r.projectId === query.projectId)
+    if (query?.parentId) rows = rows.filter((r) => r.parentId === query.parentId)
+    if (query?.excludeChildren) rows = rows.filter((r) => !r.parentId)
     return rows.sort((a, b) => b.updatedAt - a.updatedAt)
   }
 
@@ -141,6 +150,7 @@ export function fold(stored: StoredEvent[]): SessionRow | undefined {
   let status: SessionStatus = "created"
   let model: string | undefined
   let parentId: string | undefined
+  let origin: "dag" | "spawn" | undefined
   let title: string | undefined
   let archived = false
   let role: "butler" | undefined
@@ -179,8 +189,9 @@ export function fold(stored: StoredEvent[]): SessionRow | undefined {
       }
       case "Session.Spawned": {
         // Record parent chain; does NOT set hasCreated (must pair with Created).
-        const d = event.data as { parentId?: string }
+        const d = event.data as { parentId?: string; via?: "dag" | "spawn" }
         parentId = d.parentId
+        origin = d.via ?? "spawn"
         break
       }
       case "Session.PromptAdmitted":
@@ -220,7 +231,7 @@ export function fold(stored: StoredEvent[]): SessionRow | undefined {
   }
 
   if (!hasCreated) return undefined
-  return { sessionId: sessionId || workspace, workspace, projectId, title, status, model, parentId, createdAt, updatedAt, archived, ...(role ? { role } : {}), ...(tokensUsed > 0 ? { tokensUsed } : {}) }
+  return { sessionId: sessionId || workspace, workspace, projectId, title, status, model, parentId, origin, createdAt, updatedAt, archived, ...(role ? { role } : {}), ...(tokensUsed > 0 ? { tokensUsed } : {}) }
 }
 
 function excerpt(content: readonly unknown[]): string {

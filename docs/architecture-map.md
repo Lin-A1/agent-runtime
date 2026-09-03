@@ -43,11 +43,12 @@ newhorse（本 monorepo：引擎开发地 + 首个宿主项目 CLI）
 | 内置工具 ×12 | `runtime/tools/*` | ✅（真机 S7 实证） | read/write/edit/list/search/bash/memory×2/skill/todo/goal×2 |
 | execpolicy | `runtime/tools/execpolicy.ts` | ✅（14 轮审查 + bootstrap 接线） | ← bash/write/edit/read 决策；approve 持久规则 |
 | Memory（store+FTS5+语义+向量索引） | `memory/*` | ✅（语义真机：1536 维零重叠命中；model tag 防混；VectorIndex：vec0/auto↔brute↔off，scope 分区隔离，canary 自愈） | 提取管线 `extract.ts` 引擎就绪、**触发已接**（memoryExtract.enabled） |
+| 输出层（Panel 缝） | `runtime/app.ts`（PanelPosted 拦截）+ `core/runner.ts`（Tool.presents）+ present 工具 | ✅（工具声明 presents → 成功结果派生 Session.PanelPosted + live panel LoopEvent；kinds: diff/markdown/table/image/url/form；失败结果不发射；CLI 文本渲染） | ← 工具结果流；→ 任何壳的右栏/工件渲染（协议中立） |
 | Runtime server | `server/*` | ✅（SSE `: open` 立即 flush + 15s keepalive；idleTimeout 可配；**全局事件总线** `GET /v1/events/stream` 单连接扇出全部本地会话 LoopEvent+终态帧；**skill 导入** `POST /v1/skills` 写插件目录即注册） | ← createApp；→ 未来 SDK/TUI |
 | CLI | `cli/src/index.ts` | ✅ **官方交互面**（壳暂停后的决策）：REPL（steer/todos/goal/fork/compact/title/policy/context）+ 管理子命令（sessions/compact/fork/title/policy/context/archive/dag list·status·run）+ 配置统一（loadRuntimeSettings，读 agent-home 预设）+ registry 分裂脑守卫 | ← createApp/runDag/loadRuntimeSettings |
 | 三端客户端 | `apps/web`（SPA）+ `apps/desktop`（Tauri 壳 + server sidecar） | ✅（同源 UI+API；局域网/手机=同一 origin 的 PWA；设置/审批/用量热力图/定时任务/记忆/表情球管家） | ← server 全部 /v1 端点；host shell（不入 agent-runtime 同步） |
 | SessionManager（进程内 + 跨进程） | `hub.ts`（进程内）+ `session-directory.ts` + server 代理路由 | ✅（进程内真投递；跨进程 observe/steer/interrupt/SSE 代理经共享 SQLite 目录，心跳+sweep 自愈） | ← app.prompt 登记 + child registerLive；← NEWHORSE_REGISTRY |
-| DAG（声明式） | `core/agent/dag.ts` + `runtime/dag-runner.ts` | ✅（resume/slots 持久/cost-down） | → Session.Settled（统一 task）→ todo 投影 |
+| DAG（声明式） | `core/agent/dag.ts` + `runtime/dag-runner.ts` | ✅（resume/slots 持久/cost-down/abort；**节点子会话 = 声明者的注册子会话**：Spawned{parentId, via:dag} + registerChildLive 活注册——可追踪/追问/通信，registry 可按 parentId 过滤/排除） | → Session.Settled（统一 task）→ todo 投影 |
 | 统一 task（goal×DAG×todo×task） | `core/agent/{todo,goal}.ts` | ✅（DAG catch 路径 settlement 已锁） | goal 预算=usage 聚合；强制（自动暂停）未做 |
 | 真子会话驱动 | `runtime/session-manager.ts`（driveChildSession/readChildText） | ✅ | ← DAG 节点/hub spawn；Created→上下文→admit→runSession 统一路径 |
 | 编排工具（动态面） | `runtime/butler.ts`（spawn/followup/wait/send/interrupt/list/**declare_dag**） | ✅（send/interrupt 经 hub 真投递；子会话经 registerLive 可中断；declare_dag 走同一 DagRunner，进度投影进声明者 todos） | ← SessionManager + registry；模型编排的主入口 |

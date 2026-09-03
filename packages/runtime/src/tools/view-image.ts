@@ -25,6 +25,16 @@ export function createViewImageTool(workspace: string): Tool {
   return {
     name: "view_image",
     sideEffects: false,
+    // Output layer: the image the model inspected is presented so a human can
+    // see exactly what it saw.
+    presents: {
+      kind: "image",
+      title: (input: unknown) => `image: ${(input as { path?: string }).path ?? ""}`,
+      toPanel: (_input: unknown, output: unknown) => {
+        const o = output as { mime?: string; data?: string; path?: string }
+        return { mime: o.mime, data: o.data, path: o.path }
+      },
+    },
     description: `Read a local image file and return its mime type + base64 data for visual inspection. Supported formats: png, jpg/jpeg, webp, gif (max 5MB). Path under workspace: ${workspace}`,
     inputSchema: {
       type: "object",

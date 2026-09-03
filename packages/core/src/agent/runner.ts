@@ -27,6 +27,18 @@ export interface Tool {
   readonly inputSchema?: Record<string, unknown>
   readonly execute: (input: unknown, ctx?: ToolCtx) => Promise<unknown>
   /**
+   * Presentation declaration (the output layer): when set, every successful
+   * tool result derives a Session.PanelPosted event + a live `panel` LoopEvent
+   * for shells to render in a dedicated surface (right column / artifacts).
+   * `toPanel` maps (input, output) → the renderable payload; keep payloads
+   * bounded — they are logged durably.
+   */
+  readonly presents?: {
+    readonly kind: "diff" | "markdown" | "table" | "image" | "url" | "form" | (string & {})
+    readonly title?: (input: unknown, output: unknown) => string
+    readonly toPanel: (input: unknown, output: unknown) => Record<string, unknown>
+  }
+  /**
    * Whether this tool changes the world outside the session (default true).
    * Read-only tools (read/list/search/memory_search/goal_read/skill/
    * list_sessions/followup_task/todo_write) declare `sideEffects: false` so a

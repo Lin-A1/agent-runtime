@@ -95,7 +95,11 @@ export async function driveChildSession(opts: DriveChildOptions): Promise<DriveC
       sessionId,
       agent: opts.agent,
       resolveTool: (name) => opts.tools.find((t) => t.name === name),
-      signal: opts.signal ?? childCtrl.signal,
+      // EITHER signal cancels the run: the caller's graph/caller abort AND the
+      // child's own live controller (the registered interrupt channel — with a
+      // plain ??, a caller-supplied signal silently disabled the registered
+      // abort, so hub interrupt on a running child was a no-op).
+      signal: opts.signal ? AbortSignal.any([opts.signal, childCtrl.signal]) : childCtrl.signal,
       caller: { kind: "parent", sessionId: opts.parentId },
       toolCtx: opts.toolCtx,
     })

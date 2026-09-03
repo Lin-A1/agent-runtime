@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { MemoryEventStore, MemorySessionInput, SqliteEventStore, DAGError, foldDAG, currentTodos, type TurnRuntime, type Tool, type DAGSpec } from "@newhorse/core"
+import { MemoryEventStore, MemorySessionInput, SessionRegistry, SqliteEventStore, DAGError, foldDAG, currentTodos, type TurnRuntime, type Tool, type DAGSpec } from "@newhorse/core"
 import { runDag, createSlotStore, replayDag, resumeDag, resolveNodeModel, type DagDeps } from "./dag-runner"
 import type { LLMEvent, LLMRequest } from "@newhorse/schema"
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
@@ -602,5 +602,66 @@ it("a thrown node error settles its child as error (no forever-running followup)
   const settled = childLog.filter((e) => e.type === "Session.Settled")
   expect(settled.length).toBeGreaterThan(0)
   expect((settled.at(-1)?.data as { finish?: string }).finish).toBe("error")
+})
+
+it("a DAG node child is a REGISTERED child of the declarer (Spawned parentId + via, registry folds it)", async () => {
+  const declarer = "watcher-1"
+  // deps owns the store — everything (declarer seed, children, registry) uses deps.events.
+  const deps = makeDeps(stubLlm(), [], 2, undefined, { todoSessionId: declarer })
+  await deps.events.append(declarer, "Session.Created", { id: declarer, location: "/w", createdAt: Date.now() })
+  await runDag(diamond, deps)
+  const registry = new SessionRegistry(deps.events)
+  const children = await registry.list({ parentId: declarer })
+  expect(children.length).toBe(4)
+  expect(children.every((r) => r.origin === "dag")).toBe(true)
+  // excludeChildren: the declarer's own listing stays top-level clean.
+  const top = await registry.list({ excludeChildren: true })
+  expect(top.map((r) => r.sessionId)).toContain(declarer)
+  expect(top.map((r) => r.sessionId)).not.toContain(children[0]!.sessionId)
+})
+
+it("registerChildLive wires the declarer's hub: abort lands on the running node's child", async () => {
+  let unblock: () => void = () => {}
+  const unblockFns: Array<() => void> = []
+  let captured: { abort: () => void; admit: (text: string) => Promise<void> } | undefined
+  const declarer = "watcher-2"
+  const deps = makeDeps(
+    { id: "t", stream: async (_req: unknown, signal?: AbortSignal) => (async function* () {
+        yield { type: "text.delta", text: "starting" }
+        // The stream honors the abort (real providers do): the registered
+        // abort fires the child controller → this signal → stream rejects.
+        await new Promise<void>((_r, reject) => {
+          const onAbort = () => reject(Object.assign(new Error("aborted"), { name: "AbortError" }))
+          signal?.addEventListener("abort", onAbort, { once: true })
+          unblockFns.push(() => { signal?.removeEventListener("abort", onAbort); _r() })
+        })
+      })() },
+    [], 1, undefined,
+    {
+      todoSessionId: declarer,
+      registerChildLive: (childId, register) => {
+        void childId
+        captured = register
+        return () => {}
+      },
+    },
+  )
+  await deps.events.append(declarer, "Session.Created", { id: declarer, location: "/w", createdAt: Date.now() })
+  const spec: DAGSpec = { nodes: { A: { id: "A", agent: { name: "a", model: "m" }, input: "root" } } }
+  const outcomePromise = runDag(spec, deps)
+  await new Promise((r) => setTimeout(r, 60))
+  expect(captured).toBeDefined()
+  captured!.abort() // the declarer's hub interrupt → the child's controller
+  unblock()
+  const outcome = await outcomePromise
+  expect(outcome.status["A"]).toBe("aborted")
+  // The child settled durably (trackable — never a running zombie).
+  const dagLog = await deps.events.read(outcome.dagId)
+  const started = dagLog.find((e) => e.type === "DAG.NodeStarted")
+  const childId = (started?.data as { sessionId?: string }).sessionId
+  const childLog = await deps.events.read(childId!)
+  const settled = childLog.filter((e) => e.type === "Session.Settled")
+  expect(settled.length).toBeGreaterThan(0)
+  expect((settled.at(-1)?.data as { finish?: string }).finish).toBe("interrupted")
 })
 })

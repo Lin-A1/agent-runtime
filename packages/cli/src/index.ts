@@ -150,6 +150,14 @@ async function runPrompt(app: Awaited<ReturnType<typeof buildApp>>, text: string
     console.log(typeof output === "string" ? output : JSON.stringify(output, null, 2))
     return
   }
+  // Live render: streamed text + panels (the output layer) as they happen.
+  app.onEvent((event) => {
+    if (event.type === "text") process.stdout.write(event.text)
+    else if (event.type === "reasoning") process.stdout.write(`\u001b[2m${event.text}\u001b[0m`)
+    else if (event.type === "error") process.stderr.write(`\u001b[31m${event.message}\u001b[0m\n`)
+    else if (event.type === "panel") renderPanel(event.kind, event.title, event.payload)
+    else if (event.type === "done") process.stdout.write("\n")
+  })
   await app.prompt(text, "user")
   const history = await app.resume()
   console.log()
@@ -333,6 +341,37 @@ function printMessage(message: SessionMessage): void {
   }
 }
 
+/** Panel output layer (text rendering): a labelled section per kind. A rich
+ *  shell would render diff/table/image/url cards in a right column — the
+ *  event contract is the same (Session.PanelPosted / panel LoopEvent). */
+function renderPanel(kind: string, title: string, payload: unknown): void {
+  const bar = "\u001b[2m" + "─".repeat(46) + "\u001b[0m"
+  process.stdout.write(`${bar}\n\u001b[35m▸ [${kind}] ${title}\u001b[0m\n`)
+  const p = (payload ?? {}) as Record<string, unknown>
+  if (kind === "diff") {
+    for (const line of String(p.diff ?? "").split("\n")) {
+      process.stdout.write(line.startsWith("+ ") ? `\u001b[32m${line}\u001b[0m\n` : line.startsWith("- ") ? `\u001b[31m${line}\u001b[0m\n` : `${line}\n`)
+    }
+    return
+  }
+  if (kind === "table" && Array.isArray(p.rows)) {
+    for (const r of p.rows as Array<{ title?: string; url?: string }>) {
+      process.stdout.write(`  • ${r.title ?? "(untitled)"} \u001b[2m${r.url ?? ""}\u001b[0m\n`)
+    }
+    return
+  }
+  if (kind === "url") {
+    process.stdout.write(`  \u001b[2m${String(p.url ?? "")}\u001b[0m\n  ${String(p.preview ?? "").slice(0, 300)}\n`)
+    return
+  }
+  if (kind === "image") {
+    process.stdout.write(`  [image ${String(p.path ?? "")} — ${String(p.mime ?? "")}]\n`)
+    return
+  }
+  // markdown / form / unknown kinds — dump bounded JSON
+  process.stdout.write(`  ${JSON.stringify(p).slice(0, 600)}\n`)
+}
+
 /** Interactive REPL: type a prompt, /help for commands. Ctrl-C cancels the
  *  CURRENT run (the next prompt starts fresh — a per-run AbortController). */
 async function repl(app: Awaited<ReturnType<typeof buildApp>>): Promise<void> {
@@ -340,6 +379,7 @@ async function repl(app: Awaited<ReturnType<typeof buildApp>>): Promise<void> {
   app.onEvent((event) => {
     if (event.type === "text") process.stdout.write(event.text)
     else if (event.type === "error") process.stderr.write(`\u001b[31m${event.message}\u001b[0m\n`)
+    else if (event.type === "panel") renderPanel(event.kind, event.title, event.payload)
     else if (event.type === "done") process.stdout.write(`\n`)
   })
   const rl = createInterface({ input: process.stdin, output: process.stdout })

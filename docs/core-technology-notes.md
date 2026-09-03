@@ -352,3 +352,12 @@ Provider docs hand out baseUrls in both spellings (`https://api.minimaxi.com/ant
 
 - **Fix**: `normalizeBaseUrl(baseUrl)` (`llm/adapter.ts`) strips trailing slashes + a trailing `/v1` at the USE points — `makeRoute`'s endpoint resolver and `models.ts`. The stored config keeps exactly what the user pasted (no write-time rewriting); normalization is a pure read-side step.
 - **Why stripping is always safe here**: every provider path we issue starts with `/v1`, so `host/…/v1` and `host/…` resolve identically; mid-path versions (`openrouter.ai/api/v1`) are untouched because only the TRAILING segment is stripped.
+
+## 31. The panel output layer (2026-09)
+
+The runtime is actions; the panel seam adds the OUTPUT layer after them — a generalization of five ad-hoc projections (todo/goal/trajectory/question/approval cards) into one first-class event:
+
+- **Session.PanelPosted { panelId, kind, title, payload }** — durable, append-only, human-facing (same class as audit rows: the model need not see it). A live `panel` LoopEvent rides the prompt stream AND the global bus, so any shell renders without polling.
+- **Three emission paths**: (1) a `present` tool the model calls explicitly; (2) TOOL-DECLARED `presents: { kind, toPanel }` on the Tool contract — the runtime derives a panel per successful result automatically (edit→diff, view_image→image, web_fetch→url, web_search→table); failed results never present; (3) runtime internals keep their own projections.
+- **Kind vocabulary stays small**: diff / markdown / table / image / url / form. Shells render per kind (right column / artifacts); the CLI renders text lines — the CONTRACT is shell-neutral.
+- **人机协作闭环**: panels carry actions wired to existing seams (approval / ask_user answer / composer insert) — the reverse channel already exists, no new auth surface.
