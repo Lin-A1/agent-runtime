@@ -207,8 +207,8 @@ const events = db.query("SELECT ... FROM event WHERE aggregate_id = ?")
 
 **Phase 4 — DONE（语义记忆为可开关）.** todo/goal 统一任务体系（goal×DAG×todo×task 四层：goal 预算=usage 聚合、DAG↔todo 投影、DAG 节点统一 Settled 语义）、todo_write durable 清单、语义记忆（EmbeddingProvider seam + FTS5×cosine RRF + model tag 防混 + deferred embedding）、skill loader、hook 消费（stop/pre-tool-use）、command 消费（runCommand + CLI slash）、agent roles（codex overlay 限制性叠加）。
 
-**Phase 5 — PARTIAL.** compaction 双层（本地折叠 + LLM 摘要 seam 已接线、真实摘要器注入待做）；M4 SessionManager 进程内版完成，跨进程投递未做。
+**Phase 5 — PARTIAL.** compaction 双层（本地折叠 + LLM 摘要 seam 已接线、runtime 已注入真实摘要器并 trace "compaction" 模型调用）；M4 SessionManager 进程内版完成，跨进程投递未做。
 
-**巩固优先于扩张**：机制地图（architecture-map.md）与五支柱是漂移哨兵——新机制必须回答"服务哪条支柱、衔接哪个 seam、违反哪条不变量、降级档位是什么"。当前巩固清单：docs 同步（持续）、`compactSummarize` 注入真实摘要器、transport 暴露 memory 配置、Bun 升级后重开 server 断连测试。新大块（SDK / 向量化深化 / UI）开跑前先过漂移哨兵。
+**巩固优先于扩张**：机制地图（architecture-map.md）与五支柱是漂移哨兵——新机制必须回答"服务哪条支柱、衔接哪个 seam、违反哪条不变量、降级档位是什么"。当前巩固清单：docs 同步（持续）、transport 暴露 memory 配置、Bun 升级后重开 server 断连测试。新大块（SDK / 向量化深化 / UI）开跑前先过漂移哨兵。
 
 Treat each phase as a waypoint, not the target. The target stays the five differentiators above; the milestone shape changes as the engine becomes usable, not as the design drifts.

@@ -1,0 +1,6 @@
+请快速审计当前 newhorse 项目的状态。要求:
+1) 读取 AGENTS.md,告诉我当前已经完成到哪个 Phase;
+2) 执行 git log --oneline -5,告诉我 dev 分支最近 5 个 commit;
+3) 列出 packages/ 目录下的所有子目录,每个一句话简介。
+
+请用中文,简洁回答,不要超过 30 行。

@@ -150,13 +150,37 @@ function localSummary(headCount: number, head: SessionMessage[]): string {
 export function projectCompacted(stored: StoredEvent[]): { messages: SessionMessage[]; boundary: number } {
   const boundaryEvent = [...stored].reverse().find((e) => e.type === "Session.Compacted")
   const boundary = boundaryEvent ? Number((boundaryEvent.data as { boundarySeq?: number }).boundarySeq ?? -1) : -1
+  // Image attachments ride the PromptAdmitted event (refs) or inline; the
+  // Prompted promotion does NOT copy them. Any projection that rebuilds user
+  // messages from Prompted alone DROPS the images — the model then literally
+  // never sees them (resolveAttachmentImages finds no refs to hydrate). So
+  // build the id → attachments/images index first and graft it back.
+  const admitted = new Map<string, { attachments?: Array<{ sha256: string; mime: string; bytes: number }>; images?: Array<{ mime: string; data: string }> }>()
+  for (const e of stored) {
+    if (e.type !== "Session.PromptAdmitted") continue
+    const d = e.data as { id?: string; attachments?: Array<{ sha256: string; mime: string; bytes: number }>; images?: Array<{ mime: string; data: string }> }
+    if (!d.id) continue
+    if (d.attachments?.length || d.images?.length) admitted.set(d.id, { ...(d.attachments?.length ? { attachments: d.attachments } : {}), ...(d.images?.length ? { images: d.images } : {}) })
+  }
+  const grafted = (id: string | undefined): { images?: unknown[]; attachments?: unknown[] } =>
+    id ? admitted.get(id) ?? {} : {}
   if (boundary < 0) {
     const messages: SessionMessage[] = []
     for (const e of stored) {
       if (e.type === "Session.MessageAppended") messages.push((e.data as { message?: SessionMessage }).message!)
       else if (e.type === "Session.Prompted") {
         const d = e.data as { id?: string; prompt?: string }
-        if (d.id && typeof d.prompt === "string") messages.push({ kind: "user", id: d.id, seq: e.seq, text: d.prompt })
+        if (d.id && typeof d.prompt === "string") {
+          const extra = grafted(d.id)
+          messages.push({
+            kind: "user",
+            id: d.id,
+            seq: e.seq,
+            text: d.prompt,
+            ...(extra.images?.length ? { images: extra.images } : {}),
+            ...(extra.attachments?.length ? { attachments: extra.attachments } : {}),
+          } as SessionMessage)
+        }
       }
     }
     return { messages, boundary }
@@ -187,7 +211,17 @@ export function projectCompacted(stored: StoredEvent[]): { messages: SessionMess
       }
     } else if (e.type === "Session.Prompted") {
       const d = e.data as { id?: string; prompt?: string }
-      if (d.id && typeof d.prompt === "string") rawTail.push({ kind: "user", id: d.id, seq: e.seq, text: d.prompt })
+      if (d.id && typeof d.prompt === "string") {
+        const extra = grafted(d.id)
+        rawTail.push({
+          kind: "user",
+          id: d.id,
+          seq: e.seq,
+          text: d.prompt,
+          ...(extra.images?.length ? { images: extra.images } : {}),
+          ...(extra.attachments?.length ? { attachments: extra.attachments } : {}),
+        } as SessionMessage)
+      }
     }
   }
 

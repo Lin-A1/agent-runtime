@@ -28,11 +28,25 @@ export function createAskUserTool(): Tool {
     },
     execute: async (input: unknown, ctx?: ToolCtx) => {
       const { question, options } = (input ?? {}) as { question?: string; options?: string[] }
-      if (!question?.trim()) return fail("question is required")
+      const trimmed = question?.trim()
+      if (!trimmed) return fail("question is required")
+      // Sanitize choices: keep 2-4 non-empty, short (≤60 chars) labels; if fewer
+      // than 2 survive, drop options entirely (the operator can still answer free-
+      // form). A garbage options array must never surface raw whitespace/empties.
+      const clean = Array.isArray(options)
+        ? options.map((o) => (typeof o === "string" ? o.trim() : "")).filter((o) => o.length > 0 && o.length <= 60).slice(0, 4)
+        : []
       if (!ctx?.askUser) {
-        return { question, answer: "（无交互通道——用户不可达。请基于当前信息自行决定，并在回答中注明你的假设。）", interactive: false }
+        return { question: trimmed, answer: "（无交互通道——用户不可达。请基于当前信息自行决定，并在回答中注明你的假设。）", interactive: false }
       }
-      const res = await ctx.askUser({ question: question.trim(), ...(options?.length ? { options } : {}) })
+      const res = await ctx.askUser({
+        question: trimmed,
+        ...(clean.length >= 2 ? { options: clean } : {}),
+        ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
+        ...(ctx.promptId ? { promptId: ctx.promptId } : {}),
+        ...(ctx.toolName ? { tool: ctx.toolName } : {}),
+        ...(ctx.toolCallId ? { callId: ctx.toolCallId } : {}),
+      })
       if (!res.allow) {
         return { question, answer: "（用户未作答或已拒绝——按最保守的合理假设继续，并在回答中注明。）", interactive: true }
       }

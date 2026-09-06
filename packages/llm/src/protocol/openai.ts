@@ -92,7 +92,7 @@ export const openaiProtocol: Protocol = {
   },
 
   init(): State {
-    return { role: null, text: "", reasoning: "", toolAcc: new Map<number, { id: string; name: string; input: string }>(), finish: undefined }
+    return { role: null, text: "", reasoning: "", toolAcc: new Map<number, { id: string; name: string; input: string }>(), finish: undefined, inThink: false }
   },
 
   step(state: unknown, message: unknown): { state: State; events: LLMEvent[] } {
@@ -105,12 +105,29 @@ export const openaiProtocol: Protocol = {
     // still flushes the accumulated tool calls (some gateways send usage in the
     // same chunk as the finish).
     if (chunk.usage) {
-      s.usage = { inputTokens: chunk.usage.prompt_tokens, outputTokens: chunk.usage.completion_tokens, cacheReadTokens: chunk.usage.prompt_tokens_details?.cached_tokens }
+      // MiniMax-style streams send a `usage: null` frame before the REAL usage
+      // frame (choices: []), which lands AFTER the finish_reason frame — so
+      // `s.finish` is already set when the real usage arrives. Overwrite the
+      // recorded usage unconditionally: a final usage frame always wins, and
+      // later tool steps will carry it into the merged event.
+      s.usage = {
+        inputTokens: chunk.usage.prompt_tokens,
+        outputTokens: chunk.usage.completion_tokens,
+        cacheReadTokens: chunk.usage.prompt_tokens_details?.cached_tokens,
+        ...(chunk.usage.completion_tokens_details?.reasoning_tokens !== undefined ? { reasoningTokens: chunk.usage.completion_tokens_details.reasoning_tokens } : {}),
+      }
     }
 
     const delta = chunk.choices?.[0]?.delta
     if (!delta) {
-      if (s.usage && !s.finish) {
+      // A bare usage frame has no delta. If the stream already finished (a
+      // MiniMax-style `usage:null` + late real-usage frame lands after the
+      // finish_reason chunk), re-emit step-finish with the final usage so the
+      // turn loop overwrites the stale figure — the loop treats a later
+      // step-finish as wins. If not finished yet, the fallback stop applies.
+      if (s.finish && chunk.usage && s.usage) {
+        events.push({ type: "step-finish", finish: normalizeFinish(s.finish), usage: s.usage })
+      } else if (s.usage && !s.finish) {
         s.finish = "stop"
         events.push({ type: "step-finish", finish: "stop", usage: s.usage })
       }
@@ -124,9 +141,45 @@ export const openaiProtocol: Protocol = {
       events.push({ type: "reasoning.delta", text: delta.reasoning_content })
     }
 
+    // MiniMax-style providers wrap their thinking in `<think>...</think>`
+    // INSIDE delta.content (not a dedicated reasoning_content field). The
+    // tag can span frame boundaries, so keep a cross-frame inThink flag and
+    // split the stream: tag body → reasoning.delta, remainder → text.delta.
     if (typeof delta.content === "string" && delta.content.length > 0) {
-      s.text += delta.content
-      events.push({ type: "text.delta", text: delta.content })
+      let remaining = delta.content
+      while (remaining) {
+        if (s.inThink) {
+          const end = remaining.indexOf("</think>")
+          if (end >= 0) {
+            const body = remaining.slice(0, end)
+            if (body) {
+              s.reasoning += body
+              events.push({ type: "reasoning.delta", text: body })
+            }
+            s.inThink = false
+            remaining = remaining.slice(end + "</think>".length)
+          } else {
+            s.reasoning += remaining
+            events.push({ type: "reasoning.delta", text: remaining })
+            remaining = ""
+          }
+        } else {
+          const start = remaining.indexOf("<think>")
+          if (start >= 0) {
+            const before = remaining.slice(0, start)
+            if (before) {
+              s.text += before
+              events.push({ type: "text.delta", text: before })
+            }
+            s.inThink = true
+            remaining = remaining.slice(start + "<think>".length)
+          } else {
+            s.text += remaining
+            events.push({ type: "text.delta", text: remaining })
+            remaining = ""
+          }
+        }
+      }
     }
 
     // Accumulate tool-call fragments by index; emit each completed call once.
@@ -164,6 +217,8 @@ interface State {
   reasoning: string
   toolAcc: Map<number, { id: string; name: string; input: string }>
   finish: string | undefined
+  /** Inside a <think>…</think> block (MiniMax wraps thinking in content). */
+  inThink: boolean
   usage?: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number }
 }
 

@@ -21,6 +21,7 @@ export class SqliteEventStore implements EventStore {
 
   constructor(db: Database) {
     this.#db = db
+    this.#tune()
     this.#migrate()
   }
 
@@ -28,6 +29,17 @@ export class SqliteEventStore implements EventStore {
     // A fresh dataDir must not crash the store (first-run experience).
     mkdirSync(dirname(path), { recursive: true })
     return new SqliteEventStore(new Database(path))
+  }
+
+  /** Concurrency tuning (agent-runtime-integrations §接线的引擎问题 #1): a
+   *  drain writes continuously while server GETs read through SEPARATE
+   *  connections — without WAL every reader can hit SQLITE_BUSY mid-write,
+   *  and the lazy re-attach path swallowed that as a false 404 "session not
+   *  found". WAL lets readers run beside the writer; busy_timeout makes any
+   *  remaining lock collision WAIT instead of failing fast. */
+  #tune(): void {
+    this.#db.run("PRAGMA journal_mode = WAL")
+    this.#db.run("PRAGMA busy_timeout = 3000")
   }
 
   #migrate(): void {
@@ -100,6 +112,19 @@ export class SqliteEventStore implements EventStore {
   async delete(aggregate_id: string): Promise<void> {
     this.#db?.prepare("DELETE FROM event WHERE aggregate_id = ?").run(aggregate_id)
     this.#db?.prepare("DELETE FROM event_sequence WHERE aggregate_id = ?").run(aggregate_id)
+  }
+
+  async truncate(aggregate_id: string, atSeq: number): Promise<void> {
+    if (atSeq < 0) return
+    // Remove events strictly after the boundary.
+    this.#db?.prepare("DELETE FROM event WHERE aggregate_id = ? AND seq > ?").run(aggregate_id, atSeq)
+    // Rewind the per-aggregate allocator so the next append allocates seq =
+    // atSeq + 1 (a stale higher value would leave a gap, and reuse of an old
+    // seq would collide with a surviving event). A missing row (truncating an
+    // aggregate with no sequence table row yet) is a no-op.
+    this.#db
+      ?.prepare("INSERT INTO event_sequence (aggregate_id, seq) VALUES (?, ?) ON CONFLICT(aggregate_id) DO UPDATE SET seq = excluded.seq")
+      .run(aggregate_id, atSeq)
   }
 
   #nextSeq(aggregate_id: string): number {

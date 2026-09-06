@@ -22,6 +22,14 @@ export interface EventStore {
    * Deleting a missing aggregate is a no-op, never a throw.
    */
   delete(aggregate_id: string): Promise<void>
+  /**
+   * In-place rewind (codex backtrack / user "undo"): removes every event with
+   * seq > atSeq, so a session replays as if later turns never happened. The
+   * caller owns recording the boundary (Session.Truncated). Truncating a
+   * missing aggregate or one with no events past atSeq is a no-op, never a
+   * throw. The next append must allocate seq = atSeq + 1 (no reuse/collision).
+   */
+  truncate(aggregate_id: string, atSeq: number): Promise<void>
 }
 
 /** In-memory event store, for tests and the M1 single-process runtime. */
@@ -51,5 +59,11 @@ export class MemoryEventStore implements EventStore {
 
   async delete(aggregate_id: string): Promise<void> {
     this.#events.delete(aggregate_id)
+  }
+
+  async truncate(aggregate_id: string, atSeq: number): Promise<void> {
+    const log = this.#events.get(aggregate_id)
+    if (!log) return
+    this.#events.set(aggregate_id, log.slice(0, Math.max(0, atSeq + 1)))
   }
 }

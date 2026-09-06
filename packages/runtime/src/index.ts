@@ -19,3 +19,4 @@ export * from "./tools/path"
 // runtime → core, but transport → runtime).
 export type { SessionRow, RegistryQuery, AuditEventRow } from "@newhorse/core"
 export * from "./config"
+export * from "./provider-resolution"

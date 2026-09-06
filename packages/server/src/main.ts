@@ -107,6 +107,7 @@ const handle = await createServer({
     contextWindowTokens: create.contextWindowTokens ?? fresh.contextWindowTokens,
     maxOutputTokens: create.maxOutputTokens ?? fresh.maxOutputTokens,
     workspace: create.workspace ?? fresh.workspace,
+    projectId: create.projectId,
     dataDir: create.dataDir ?? fresh.dataDir,
     agentHome: fresh.agentHome,
     charsPerToken: fresh.charsPerToken,

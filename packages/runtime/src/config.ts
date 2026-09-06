@@ -1,7 +1,7 @@
 import { join } from "node:path"
 import type { ChannelConfig } from "./channel"
 import { readFile, writeFile, mkdir, rename } from "node:fs/promises"
-import { readFileSync } from "node:fs"
+import { readFileSync, existsSync } from "node:fs"
 
 /**
  * Single authoritative configuration module (the runtime harness floor).
@@ -524,7 +524,14 @@ export function loadRuntimeSettings(layers: ConfigLayers): RuntimeSettings {
     ...(file.mcpServers && Object.keys(file.mcpServers).length > 0 ? { mcpServers: file.mcpServers } : {}),
     ...(str(env, ENV.advertiseUrl) ? { advertiseUrl: str(env, ENV.advertiseUrl) } : {}),
     ...(str(env, ENV.uiDir) ? { uiDir: str(env, ENV.uiDir) } : {}),
-    ...(str(env, ENV.pluginsDir) ? { pluginsDir: str(env, ENV.pluginsDir) } : {}),
+    // pluginsDir: explicit env wins, else the conventional agentHome/plugins
+    // folder when it actually exists — a zero-setup UX ("drop commands/ into
+    // ~/.newhorse/plugins and / + @ work") without a mandatory env var.
+    ...(str(env, ENV.pluginsDir)
+      ? { pluginsDir: str(env, ENV.pluginsDir) }
+      : existsSync(join(agentHome, "plugins"))
+        ? { pluginsDir: join(agentHome, "plugins") }
+        : {}),
   }
 }
 

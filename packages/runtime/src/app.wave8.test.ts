@@ -69,6 +69,7 @@ describe("task replacement + hooks (wave 8)", () => {
       return round <= 2 ? sse(bashSse) : sse(textFrame("done") + DONE)
     }
     let approvals = 0
+    const requests: Array<{ sessionId?: string; promptId?: string; tool?: string; callId?: string }> = []
     const app = await createApp({
       provider: { kind: "openai", baseUrl: "https://x", apiKey: "k" },
       model: "m",
@@ -76,14 +77,17 @@ describe("task replacement + hooks (wave 8)", () => {
       enableBash: true,
       fetch: fetch as never,
       execRules: [{ type: "prefix_rule", pattern: ["echo"], decision: "prompt", reason: "test gate" }],
-      onApprove: async () => {
+      onApprove: async (req) => {
         approvals += 1
+        requests.push(req)
         return true
       },
     })
     await app.prompt("run it", "user")
     await app.prompt("run it again", "user")
     expect(approvals).toBe(1)
+    expect(requests[0]).toMatchObject({ sessionId: "approve-1", tool: "bash", callId: "c1" })
+    expect(requests[0]?.promptId).toBeTruthy()
     const log = await app.events.read("approve-1")
     const toolResults = log.filter((e) => e.type === "Session.MessageAppended" && (e.data as { message?: { kind?: string } }).message?.kind === "tool")
     expect(toolResults).toHaveLength(2)

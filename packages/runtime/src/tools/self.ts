@@ -69,7 +69,9 @@ export function createSelfTools(opts: SelfAwarenessOptions): Tool[] {
       return {
         visibleChars: chars,
         estTokens,
-        ...(opts.contextWindowTokens ? { windowTokens: opts.contextWindowTokens, remainingTokens: Math.max(0, opts.contextWindowTokens - estTokens) } : { windowTokens: null }),
+        // When no window is configured, report an explicit reason instead of an
+        // opaque null — the model can then tell "no window set" from a real value.
+        ...(opts.contextWindowTokens ? { windowTokens: opts.contextWindowTokens, remainingTokens: Math.max(0, opts.contextWindowTokens - estTokens) } : { windowTokens: null, windowUnavailableReason: "no contextWindowTokens configured for this session" }),
         compacted: stored.some((e) => e.type === "Session.Compacted"),
       }
     },

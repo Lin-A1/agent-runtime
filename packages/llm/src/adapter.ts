@@ -9,6 +9,8 @@ export type ProviderKind = "openai" | "openai-responses" | "anthropic" | "openai
 
 export interface AdapterConfig {
   readonly kind: ProviderKind
+  /** Registry provider id. Defaults to `kind` for builtin providers. */
+  readonly providerId?: string
   readonly baseUrl: string
   readonly apiKey?: string
   /** Extra auth headers a real deployment needs (e.g. `anthropic-version`). */

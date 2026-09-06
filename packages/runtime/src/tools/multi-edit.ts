@@ -53,7 +53,7 @@ export function createMultiEditTool(workspace: string): Tool {
         const decision = policy.decidePath(abs)
         if (decision === "forbid") return denied(`denied by execpolicy: ${abs}`)
         if (decision === "prompt") {
-          const ok = await approve(policy, { id: randomUUID(), kind: "path", target: abs, decision: "prompt", reason: `multi_edit (${edits.length} edits)` })
+          const ok = await approve(policy, { id: randomUUID(), kind: "path", target: abs, decision: "prompt", reason: `multi_edit (${edits.length} edits)` }, ctx)
           if (!ok) return denied(`denied by execpolicy (prompt not approved): ${abs}`)
         }
         if (isLikelyBinary(abs)) return fail("refusing to edit a binary file")

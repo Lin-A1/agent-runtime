@@ -2,7 +2,7 @@ import { MemoryEventStore, MemorySessionInput, Session, SqliteEventStore, Sessio
 import { join, dirname } from "node:path"
 import type { AttachmentRef } from "@newhorse/schema"
 import { mkdir } from "node:fs/promises"
-import { makeLlmClient, type AdapterConfig, type Fetcher } from "@newhorse/llm"
+import { createAdapterRegistry, makeLlmClient, type AdapterConfig, type AdapterRegistry, type Fetcher } from "@newhorse/llm"
 import { PluginRegistry, discoverPlugin } from "@newhorse/plugin"
 import type { MemoryStore } from "@newhorse/memory"
 import { runMemoryExtraction } from "@newhorse/memory"
@@ -10,10 +10,11 @@ import { createEmbeddingProvider, type EmbeddingConfig } from "@newhorse/memory"
 import { createDefaultMemoryPipeline } from "./memory-pipeline"
 import { createButlerTools } from "./butler"
 import { createSessionHub } from "./hub"
+import { TerminalSession, createSharedTerminalTools } from "./terminal"
 import { driveChildSession, readChildText } from "./session-manager"
 import { resolveAgent, type AgentDefinition } from "./agent-resolver"
-import type { DagRunner } from "./dag-api"
-import { currentTodos, type TodoItem, type DAGSpec, compactSession, compactionTailChars } from "@newhorse/core"
+import { createDagRunner, type DagRunner } from "./dag-api"
+import { currentTodos, type TodoItem, type DAGSpec, compactSession, compactionTailChars, projectCompacted } from "@newhorse/core"
 import { currentGoal, type GoalState } from "@newhorse/core"
 import { createBuiltinTools, createExecPolicy, rulesFilePath } from "./tools"
 import { allowAllExecPolicy } from "@newhorse/core"
@@ -30,8 +31,13 @@ import type { ExecPolicy, ExecRule, ApprovalRequest } from "@newhorse/schema"
 export interface AppConfig {
   readonly provider: AdapterConfig
   readonly model: string
+  /** Optional executable provider registry. When omitted, the legacy adapter factory is used. */
+  readonly adapterRegistry?: AdapterRegistry
   readonly sessionId?: string
   readonly workspace?: string
+  /** Optional project grouping id — persisted on Session.Created so the registry
+   *  can fold + query sessions per project (issue #3/#4). */
+  readonly projectId?: string
   /** A plugin registry whose tools back the agent. Optional. */
   readonly plugins?: PluginRegistry
   /** A plugin directory to discover by convention (tools/agents/commands/
@@ -83,8 +89,8 @@ export interface AppConfig {
    * absent, a `prompt` resolves to `forbid` (fail-closed). */
   readonly onApprove?: (req: ApprovalRequest) => Promise<boolean>
   /** ask_user channel (approval hub's question half). Absent = the session is
-   * non-interactive and ask_user answers gracefully instead of hanging. */
-  readonly onAsk?: (req: { question: string; options?: readonly string[] }) => Promise<{ allow: boolean; reply?: string }>
+   *  non-interactive and ask_user answers gracefully instead of hanging. */
+  readonly onAsk?: (req: { question: string; options?: readonly string[]; sessionId?: string; promptId?: string; tool?: string; callId?: string }) => Promise<{ allow: boolean; reply?: string }>
   /**
    * Memory seam (Phase 4 reserve): when supplied, the memory tools
    * (memory_search / memory_write) are exposed. Absent = no memory tools.
@@ -172,7 +178,7 @@ export interface App {
    * `principal` marks who authored the prompt (user from a human TTY, else
    * butler/parent); it drives the caller kind for butler tools (M2b).
    */
-  readonly prompt: (text: string, principal?: "user" | "butler" | "parent", images?: readonly PromptImage[], opts?: { replace?: boolean }) => Promise<PromptResult>
+  readonly prompt: (text: string, principal?: "user" | "butler" | "parent", images?: readonly PromptImage[], opts?: { replace?: boolean; promptId?: string }) => Promise<PromptResult>
   /** Reconstruct the current session projection from the log. */
   readonly resume: () => Promise<Session>
   /** Query the session registry (observational control surface). */
@@ -185,9 +191,31 @@ export interface App {
    * boundary of the in-flight run (no-op if the session is idle). */
   readonly steer: (text: string) => Promise<void>
   /** Run a slash-command line ("/name arg1 arg2") against a plugin command
-   * capability (the seam's consumer). Returns the command's output, or undefined
-   * when the text is not a registered command. */
+   *  capability (the seam's consumer). Returns the command's output, or undefined
+   *  when the text is not a registered command. */
   readonly runCommand: (text: string) => Promise<unknown | undefined>
+  /** In-place rewind (user "回退"): removes every durable event past atSeq so the
+   *  session replays as if later turns never happened, and records the boundary
+   *  (Session.Truncated). Refuses out-of-range seqs. */
+  readonly truncate: (atSeq: number) => Promise<void>
+  /** Human-driven exec (workbench terminal): runs ONE command through the
+   *  session's OWN bash tool + exec policy + approval gate — the operator gets
+   *  a seat at the agent's console, never a bypass around it. */
+  readonly exec: (command: string, signal?: AbortSignal) => Promise<unknown>
+  /** Shared workbench terminal (human half): write a full command line or raw
+   *  keystrokes (e.g. ^C) into the SAME shell the agent's terminal_send/terminal_read
+   *  tools drive. */
+  readonly terminalWrite: (input: string, mode?: "command" | "raw") => void
+  /** Shared workbench terminal: incremental output + who ran what. */
+  readonly terminalRead: (since: number) => { cursor: number; text: string; alive: boolean; activity: Array<{ source: "human" | "agent"; text: string; ts: number }> }
+  /** Kill the shared terminal shell (session teardown). */
+  readonly terminalDispose: () => void
+  /** Switch this session's model (Session.ModelSet, durable — survives
+   *  re-attach). Takes effect on the NEXT prompt. */
+  readonly setModel: (model: string) => Promise<void>
+  /** Context composition breakdown (chars per bucket) for the workbench
+   *  context panel: system prompt vs conversation vs tool-surface cost. */
+  readonly contextBreakdown: () => Promise<{ systemPromptChars: number; messagesChars: number; builtinToolsChars: number; mcpToolsChars: number; otherChars: number }>
   /** Read the session's current todo list (durable fold — restart-safe). */
   readonly todos: () => Promise<TodoItem[]>
   /** Read the session's current goal + budget state (durable fold). */
@@ -287,7 +315,10 @@ export async function createApp(config: AppConfig): Promise<App> {
   // Content-addressed attachment store: only when the host provides a dataDir
   // (an ephemeral/no-disk embedding keeps the legacy inline-image path).
   const attachmentStore: AttachmentStore | undefined = config.dataDir ? createAttachmentStore(join(config.dataDir, "attachments", "v1")) : undefined
-  const llm = makeLlmClient(config.provider, config.fetch)
+  const adapterRegistry = config.adapterRegistry ?? createAdapterRegistry()
+  const llm = config.adapterRegistry
+    ? adapterRegistry.createClient(config.provider, config.fetch)
+    : makeLlmClient(config.provider, config.fetch)
   const runtime: TurnRuntime = { events, inbox, llm, ...(attachmentStore ? { attachments: attachmentStore } : {}) }
 
   const sessionId = config.sessionId ?? stableSessionId(config.workspace ?? process.cwd())
@@ -301,10 +332,14 @@ export async function createApp(config: AppConfig): Promise<App> {
   const asButler = config.asButler === true || (loggedCreated?.data as { role?: string } | undefined)?.role === "butler"
   const loggedPolicy = [...existing].reverse().find((e) => e.type === "Session.PolicyChanged")?.data as { to?: string } | undefined
   const restoredPolicy = loggedPolicy?.to === "strict" || loggedPolicy?.to === "readonly" || loggedPolicy?.to === "trusted" ? loggedPolicy.to : undefined
+  // Per-session model switch (Session.ModelSet): the log is authoritative — a
+  // user's model choice must survive re-attach/restart, like the policy above.
+  const loggedModel = [...existing].reverse().find((e) => e.type === "Session.ModelSet")?.data as { model?: string } | undefined
+  let activeModel = loggedModel?.model?.trim() ? loggedModel.model : config.model
   if (existing.length === 0) {
     // `role` marks the fixed session role (registry fold → client badge); only
     // emitted for butler so ordinary sessions keep the lean Created payload.
-    await events.append(sessionId, "Session.Created", { id: sessionId, location: config.workspace ?? process.cwd(), createdAt: Date.now(), ...(asButler ? { role: "butler" } : {}) })
+    await events.append(sessionId, "Session.Created", { id: sessionId, location: config.workspace ?? process.cwd(), createdAt: Date.now(), ...(config.projectId ? { projectId: config.projectId } : {}), ...(asButler ? { role: "butler" } : {}) })
   }
 
   const registry = new SessionRegistry(events)
@@ -391,6 +426,14 @@ export async function createApp(config: AppConfig): Promise<App> {
     ? []
     : [...explicitTools, ...pluginTools, ...builtin]
 
+  // Shared workbench terminal (human-machine co-operation seam): ONE persistent
+  // shell per session that the human (web terminal) and the agent
+  // (terminal_send/terminal_read tools) drive together. Available to EVERY
+  // session — never a butler privilege. The agent's commands ride the same
+  // exec-policy floor as bash.
+  const sharedTerminal = new TerminalSession(workspace)
+  if (tools.length > 0) tools.push(...createSharedTerminalTools(sharedTerminal))
+
   // Butler toolset (M2b): a signed set of privileged tools whose execute reads
   // ctx.caller + ctx.registry to authorize and audit each action.
   const appendAudit = async (entry: { actorKind: "user" | "butler" | "parent"; actorId: string; op: string; targetSessionId?: string; outcome: "allowed" | "denied"; reason?: string }): Promise<void> => {
@@ -435,7 +478,7 @@ export async function createApp(config: AppConfig): Promise<App> {
   // request_mode: the model's ONLY channel out of readonly/plan mode. It goes
   // through the SAME onApprove gate the transport installed — approval is the
   // host's decision, and only then does the policy actually change.
-  const requestModeTool: Tool = {
+    const requestModeTool: Tool = {
     name: "request_mode",
     sideEffects: false, // a request, not an execution — the gate decides
     description: "Request a change of the session approval policy (only meaningful in readonly/plan mode). Args: { target: \"strict\" | \"trusted\", reason } — the host approves or denies; on approval the policy changes for subsequent turns.",
@@ -447,12 +490,22 @@ export async function createApp(config: AppConfig): Promise<App> {
       },
       required: ["target", "reason"],
     },
-    execute: async (input: unknown) => {
+    execute: async (input: unknown, ctx?: import("@newhorse/core").ToolCtx) => {
       const { target, reason } = (input ?? {}) as { target?: string; reason?: string }
       if (target !== "strict" && target !== "trusted") return { error: 'target must be "strict" or "trusted"' }
       if (!reason) return { error: "reason is required" }
       const approved = config.onApprove
-        ? await config.onApprove({ id: crypto.randomUUID(), kind: "mode", target, decision: "prompt", reason })
+        ? await config.onApprove({
+            id: crypto.randomUUID(),
+            kind: "mode",
+            target,
+            decision: "prompt",
+            reason,
+            ...(ctx?.sessionId ? { sessionId: ctx.sessionId } : {}),
+            ...(ctx?.promptId ? { promptId: ctx.promptId } : {}),
+            ...(ctx?.toolName ? { tool: ctx.toolName } : {}),
+            ...(ctx?.toolCallId ? { callId: ctx.toolCallId } : {}),
+          })
         : false // no gate installed → the host was never asked → deny
       if (!approved) return { requested: target, granted: false, reason: "host denied the mode change" }
       // Inline the policy change (by: "model-approved"): currentPolicy is a
@@ -467,6 +520,8 @@ export async function createApp(config: AppConfig): Promise<App> {
       return { requested: target, granted: true, policy: target }
     },
   }
+  // `model` is read live from activeModel at each prompt (promptAgent spreads
+  // it per turn) so a Session.ModelSet switch takes effect on the NEXT turn.
   const agent: Agent = { id: "primary", model: config.model, tools: agentTools }
 
   // Agent definitions (Phase 4): pulled from the plugin seam (list("agent")) —
@@ -482,68 +537,108 @@ export async function createApp(config: AppConfig): Promise<App> {
   // synthetic result so the parent's next turn sees it. Without the driver
   // (non-butler) the hub is undefined.
   // DAG runner backing the butler's declare_dag: bound per declare to THIS
-  // session's todo list (todoSessionId) under its workspace. Absent = the
-  // tool reports unavailable; the HTTP /v1/dag routes stay the host-side path.
-  const dagRunner = config.dagRunner
+  // session's todo list (todoSessionId) under its workspace. A butler session
+  // MUST have a runner, and it MUST be over the SAME event store as the session
+  // — otherwise DAG children land in a separate aggregate scope and the butler's
+  // list_sessions / followup_task can never see them. A host may inject one, but
+  // when none is injected we build a default over this app's own `events`.
+  const dagRunner: DagRunner | undefined =
+    config.dagRunner ??
+    (asButler
+      ? createDagRunner({
+          events,
+          dataDir: config.dataDir ?? config.agentHome ?? process.cwd(),
+          getProvider: () => config.provider,
+          getDefaultModel: () => config.model,
+          getWorkspace: () => workspace,
+          enableBash: config.enableBash ?? false,
+          memoryStore: config.memoryStore,
+          skillsDir: config.pluginsDir,
+          // Thread the session's fetch so the node child uses the same (possibly
+          // injected/test) transport instead of the global one — otherwise a
+          // butler-declared DAG node would silently hit the network in tests.
+          ...(config.fetch ? { fetch: config.fetch } : {}),
+        })
+      : undefined)
+  // Shared child-driver body (Phase 3): the ONE code path that accepts a child
+  // prompt (spawn or resume) and drives it to a durable Settled boundary while
+  // promoting the result into the PARENT's inbox. Factored out of the spawn
+  // closure so `resume_agent` can re-drive a settled child through the same
+  // machinery instead of faking an `implemented:false`.
+  const runChild = async (childId: string, parentId: string, childWorkspace: string, model: string | undefined, prompt: string | undefined, agentName: string | undefined, registerLive: ((abort: () => void, admit: (text: string) => Promise<void>) => () => void) | undefined): Promise<void> => {
+    // Role overlay (Phase 4): a named agent from the plugin registry
+    // narrows tools + supplies a system body; else bare spawned agent.
+    // An UNKNOWN agent name fails loudly (a typo must not silently spawn
+    // a full-authority child with no body).
+    if (agentName && !agentDefinitions[agentName]) {
+      throw new Error(`unknown agent "${agentName}" (not registered in the plugin registry)`)
+    }
+    const agentDef = agentName ? agentDefinitions[agentName] : undefined
+    const resolved = resolveAgent(agentDef, { tools: agentTools, model: activeModel }, model)
+    // Tracks whether the durable Settled append already happened — the
+    // catch path must not append a second one (queryTask reads the first).
+    let settledDurable = false
+    try {
+      // Subagent lifecycle hooks (claude-code SubagentStart/Stop shape):
+      // observational, errors isolated by the hook runner itself.
+      void hookRunner?.("subagent-start", { childId, parentId, agent: agentName }).catch(() => {})
+      const driven = await driveChildSession({
+        runtime,
+        inbox,
+        events,
+        sessionId: childId,
+        workspace: childWorkspace,
+        agent: { id: resolved.id, model: resolved.model, tools: [...resolved.tools] },
+        tools: [...resolved.tools],
+        prompt: prompt ?? "You are a spawned agent working for your parent. Complete the task.",
+        parentId,
+        systemExtra: resolved.body,
+        registerLive,
+        contextProvider: config.contextProvider,
+      })
+      // Durable settle boundary (followup_task reads it) + promote the
+      // child's text into the parent's inbox as a steer so the parent's
+      // next turn can consume the result (result promotion).
+      await events.append(childId, "Session.Settled", { sessionId: childId, finish: driven.finish, needsContinuation: false })
+      settledDurable = true
+      void hookRunner?.("subagent-stop", { childId, parentId, finish: driven.finish }).catch(() => {})
+      if (driven.settled) {
+        await inbox.admit({ id: crypto.randomUUID(), sessionId: parentId, prompt: `[child ${childId} result]\n${driven.text}`, delivery: "steer", principal: "parent" })
+      } else {
+        // Interrupted: promote the failure marker so followup_task + the
+        // parent see a terminal state, not a forever-"running" zombie.
+        await inbox.admit({ id: crypto.randomUUID(), sessionId: parentId, prompt: `[child ${childId} interrupted]\n${driven.text}`, delivery: "steer", principal: "parent" })
+      }
+    } catch (err) {
+      // A rejected driver would otherwise leave the child un-setled
+      // (followup_task reports "running" forever) and the parent without
+      // any promotion. Surface it as a durable failure on both ends —
+      // but never double-append Settled when the success path already did.
+      const message = err instanceof Error ? err.message : String(err)
+      if (!settledDurable) await events.append(childId, "Session.Settled", { sessionId: childId, finish: "error", needsContinuation: false })
+      await inbox.admit({ id: crypto.randomUUID(), sessionId: parentId, prompt: `[child ${childId} failed]\n${message}`, delivery: "steer", principal: "parent" })
+    }
+  }
+  // Resume re-drives an EXISTING child: resolution of its parent/workspace/model
+  // comes from its durable log (Session.Created + Session.Spawned), not from new
+  // spawn args — so resuming a child created by another path stays correct.
+  const resumeChild = async (childId: string, prompt: string, registerLive: ((abort: () => void, admit: (text: string) => Promise<void>) => () => void) | undefined): Promise<void> => {
+    const log = await events.read(childId)
+    const created = log.find((e) => e.type === "Session.Created")
+    const spawned = log.find((e) => e.type === "Session.Spawned")
+    const createdData = (created?.data ?? {}) as { location?: string; role?: string }
+    const spawnedData = (spawned?.data ?? {}) as { parentId?: string }
+    const parentId = spawnedData.parentId ?? "user"
+    const childWorkspace = createdData.location ?? workspace ?? process.cwd()
+    await runChild(childId, parentId, childWorkspace, undefined, prompt, undefined, registerLive)
+  }
   const hub = asButler
     ? createSessionHub(
         events,
         () => ({ interrupt: () => {}, prompt: async () => "" }),
         workspace,
-        async (childId, parentId, childWorkspace, model, prompt, agentName, registerLive) => {
-          // Role overlay (Phase 4): a named agent from the plugin registry
-          // narrows tools + supplies a system body; else bare spawned agent.
-          // An UNKNOWN agent name fails loudly (a typo must not silently spawn
-          // a full-authority child with no body).
-          if (agentName && !agentDefinitions[agentName]) {
-            throw new Error(`unknown agent "${agentName}" (not registered in the plugin registry)`)
-          }
-          const agentDef = agentName ? agentDefinitions[agentName] : undefined
-          const resolved = resolveAgent(agentDef, { tools: agentTools, model: config.model }, model)
-          // Tracks whether the durable Settled append already happened — the
-          // catch path must not append a second one (queryTask reads the first).
-          let settledDurable = false
-          try {
-            // Subagent lifecycle hooks (claude-code SubagentStart/Stop shape):
-            // observational, errors isolated by the hook runner itself.
-            void hookRunner?.("subagent-start", { childId, parentId, agent: agentName }).catch(() => {})
-            const driven = await driveChildSession({
-              runtime,
-              inbox,
-              events,
-              sessionId: childId,
-              workspace: childWorkspace,
-              agent: { id: resolved.id, model: resolved.model, tools: [...resolved.tools] },
-              tools: [...resolved.tools],
-              prompt: prompt ?? "You are a spawned agent working for your parent. Complete the task.",
-              parentId,
-              systemExtra: resolved.body,
-              registerLive,
-              contextProvider: config.contextProvider,
-            })
-            // Durable settle boundary (followup_task reads it) + promote the
-            // child's text into the parent's inbox as a steer so the parent's
-            // next turn can consume the result (result promotion).
-            await events.append(childId, "Session.Settled", { sessionId: childId, finish: driven.finish, needsContinuation: false })
-            settledDurable = true
-            void hookRunner?.("subagent-stop", { childId, parentId, finish: driven.finish }).catch(() => {})
-            if (driven.settled) {
-              await inbox.admit({ id: crypto.randomUUID(), sessionId: parentId, prompt: `[child ${childId} result]\n${driven.text}`, delivery: "steer", principal: "parent" })
-            } else {
-              // Interrupted: promote the failure marker so followup_task + the
-              // parent see a terminal state, not a forever-"running" zombie.
-              await inbox.admit({ id: crypto.randomUUID(), sessionId: parentId, prompt: `[child ${childId} interrupted]\n${driven.text}`, delivery: "steer", principal: "parent" })
-            }
-          } catch (err) {
-            // A rejected driver would otherwise leave the child un-setled
-            // (followup_task reports "running" forever) and the parent without
-            // any promotion. Surface it as a durable failure on both ends —
-            // but never double-append Settled when the success path already did.
-            const message = err instanceof Error ? err.message : String(err)
-            if (!settledDurable) await events.append(childId, "Session.Settled", { sessionId: childId, finish: "error", needsContinuation: false })
-            await inbox.admit({ id: crypto.randomUUID(), sessionId: parentId, prompt: `[child ${childId} failed]\n${message}`, delivery: "steer", principal: "parent" })
-          }
-        },
+        (childId, parentId, childWorkspace, model, prompt, agentName, registerLive) => runChild(childId, parentId, childWorkspace, model, prompt, agentName, registerLive),
+        resumeChild,
       )
     : undefined
 
@@ -633,11 +728,14 @@ export async function createApp(config: AppConfig): Promise<App> {
   // Model-io trace: every LLM call this session makes is appended as a durable
   // Session.ModelCalled event (source-tagged), so /events + usage folding see
   // the full call surface. Bodies are never logged — counts and metadata only.
+  // providerId records the registry identity (explicit profile wins over kind)
+  // so usage accounting stays honest when multiple profiles share a kind.
+  const providerId = config.provider.providerId ?? config.provider.kind
   const traceModelCall = async (
     source: "turn" | "compaction" | "extraction",
     info: { model: string; durationMs: number; finish?: string; usage?: unknown; promptChars: number; outputChars: number; error?: string },
   ): Promise<void> => {
-    await events.append(sessionId, "Session.ModelCalled", { sessionId, source, ...info, ts: Date.now() } as Record<string, unknown>)
+    await events.append(sessionId, "Session.ModelCalled", { sessionId, source, providerId, ...info, ts: Date.now() } as Record<string, unknown>)
   }
 
   // Compaction summarizer (shared by the loop's auto path and the manual
@@ -668,7 +766,7 @@ export async function createApp(config: AppConfig): Promise<App> {
    *  prompt() is the admitting caller; compact() uses this to wake steers
    *  parked during a fold. inFlight lifecycle is owned by the CALLER (this
    *  path clears only the live registration + current controller). */
-  const runDrain = async (principal: "user" | "butler" | "parent"): Promise<PromptResult> => {
+  const runDrain = async (principal: "user" | "butler" | "parent", promptId?: string): Promise<PromptResult> => {
     // A fresh abort controller per run, so interrupt() cancels only this
     // run and a later prompt is unaffected (an AbortSignal cannot be reset).
     const ctrl = new AbortController()
@@ -687,6 +785,7 @@ export async function createApp(config: AppConfig): Promise<App> {
     // the CLI prints a text line. Failure results never present. The maps
     // fill per prompt (liveSurface is rebuilt each drain).
     const presentsByTool = new Map<string, NonNullable<Tool["presents"]>>()
+    // `callId` is the only safe key when parallel calls share a tool name.
     const lastToolInput = new Map<string, unknown>()
     const appendPanel = async (p: NonNullable<Tool["presents"]>, input: unknown, output: unknown): Promise<void> => {
       const panelId = crypto.randomUUID()
@@ -696,10 +795,10 @@ export async function createApp(config: AppConfig): Promise<App> {
       emit({ type: "panel", panelId, kind: p.kind, title, payload })
     }
     const onLoopEvent = (ev: AppEvent): void => {
-      if (ev.type === "tool") lastToolInput.set(ev.name, ev.input)
+      if (ev.type === "tool") lastToolInput.set(ev.callId, ev.input)
       else if (ev.type === "tool-result" && !ev.isError) {
         const p = presentsByTool.get(ev.name)
-        if (p) void appendPanel(p, lastToolInput.get(ev.name), ev.output).catch(() => {})
+        if (p) void appendPanel(p, lastToolInput.get(ev.callId), ev.output).catch(() => {})
       }
       emit(ev)
     }
@@ -713,7 +812,7 @@ export async function createApp(config: AppConfig): Promise<App> {
       presentsByTool.clear()
       for (const t of liveSurface) if (t.presents) presentsByTool.set(t.name, t.presents)
       lastToolInput.clear()
-      const promptAgent: Agent = { ...agent, tools: liveSurface }
+      const promptAgent: Agent = { ...agent, model: activeModel, tools: liveSurface }
       const result = await runSession(runtime, {
         agent: promptAgent,
         sessionId,
@@ -721,6 +820,7 @@ export async function createApp(config: AppConfig): Promise<App> {
         onEvent: onLoopEvent,
         signal: ctrl.signal,
         caller,
+        ...(promptId ? { promptId } : {}),
         runHooks: hookRunner,
         contextWindowTokens: config.contextWindowTokens,
         maxOutputTokens: config.maxOutputTokens,
@@ -734,6 +834,9 @@ export async function createApp(config: AppConfig): Promise<App> {
           appendAudit,
           interruptTarget: hub.interrupt,
           sendToTarget: hub.send,
+          archiveTarget: (sessionId, archived = true) =>
+            events.append(sessionId, "Session.Archived", { sessionId, archived, ts: Date.now() }).then(() => ({ implemented: true, sessionId })),
+          resumeTarget: hub.resume,
           spawnFrom: hub.spawn,
           setPolicy: (p) => app.setPolicy(p, "model"),
           ...(config.onAsk ? { askUser: config.onAsk } : {}),
@@ -797,7 +900,7 @@ export async function createApp(config: AppConfig): Promise<App> {
     events,
     ...(attachmentStore ? { attachments: attachmentStore } : {}),
     onEvent,
-    async prompt(text: string, principal?: "user" | "butler" | "parent", images?: readonly PromptImage[], opts?: { replace?: boolean }): Promise<PromptResult> {
+    async prompt(text: string, principal?: "user" | "butler" | "parent", images?: readonly PromptImage[], opts?: { replace?: boolean; promptId?: string }): Promise<PromptResult> {
       // Task replacement (codex TurnAbortReason::Replaced semantics): with
       // replace:true a live run is aborted and DRAINED before the new prompt
       // admits — the new prompt owns the session cleanly instead of queueing
@@ -820,6 +923,7 @@ export async function createApp(config: AppConfig): Promise<App> {
       if (inFlight) throw new Error("session busy")
       inFlight = true
       const effPrincipal = principal ?? (asButler ? "butler" : "parent")
+      const admittedPromptId = opts?.promptId ?? crypto.randomUUID()
       try {
         // Ambient workspace AGENTS.md is a Context Source: discovered from the
         // session location and admitted as model-visible context BEFORE the prompt,
@@ -846,7 +950,7 @@ export async function createApp(config: AppConfig): Promise<App> {
           admittedAttachments = prepared.attachments
         }
         await inbox.admit({
-          id: crypto.randomUUID(),
+          id: admittedPromptId,
           sessionId,
           prompt: promptText,
           delivery: "steer",
@@ -862,7 +966,7 @@ export async function createApp(config: AppConfig): Promise<App> {
       // The drain drives the turn loop over the inbox (runDrain owns ctrl +
       // live registration; prompt owns inFlight).
       try {
-        return await runDrain(effPrincipal)
+        return await runDrain(effPrincipal, admittedPromptId)
       } finally {
         inFlight = false
       }
@@ -905,6 +1009,57 @@ export async function createApp(config: AppConfig): Promise<App> {
     interrupt() {
       current?.abort()
       void hookRunner?.("interrupt", { sessionId }).catch(() => {})
+    },
+    async exec(command, signal) {
+      const bash = agentTools.find((t) => t.name === "bash")
+      if (!bash) return { error: "bash unavailable — the session was created with bash off" }
+      const ctx = {
+        caller: { kind: "parent" as const, sessionId },
+        sessionId,
+        toolName: "bash",
+        execPolicy: currentPolicy === "trusted" ? allowAllExecPolicy : execPolicySession,
+      }
+      return bash.execute({ command }, { ...ctx, ...(signal ? { signal } : {}) })
+    },
+    terminalWrite(input, mode = "command") {
+      // A full command line gets the same treatment on both sides of the glass;
+      // raw mode passes keystrokes (^C, REPL input) straight into the shell.
+      if (mode === "raw") sharedTerminal.humanWrite(input)
+      else sharedTerminal.humanSend(input)
+    },
+    terminalRead(since) {
+      const r = sharedTerminal.read(Math.max(0, Math.floor(since)))
+      return { cursor: r.cursor, text: r.text, alive: r.alive, activity: sharedTerminal.activity() }
+    },
+    terminalDispose() {
+      sharedTerminal.dispose()
+    },
+    async setModel(model) {
+      const trimmed = model.trim()
+      if (!trimmed) throw new Error("model is required")
+      activeModel = trimmed
+      await events.append(sessionId, "Session.ModelSet", { sessionId, model: trimmed, ts: Date.now() })
+    },
+    async contextBreakdown() {
+      // Char-based buckets (the client converts to token estimates with the
+      // same chars-per-token as the loop): system prompt vs conversation vs
+      // the tool surface the model must carry every turn (builtin vs MCP).
+      const { messages: projected } = projectCompacted(await events.read(sessionId))
+      let systemPromptChars = 0
+      let messagesChars = 0
+      for (const m of projected) {
+        const size = JSON.stringify(m).length
+        if (m.kind === "system") systemPromptChars += size
+        else messagesChars += size
+      }
+      let builtinToolsChars = 0
+      let mcpToolsChars = 0
+      for (const t of agentTools) {
+        const size = JSON.stringify({ name: t.name, description: t.description ?? "", parameters: t.inputSchema ?? {} }).length
+        if (t.name.startsWith("mcp__") || t.name.startsWith("mcp_")) mcpToolsChars += size
+        else builtinToolsChars += size
+      }
+      return { systemPromptChars, messagesChars, builtinToolsChars, mcpToolsChars, otherChars: 0 }
     },
     async steer(text) {
       // An IDLE session never promotes on its own — the drain IS the promoter —
@@ -960,6 +1115,18 @@ export async function createApp(config: AppConfig): Promise<App> {
       const argText = rawArgs
       if (typeof output === "string" && output.includes("$ARGUMENTS")) return output.replaceAll("$ARGUMENTS", argText)
       return output
+    },
+    async truncate(atSeq) {
+      // In-place rewind: refuse a non-integer boundary; a no-op past the log is
+      // harmless (truncate removes nothing, the boundary event is still a fact).
+      if (!Number.isInteger(atSeq) || atSeq < 0) throw new Error(`invalid truncate boundary: ${atSeq}`)
+      // The current head — a rewind beyond it is a no-op, but a rewind to a
+      // negative seq would delete Session.Created and orphan the aggregate.
+      const latest = await events.latestSeq(sessionId)
+      const boundary = Math.min(atSeq, latest)
+      if (boundary < 0) throw new Error("cannot truncate before session creation")
+      await events.truncate(sessionId, boundary)
+      await events.append(sessionId, "Session.Truncated", { sessionId, atSeq: boundary, by: "host", ts: Date.now() })
     },
   }
 

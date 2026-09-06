@@ -98,4 +98,41 @@ describe("sqlite event store", () => {
       await rm(path, { force: true }).catch(() => {})
     }
   })
+
+  it("truncate removes events past atSeq and the next append allocates atSeq+1 (no seq reuse)", async () => {
+    const path = tmpDb()
+    try {
+      const db = new Database(path)
+      const store = new SqliteEventStore(db)
+      for (let i = 0; i < 5; i++) await store.append("s1", "E", { i })
+      expect((await store.read("s1")).length).toBe(5)
+      // Rewind to seq 2: events 3,4 are removed.
+      await store.truncate("s1", 2)
+      const remaining = await store.read("s1")
+      expect(remaining.map((e) => e.seq)).toEqual([0, 1, 2])
+      expect(await store.latestSeq("s1")).toBe(2)
+      // The next append must allocate seq = 3 (never reuse a surviving/existing seq),
+      // and appends continue past it.
+      const next = await store.append("s1", "E", { i: 9 })
+      expect(next.seq).toBe(3)
+      expect((await store.read("s1")).map((e) => e.seq)).toEqual([0, 1, 2, 3])
+      // Truncating at a boundary beyond the log is a no-op (no throw).
+      await store.truncate("s1", 99)
+      expect((await store.read("s1")).length).toBe(4)
+      db.close()
+    } finally {
+      await rm(path, { force: true }).catch(() => {})
+    }
+  })
+
+  it("memory store truncate matches the sqlite contract", async () => {
+    const { MemoryEventStore } = await import("./store")
+    const store = new MemoryEventStore()
+    for (let i = 0; i < 4; i++) await store.append("s1", "E", { i })
+    await store.truncate("s1", 1)
+    expect((await store.read("s1")).map((e) => e.seq)).toEqual([0, 1])
+    expect(await store.latestSeq("s1")).toBe(1)
+    const next = await store.append("s1", "E", { i: 9 })
+    expect(next.seq).toBe(2)
+  })
 })

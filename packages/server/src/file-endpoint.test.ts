@@ -112,6 +112,58 @@ describe("GET /v1/models/catalog", () => {
   })
 })
 
+describe("GET /v1/providers (redacted provider view)", () => {
+  it("returns provider profiles and presence flags without secrets", async () => {
+    const ws = await mkdtemp(join(tmpdir(), "nh-ws-"))
+    try {
+      const settingsWithProfiles = {
+        ...fakeSettings(ws).get(),
+        activeProviderId: "gw",
+        providers: [
+          { id: "gw", name: "Gateway", kind: "openai-compatible", baseUrl: "https://gw.example", apiKey: "super-secret-key", model: "m-1" },
+          { id: "direct", name: "Direct", kind: "anthropic", baseUrl: "https://a.example" },
+        ],
+        model: "m-1",
+      }
+      const handle = await createServer({
+        port: 0,
+        sessionConfig: () => ({ provider, model: "m" }),
+        settings: {
+          get: () => settingsWithProfiles as unknown as ReturnType<SettingsController["get"]>,
+          write: async (patch) => patch as unknown as ReturnType<SettingsController["get"]>,
+        },
+      })
+      const res = await fetch(`${handle.baseUrl}/v1/providers`)
+      expect(res.status).toBe(200)
+      const body = await res.json() as {
+        activeProviderId?: string
+        providers: Array<{ id: string; hasApiKey: boolean; apiKey?: string; apiKeyHint?: string }>
+        provider: { kind: string; apiKey?: string }
+      }
+      expect(body.activeProviderId).toBe("gw")
+      const gw = body.providers.find((p) => p.id === "gw")!
+      expect(gw.hasApiKey).toBe(true)
+      expect(gw.apiKey).toBeUndefined()
+      if ("apiKeyHint" in gw) expect(String(gw.apiKeyHint)).not.toContain("super-secret")
+      const direct = body.providers.find((p) => p.id === "direct")!
+      expect(direct.hasApiKey).toBe(false)
+      expect(body.provider.apiKey).toBeUndefined()
+      const raw = JSON.stringify(body)
+      expect(raw).not.toContain("super-secret-key")
+      await handle.stop()
+    } finally {
+      await rm(ws, { recursive: true, force: true })
+    }
+  })
+
+  it("404s when no settings controller is configured", async () => {
+    const handle = await createServer({ port: 0, sessionConfig: () => ({ provider, model: "m" }) })
+    const res = await fetch(`${handle.baseUrl}/v1/providers`)
+    expect(res.status).toBe(404)
+    await handle.stop()
+  })
+})
+
 describe("POST /v1/channel/:id/inbound", () => {
   const payload = [
     'data: ' + JSON.stringify({ choices: [{ delta: { role: "assistant", content: "channel says hi" }, finish_reason: "stop" }] }) + '\n\n',

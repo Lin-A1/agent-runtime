@@ -36,6 +36,11 @@ export interface SessionHub {
   send(sessionId: string, content: string): Promise<HubResult>
   /** Spawn a child session; returns the new session id. */
   spawn(parentId: string, model?: string, prompt?: string, agentName?: string): Promise<string>
+  /** True re-drive of a settled target (resume_agent analog): re-admits the
+   *  prompt and drives the child to settlement. Returns { implemented:false }
+   *  with a reason when the target is not live / no driver is bound, so the
+   *  tool never fakes a resume that did not happen. */
+  resume(sessionId: string, prompt: string): Promise<HubResult & { reason?: string }>
 }
 
 /**
@@ -46,8 +51,13 @@ export interface SessionHub {
  */
 export type ChildDriver = (childId: string, parentId: string, parentWorkspace: string, model?: string, prompt?: string, agentName?: string, registerLive?: (abort: () => void, admit: (text: string) => Promise<void>) => () => void) => Promise<void>
 
+/** Re-drive a settled target (resume_agent). The owner binds a driver closure
+ *  that re-runs the child's turn loop for an existing, already-created child.
+ *  `registerLive` lets the resumed child be interruptible/sendable mid-run. */
+export type ResumeDriver = (childId: string, prompt: string, registerLive?: (abort: () => void, admit: (text: string) => Promise<void>) => () => void) => Promise<void>
+
 /** In-memory hub over a shared event store. Sessions are created lazily. */
-export function createSessionHub(events: EventStore, _open: (sessionId: string) => { interrupt(): void; prompt: (text: string) => Promise<unknown> }, workspace?: string, driver?: ChildDriver): SessionHub {
+export function createSessionHub(events: EventStore, _open: (sessionId: string) => { interrupt(): void; prompt: (text: string) => Promise<unknown> }, workspace?: string, driver?: ChildDriver, resumeDriver?: ResumeDriver): SessionHub {
   const sessions = new Set<string>()
   const live = new Map<string, RegisterHandle>()
   /** Register a live session handle; returns an identity-guarded unregister. */
@@ -74,6 +84,20 @@ export function createSessionHub(events: EventStore, _open: (sessionId: string) 
       if (!h) return { implemented: false, pending: true, sessionId }
       await h.admit(content)
       return { implemented: true, sessionId }
+    },
+    async resume(sessionId: string, content: string) {
+      // A live target: re-admit (steer) into its inbox.
+      const h = live.get(sessionId)
+      if (h) {
+        await h.admit(content)
+        return { implemented: true, pending: true, sessionId }
+      }
+      // Settled / not-live: only a bound resume driver can truly re-drive it.
+      if (!resumeDriver) {
+        return { implemented: false, pending: false, sessionId, reason: "no resume driver bound (settled target cannot be re-driven)" }
+      }
+      await resumeDriver(sessionId, content, (abort, admit) => doRegister(sessionId, { abort, admit }))
+      return { implemented: true, pending: true, sessionId }
     },
     async spawn(parentId: string, model?: string, prompt?: string, agentName?: string) {
       const id = crypto.randomUUID()

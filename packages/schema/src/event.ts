@@ -63,6 +63,8 @@ export type SessionEvent =
   | SessionEventBase<"Session.GoalUpdated", { readonly sessionId: string; readonly objective: string; readonly status: "active" | "paused" | "blocked" | "complete"; readonly tokenBudget?: number; readonly ts: number }>
   | SessionEventBase<"Session.TitleSet", { readonly sessionId: string; readonly title: string; readonly ts: number }>
   | SessionEventBase<"Session.Archived", { readonly sessionId: string; readonly archived: boolean; readonly ts: number }>
+  | SessionEventBase<"Session.Truncated", { readonly sessionId: string; readonly atSeq: number; readonly by: "host" | "model"; readonly ts: number }>
+  | SessionEventBase<"Session.ModelSet", { readonly sessionId: string; readonly model: string; readonly ts: number }>
   | SessionEventBase<"Session.ButlerAction", { readonly sessionId: string; readonly actorKind: "user" | "butler" | "parent"; readonly actorId: string; readonly op: string; readonly targetSessionId?: string; readonly outcome: "allowed" | "denied"; readonly reason?: string; readonly ts: number }>
   | SessionEventBase<"Session.ExecDecision", { readonly sessionId: string; readonly kind: "command" | "path"; readonly action: string; readonly decision: "prompt" | "forbid"; readonly reason?: string; readonly requestId?: string; readonly ts: number }>
 

@@ -312,33 +312,155 @@ describe("butler authority", () => {
     )).rejects.toThrow("cycle detected")
   })
 
-  it("resume_agent and close_agent audit and delegate through ToolCtx", async () => {
+  it("declare_dag preflights a malformed graph before returning a phantom dagId", async () => {
+    const { tools } = await setup()
+    const declare = tools.find((t) => t.name === "declare_dag")!
+    let called = false
+    const ctxWith = ctx({ kind: "butler", sessionId: butlerSession }, {
+      declareDag: async () => { called = true; return { dagId: "dag-x" } },
+      appendAudit: async () => {},
+    })
+    // A self-dep must fail synchronously BEFORE the runner fires (fire-and-forget
+    // would otherwise return dagId and only fail later, after the model saw success).
+    await expect(declare.execute({ spec: { nodes: { A: { input: "x", agent: { name: "a" }, dependsOn: ["A"] } } } }, ctxWith)).rejects.toThrow(/self-dep/)
+    expect(called).toBe(false)
+  })
+
+  it("resume_agent uses the resume seam (true re-drive) and audits", async () => {
     const { tools, audits, registry, events } = await setup()
-    // Prepare a direct child session
     const childId = "c-target"
     await events.append(childId, "Session.Created", { id: childId, location: "/c", createdAt: Date.now() })
     await events.append(childId, "Session.Spawned", { sessionId: childId, parentId: "b1" })
 
     const resume = tools.find((t) => t.name === "resume_agent")!
-    const close = tools.find((t) => t.name === "close_agent")!
+    let resumed = ""
+    const parentCtx = ctx({ kind: "parent", sessionId: "b1" }, {
+      registry,
+      // A settled child is unregistered in the live hub, so resume MUST go
+      // through the resume seam (re-admit + re-drive), not sendToTarget.
+      resumeTarget: async (id, text) => { resumed = `${id}:${text}`; return { implemented: true, pending: true } },
+      sendToTarget: async () => { throw new Error("sendToTarget must not be used for a settled resume") },
+    })
 
-    let sent = ""
+    const rRes = await resume.execute({ taskId: childId, prompt: "continue work" }, parentCtx) as { authorization: string; resumed: boolean }
+    expect(rRes.authorization).toBe("allowed")
+    expect(rRes.resumed).toBe(true)
+    expect(resumed).toBe("c-target:continue work")
+    expect(audits.some((a) => a.op === "resume_agent" && a.targetSessionId === childId)).toBe(true)
+  })
+
+  it("resume_agent reports honestly when no resume seam is bound", async () => {
+    const { tools, registry, events } = await setup()
+    const childId = "c-target"
+    await events.append(childId, "Session.Created", { id: childId, location: "/c", createdAt: Date.now() })
+    await events.append(childId, "Session.Spawned", { sessionId: childId, parentId: "b1" })
+
+    const resume = tools.find((t) => t.name === "resume_agent")!
+    const res = await resume.execute(
+      { taskId: childId, prompt: "continue work" },
+      ctx({ kind: "parent", sessionId: "b1" }, { registry }),
+    ) as { authorization: string; resumed: boolean; implemented: boolean }
+    // No resume seam -> never fake a resume.
+    expect(res.authorization).toBe("allowed")
+    expect(res.resumed).toBe(false)
+    expect(res.implemented).toBe(false)
+  })
+
+  it("close_agent persists the archived flag through the archive seam and audits", async () => {
+    const { tools, audits, registry, events } = await setup()
+    const childId = "c-target"
+    await events.append(childId, "Session.Created", { id: childId, location: "/c", createdAt: Date.now() })
+    await events.append(childId, "Session.Spawned", { sessionId: childId, parentId: "b1" })
+
+    const close = tools.find((t) => t.name === "close_agent")!
+    let archivedId = ""
     let interrupted = ""
     const parentCtx = ctx({ kind: "parent", sessionId: "b1" }, {
       registry,
-      sendToTarget: async (id, text) => { sent = `${id}:${text}`; return { implemented: true, pending: true } },
       interruptTarget: async (id) => { interrupted = id; return { implemented: true, pending: false } },
+      // The archive seam must persist the durable flag so list_sessions reflects it.
+      archiveTarget: async (id, archived) => { archivedId = `${id}:${archived}`; return { implemented: true, sessionId: id } },
     })
 
-    const rRes = await resume.execute({ taskId: childId, prompt: "continue work" }, parentCtx) as { authorization: string }
-    expect(rRes.authorization).toBe("allowed")
-    expect(sent).toBe("c-target:continue work")
-    expect(audits.some((a) => a.op === "resume_agent" && a.targetSessionId === childId)).toBe(true)
-
-    const cRes = await close.execute({ taskId: childId }, parentCtx) as { authorization: string; closed: boolean }
+    const cRes = await close.execute({ taskId: childId }, parentCtx) as { authorization: string; closed: boolean; implemented: boolean }
     expect(cRes.authorization).toBe("allowed")
     expect(cRes.closed).toBe(true)
+    expect(cRes.implemented).toBe(true)
     expect(interrupted).toBe("c-target")
+    expect(archivedId).toBe("c-target:true")
     expect(audits.some((a) => a.op === "close_agent" && a.targetSessionId === childId)).toBe(true)
+  })
+
+  it("close_agent reports not-closed when no archive seam is bound", async () => {
+    const { tools, registry, events } = await setup()
+    const childId = "c-target"
+    await events.append(childId, "Session.Created", { id: childId, location: "/c", createdAt: Date.now() })
+    await events.append(childId, "Session.Spawned", { sessionId: childId, parentId: "b1" })
+
+    const close = tools.find((t) => t.name === "close_agent")!
+    const res = await close.execute({ taskId: childId }, ctx({ kind: "parent", sessionId: "b1" }, { registry })) as { authorization: string; closed: boolean; implemented: boolean }
+    // No archive seam -> the close did not actually happen; report it.
+    expect(res.authorization).toBe("allowed")
+    expect(res.closed).toBe(false)
+    expect(res.implemented).toBe(false)
+  })
+
+  it("full chain: close_agent writes Session.Archived and list_sessions folds archived:true", async () => {
+    // The user-reported break: closed:true returned, but list_sessions kept
+    // showing archived:false. This exercises the REAL seam (archiveTarget
+    // appends to the same event store the registry folds) end to end.
+    const { tools, registry, events } = await setup()
+    const childId = "c-target"
+    await events.append(childId, "Session.Created", { id: childId, location: "/c", createdAt: Date.now() })
+    await events.append(childId, "Session.Spawned", { sessionId: childId, parentId: "b1" })
+
+    const close = tools.find((t) => t.name === "close_agent")!
+    const list = tools.find((t) => t.name === "list_sessions")!
+
+    const parentCtx = ctx({ kind: "parent", sessionId: "b1" }, {
+      registry,
+      interruptTarget: async () => ({ implemented: true }),
+      // The REAL archive effect, exactly as app.ts wires it: append the
+      // Session.Archived event to the shared store.
+      archiveTarget: (id, archived = true) =>
+        events.append(id, "Session.Archived", { sessionId: id, archived, ts: Date.now() }).then(() => ({ implemented: true, sessionId: id })),
+    })
+
+    const before = await list.execute({}, ctx({ kind: "parent", sessionId: "b1" }, { registry })) as Array<{ sessionId: string; archived?: boolean }>
+    expect(before.find((r) => r.sessionId === childId)?.archived).toBe(false)
+
+    const res = await close.execute({ taskId: childId }, parentCtx) as { closed: boolean; implemented: boolean }
+    expect(res.closed).toBe(true)
+    expect(res.implemented).toBe(true)
+
+    const after = await list.execute({}, ctx({ kind: "parent", sessionId: "b1" }, { registry })) as Array<{ sessionId: string; archived?: boolean }>
+    expect(after.find((r) => r.sessionId === childId)?.archived).toBe(true)
+    // Repeated close stays idempotent and still archived.
+    await close.execute({ taskId: childId }, parentCtx)
+    const again = await list.execute({}, ctx({ kind: "parent", sessionId: "b1" }, { registry })) as Array<{ sessionId: string; archived?: boolean }>
+    expect(again.find((r) => r.sessionId === childId)?.archived).toBe(true)
+  })
+
+  it("followup_task denies a non-child parent observing a foreign child (read guard)", async () => {
+    const { tools, registry, events } = await setup()
+    const foreign = "f-target"
+    // A session NOT owned by p1.
+    await events.append(foreign, "Session.Created", { id: foreign, location: "/c", createdAt: Date.now() })
+    await events.append(foreign, "Session.Spawned", { sessionId: foreign, parentId: "someone-else" })
+
+    const followup = tools.find((t) => t.name === "followup_task")!
+    // p1 is NOT the parent -> denied even though the task resolves.
+    await expect(followup.execute({ taskId: foreign }, ctx({ kind: "parent", sessionId: "p1" }, { registry }))).rejects.toThrow(/denied/)
+  })
+
+  it("followup_task reports an honest unknown for a task that does not exist", async () => {
+    const { tools } = await setup()
+    const followup = tools.find((t) => t.name === "followup_task")!
+    const res = await followup.execute(
+      { taskId: "ghost" },
+      ctx({ kind: "parent", sessionId: "p1" }, { queryTask: async () => ({ state: "unknown" }) }),
+    ) as { state: string }
+    // Unknown task is an observation, not a hard deny.
+    expect(res.state).toBe("unknown")
   })
 })

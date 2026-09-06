@@ -1,5 +1,6 @@
 import type { Initiator, Tool, ToolCtx, SessionRow } from "@newhorse/core"
 import type { SessionRegistry } from "@newhorse/core"
+import { validate as validateDag, type DAGSpec } from "@newhorse/core"
 
 /**
  * Butler tools (M2b). These are ordinary `Tool`s whose `execute` receives a
@@ -60,6 +61,33 @@ function requireCtx(ctx?: ToolCtx): ToolCtx {
   return ctx
 }
 
+/**
+ * Read-guard for observation tools (followup_task / wait_agent): unlike
+ * `guarded` (which denies an UNKNOWN target because a send/interrupt needs a
+ * real session), a read of a task that simply is not in this process must
+ * return the caller an honest "unknown" state rather than a hard deny. So the
+ * direct-child ownership check only bites when the target RESOLVES to a real
+ * session the caller does not own. Appends a deny audit for a real breach.
+ */
+async function guardRead(
+  deps: ButlerDeps,
+  ctx: ToolCtx,
+  op: string,
+  targetId: string,
+  authorize: (caller: Initiator, target: SessionRow) => Decision,
+  run: () => Promise<unknown>,
+): Promise<unknown> {
+  const actorId = ctx.sessionId ?? (ctx.caller.kind === "user" ? "user" : ctx.caller.sessionId)
+  await deps.registry.refresh()
+  const target = await deps.registry.get(targetId)
+  // Unknown task: an honest "unknown" observation, not a denial.
+  if (!target) return run()
+  const decision = authorize(ctx.caller, target)
+  await deps.appendAudit({ actorKind: ctx.caller.kind, actorId, op, targetSessionId: targetId, outcome: decision.allowed ? "allowed" : "denied", reason: decision.reason })
+  if (!decision.allowed) throw new Error(`denied: ${decision.reason ?? "unknown target"}`)
+  return run()
+}
+
 /** Clamp a number into [lo, hi]; a non-finite input falls to lo (never NaN). */
 function clamp(n: number, lo: number, hi: number): number {
   if (!Number.isFinite(n) || n < lo) return lo
@@ -87,39 +115,76 @@ export function createButlerTools(deps: ButlerDeps): Tool[] {
       name: "followup_task",
       sideEffects: false,
       description: "Query a task's durable state by its task id (childSessionId from spawn_agent): running / settled / unknown, plus the result text when settled.",
+      inputSchema: {
+        type: "object",
+        properties: { taskId: { type: "string", description: "The child session id returned by spawn_agent." } },
+        required: ["taskId"],
+      },
       execute: async (input: unknown, ctx?: ToolCtx) => {
         const c = requireCtx(ctx)
         const taskId = (input as { taskId?: string }).taskId
         if (!taskId) throw new Error("taskId is required")
-        const res = await c.queryTask?.(taskId)
-        if (!res) return { authorization: "allowed", state: "unknown", error: "queryTask not available" }
-        return { authorization: "allowed", taskId, state: res.state, finish: res.finish, text: res.text }
+        // Same direct-child ownership guard as send/interrupt: a non-user,
+        // non-butler caller may only observe its OWN child's task state (a
+        // child's transcript is privileged). Unknown tasks still report an
+        // honest "unknown" state rather than a hard deny (read observation).
+        return guardRead(deps, c, "followup_task", taskId, (caller, target) => {
+          if (caller.kind === "user" || caller.kind === "butler") return { allowed: true }
+          return target.parentId === caller.sessionId ? { allowed: true } : { allowed: false, reason: "only your direct child session" }
+        }, async () => {
+          const q = await c.queryTask?.(taskId)
+          if (!q) return { authorization: "allowed", state: "unknown", error: "queryTask not available" }
+          return { authorization: "allowed", taskId, state: q.state, finish: q.finish, text: q.text }
+        })
       },
     },
     {
       name: "wait_agent",
       description: "Block until a task settles (by its task id from spawn_agent) or the timeout elapses. Args: { taskId, timeoutMs? } — subject clamps to 1-120000ms (default 30000); returns the settled result text or the still-running state on timeout.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          taskId: { type: "string", description: "The child session id returned by spawn_agent." },
+          timeoutMs: { type: "number", description: "Max wait in ms (clamped to 1000-120000; default 30000)." },
+        },
+        required: ["taskId"],
+      },
       execute: async (input: unknown, ctx?: ToolCtx) => {
         const c = requireCtx(ctx)
         const taskId = (input as { taskId?: string }).taskId
         const rawTimeout = (input as { timeoutMs?: number }).timeoutMs
         if (!taskId) throw new Error("taskId is required")
         if (!c.queryTask) return { authorization: "allowed", taskId, state: "unknown", error: "queryTask not available" }
-        // Clamp (codex wait.rs semantics): min 1s, max 120s, default 30s — a
-        // garbage value never becomes a 1ms kill or an unbounded hang.
-        const timeoutMs = clamp(Math.floor(rawTimeout ?? 30_000), 1_000, 120_000)
-        const deadline = Date.now() + timeoutMs
-        let res = await c.queryTask(taskId)
-        while (res.state === "running" && Date.now() < deadline) {
-          await new Promise((r) => setTimeout(r, 250))
-          res = await c.queryTask(taskId)
+        // Guard first: wait on a task you do not own (non-user/non-butler) is
+        // denied the same way as followup — waiting on a foreign transcript is
+        // a read, not a side effect, but it still crosses the direct-child
+        // authority model.
+        const run = async () => {
+          // Clamp (codex wait.rs semantics): min 1s, max 120s, default 30s — a
+          // garbage value never becomes a 1ms kill or an unbounded hang.
+          const timeoutMs = clamp(Math.floor(rawTimeout ?? 30_000), 1_000, 120_000)
+          const deadline = Date.now() + timeoutMs
+          let res = await c.queryTask!(taskId)
+          while (res.state === "running" && Date.now() < deadline) {
+            await new Promise((r) => setTimeout(r, 250))
+            res = await c.queryTask!(taskId)
+          }
+          return { authorization: "allowed", taskId, state: res.state, finish: res.finish, text: res.text, timedOut: res.state === "running" }
         }
-        return { authorization: "allowed", taskId, state: res.state, finish: res.finish, text: res.text, timedOut: res.state === "running" }
+        return guardRead(deps, c, "wait_agent", taskId, (caller, target) => {
+          if (caller.kind === "user" || caller.kind === "butler") return { allowed: true }
+          return target.parentId === caller.sessionId ? { allowed: true } : { allowed: false, reason: "only your direct child session" }
+        }, run)
       },
     },
     {
       name: "interrupt",
       description: "Interrupt a running session. Butler may interrupt any; a parent only its direct child.",
+      inputSchema: {
+        type: "object",
+        properties: { target: { type: "string", description: "The session id to interrupt." } },
+        required: ["target"],
+      },
       execute: async (input: unknown, ctx?: ToolCtx) => {
         const c = requireCtx(ctx)
         const targetId = (input as { target?: string }).target
@@ -138,6 +203,15 @@ export function createButlerTools(deps: ButlerDeps): Tool[] {
     {
       name: "spawn_agent",
       description: "Spawn a new agent session; the spawner becomes its parent. Args: { prompt: task instruction, model?: model id overrides default, agent?: a named agent role from the plugin registry (identity + tool whitelist + specialism body) }.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          prompt: { type: "string", description: "The task instruction for the spawned child." },
+          model: { type: "string", description: "Optional model id override (defaults to the parent's model)." },
+          agent: { type: "string", description: "Optional named agent role from the plugin registry." },
+        },
+        required: ["prompt"],
+      },
       execute: async (input: unknown, ctx?: ToolCtx) => {
         const c = requireCtx(ctx)
         const model = (input as { model?: string }).model
@@ -155,6 +229,14 @@ export function createButlerTools(deps: ButlerDeps): Tool[] {
     {
       name: "send_to_session",
       description: "Send a message to another session. Default-deny: only user, or a parent to its direct child.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          target: { type: "string", description: "The target session id." },
+          content: { type: "string", description: "The message to send." },
+        },
+        required: ["target", "content"],
+      },
       execute: async (input: unknown, ctx?: ToolCtx) => {
         const c = requireCtx(ctx)
         const targetId = (input as { target?: string }).target
@@ -173,6 +255,40 @@ export function createButlerTools(deps: ButlerDeps): Tool[] {
       name: "declare_dag",
       sideEffects: true,
       description: "Declare a DAG of subagent nodes for PLANNED parallel work: submit { spec: { nodes: { [id]: { agent: { name: string, role?: string, model?: string }, input: string, dependsOn?: string[] } } } } and the runtime drives the whole graph (topo order, readiness wakeups, per-node models, crash-resumable) while node progress projects into this session's todo list. Returns { dagId, nodes }. Fire-and-forget — collect results later with followup_task / list_sessions. Use spawn_agent instead for one-off dynamic spawns.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          spec: {
+            type: "object",
+            description: "The DAG spec: a map of node id -> { agent: { name, role?, model? }, input, dependsOn? }.",
+            properties: {
+              nodes: {
+                type: "object",
+                description: "Node map; order is irrelevant (topo-sorted by dependsOn).",
+                additionalProperties: {
+                  type: "object",
+                  properties: {
+                    input: { type: "string", description: "The node's task instruction." },
+                    dependsOn: { type: "array", items: { type: "string" }, description: "Node ids that must settle first." },
+                    agent: {
+                      type: "object",
+                      properties: {
+                        name: { type: "string" },
+                        role: { type: "string" },
+                        model: { type: "string" },
+                      },
+                      required: ["name"],
+                    },
+                  },
+                  required: ["input", "agent"],
+                },
+              },
+            },
+            required: ["nodes"],
+          },
+        },
+        required: ["spec"],
+      },
       execute: async (input: unknown, ctx?: ToolCtx) => {
         const c = requireCtx(ctx)
         const spec = (input as { spec?: { nodes?: Record<string, unknown> } }).spec
@@ -181,6 +297,11 @@ export function createButlerTools(deps: ButlerDeps): Tool[] {
         }
         if (!c.declareDag) throw new Error("declareDag not available (no dag runner configured)")
         if (!c.appendAudit) throw new Error("butler tool missing appendAudit")
+        // Synchronous preflight: a malformed graph (cycle / unknown dep / self
+        // dep / dangling entry) would otherwise return a phantom dagId and fail
+        // fire-and-forget AFTER the model already saw success. Validate NOW so
+        // the tool reports the real error immediately (the runner re-validates).
+        validateDag(spec as DAGSpec)
         const res = await c.declareDag(spec)
         await c.appendAudit({ actorKind: c.caller.kind, actorId: c.sessionId ?? (c.caller.kind === "user" ? "user" : c.caller.sessionId), op: "declare_dag", outcome: "allowed", reason: undefined })
         return { authorization: "allowed", dagId: res.dagId, nodes: Object.keys(spec.nodes).length }
@@ -189,6 +310,14 @@ export function createButlerTools(deps: ButlerDeps): Tool[] {
     {
       name: "resume_agent",
       description: "Resume a settled child session with a new task prompt (codex resume_agent analog). Admits the prompt into the target child and drives it. Args: { taskId, prompt }.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          taskId: { type: "string", description: "The child session id to resume." },
+          prompt: { type: "string", description: "The new task prompt." },
+        },
+        required: ["taskId", "prompt"],
+      },
       execute: async (input: unknown, ctx?: ToolCtx) => {
         const c = requireCtx(ctx)
         const taskId = (input as { taskId?: string }).taskId
@@ -199,15 +328,24 @@ export function createButlerTools(deps: ButlerDeps): Tool[] {
           if (caller.kind === "user" || caller.kind === "butler") return { allowed: true }
           return target && target.parentId === caller.sessionId ? { allowed: true } : { allowed: false, reason: "only your direct child session" }
         }, async () => {
-          // Send the prompt through the hub's send path (admit + drive)
-          const res = await c.sendToTarget?.(taskId, prompt)
-          return { authorization: "allowed", taskId, prompt, implemented: res?.implemented ?? false }
+          // Prefer a true re-drive (resume_agent): a settled child is unregistered
+          // in the live hub, so `sendToTarget` alone would report implemented:false
+          // and never re-drive. The resume seam re-admits + re-drives to settlement.
+          const res = await c.resumeTarget?.(taskId, prompt)
+          if (res?.implemented) return { authorization: "allowed", taskId, prompt, resumed: true, implemented: true, pending: res.pending ?? true }
+          // No resume seam (non-app host) — report the real state, never fake it.
+          return { authorization: "allowed", taskId, prompt, resumed: false, implemented: false, reason: res?.reason ?? "resume not available (no resume seam; settled target is not re-driven)" }
         })
       },
     },
     {
       name: "close_agent",
       description: "Terminate and archive a child session (codex close_agent analog). Interrupts any in-flight turn and flags the session archived. Args: { taskId }.",
+      inputSchema: {
+        type: "object",
+        properties: { taskId: { type: "string", description: "The child session id to close and archive." } },
+        required: ["taskId"],
+      },
       execute: async (input: unknown, ctx?: ToolCtx) => {
         const c = requireCtx(ctx)
         const taskId = (input as { taskId?: string }).taskId
@@ -216,9 +354,16 @@ export function createButlerTools(deps: ButlerDeps): Tool[] {
           if (caller.kind === "user" || caller.kind === "butler") return { allowed: true }
           return target && target.parentId === caller.sessionId ? { allowed: true } : { allowed: false, reason: "only your direct child session" }
         }, async () => {
-          // Interrupt first
-          await c.interruptTarget?.(taskId)
-          return { authorization: "allowed", taskId, closed: true }
+          // Interrupt any in-flight turn first.
+          const interrupted = await c.interruptTarget?.(taskId)
+          // Persist the durable archived flag so list_sessions / registry fold
+          // actually reflect a close. Without the archive seam (non-app hosts),
+          // report honestly that the close was not applied — never a fake success.
+          const archived = await c.archiveTarget?.(taskId, true)
+          if (!archived?.implemented) {
+            return { authorization: "allowed", taskId, closed: archived?.implemented ?? false, implemented: false, reason: "archive not available (no archive seam)" }
+          }
+          return { authorization: "allowed", taskId, closed: true, implemented: true, interrupted: interrupted?.implemented ?? false }
         })
       },
     },

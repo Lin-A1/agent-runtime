@@ -63,10 +63,21 @@ export interface ToolCtx {
   readonly caller: Initiator
   /** The executing session id (the butler that is running). */
   readonly sessionId?: string
+  /** Admission/prompt id for the current model turn. */
+  readonly promptId?: string
+  /** Stable id of the current model tool call. */
+  readonly toolCallId?: string
+  /** Name of the current model tool call. */
+  readonly toolName?: string
   /** Cancellation: a cooperative tool should stop and honor this signal so its
    * side effects (e.g. a bash subprocess) are terminated rather than leaking
    * past the session interrupt. A tool may ignore it for quick ops. */
   readonly signal?: AbortSignal
+  /** Live progress channel: a long-running tool (bash) pushes partial output
+   * chunks that ride the loop's event stream as `tool-progress` frames so a
+   * transport can render them while the tool runs. Fire-and-forget — a tool
+   * must never await or depend on the transport. */
+  readonly onProgress?: (text: string) => void
   /** Optional registry a privileged/butler tool uses to resolve target + audit. */
   readonly registry?: import("../session/registry").SessionRegistry
   /** Append a butler audit action to the durable audit aggregate. */
@@ -76,6 +87,16 @@ export interface ToolCtx {
    * that a stub did not actually apply (M4 SessionManager populates them). */
   readonly interruptTarget?: (sessionId: string) => Promise<{ implemented: boolean; pending?: boolean; sessionId?: string }>
   readonly sendToTarget?: (sessionId: string, content: string) => Promise<{ implemented: boolean; pending?: boolean; sessionId?: string }>
+  /** Archive (or unarchive) a target session's durable flag (close_agent analog).
+   *  Appends `Session.Archived` so `list_sessions`/registry fold reflect it.
+   *  Absent (non-app hosts) → the tool reports the effect as unexplained rather
+   *  than pretending a close happened. */
+  readonly archiveTarget?: (sessionId: string, archived?: boolean) => Promise<{ implemented: boolean; sessionId?: string }>
+  /** True re-drive of a target session (resume_agent analog): admits the new
+   *  prompt AND drives the child to settlement even if it previously settled.
+   *  Absent, or a child that cannot be re-driven (settled + no live hub), →
+   *  { implemented:false, reason } so the tool never fakes a resume. */
+  readonly resumeTarget?: (sessionId: string, prompt: string) => Promise<{ implemented: boolean; sessionId?: string; pending?: boolean; reason?: string }>
   readonly spawnFrom?: (parentId: string, model?: string, prompt?: string, agentName?: string) => Promise<string>
   /** Query a child's durable state (followup_task): running vs settled vs unknown. */
   readonly queryTask?: (taskId: string) => Promise<{ state: "running" | "settled" | "unknown"; text?: string; finish?: string }>
@@ -88,7 +109,7 @@ export interface ToolCtx {
   /** ask_user channel: raise a question for the operator through the
    *  interactive approval surface. Absent = the session is non-interactive
    *  (the tool must answer gracefully instead of hanging). */
-  readonly askUser?: (req: { question: string; options?: readonly string[] }) => Promise<{ allow: boolean; reply?: string }>
+  readonly askUser?: (req: { question: string; options?: readonly string[]; sessionId?: string; promptId?: string; tool?: string; callId?: string }) => Promise<{ allow: boolean; reply?: string }>
   /** Switch the session's durable policy (enter_plan_mode → readonly; the
    *  request_mode tool is the exit path). Absent = policy is host-managed. */
   readonly setPolicy?: (policy: "strict" | "trusted" | "readonly") => Promise<void>
