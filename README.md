@@ -1,55 +1,39 @@
 # newhorse
 
-**The reference web shell for agent-runtime.** A minimal, good-looking chat UI that drives the [**agent-runtime**](https://github.com/Lin-A1/agent-runtime) engine over its HTTP/SSE API — sessions, streaming turns, approvals, model switching, rewind/rewrite/retry. The engine itself (sessions, tool loops, declarative DAG, durable memory) lives in the agent-runtime repo.
+**The reference web shell for agent-runtime.** A minimal, good-looking chat UI that drives the [**agent-runtime**](https://github.com/Lin-A1/agent-runtime) engine over its HTTP/SSE API — sessions, streaming turns, approvals, model switching, rewind / rewrite / retry. The engine itself (sessions, tool loops, declarative DAG, durable memory) lives in the agent-runtime repo.
 
 > **Repository topology**: this repo is the **host shell (web UI)** — `apps/web` consumes the runtime's `/v1` endpoints only. The **engine** is developed directly in [**Lin-A1/agent-runtime**](https://github.com/Lin-A1/agent-runtime); see `AGENTS.md` → "Repository topology". No upstream/mirror relationship remains — the two repos are independent.
+>
+> The runtime packages under `packages/*` are kept in this repo only so the dev server can run standalone against a local copy — they are a build convenience, not a source of truth. For the engine's design notes, see **agent-runtime** `docs/`.
 
-> This README is a quick map. The target (north star) lives in `AGENTS.md`; implementation decisions for the engine live in agent-runtime's `docs/`.
+## The shell
 
-## What it is (five differentiators)
+- **Minimal chat** — session list, streaming turns, tool/thinking traces, markdown (incl. mermaid), image attachments, model switch, rewind / rewrite / retry.
+- **Slim by design** — no workbench pane, no approval panel UI (the runtime keeps the approval API; this shell stays chat-focused), no workspace configuration surface.
+- **Consumes, never imports** — `apps/web/src/api/client.ts` is the single typed boundary over `/v1`; no runtime internals are touched.
 
-| Goal | Status | Where |
-|---|---|---|
-| 1. Declarative DAG scheduling — draw the graph forward, runtime topo-executes | Done (API only) | `core/agent/dag.ts`, `runtime/dag-runner.ts` |
-| 2. Long-horizon work — restartable sessions, durable log | Done (single-process) | `core/session/*`, `runtime/app.ts` |
-| 3. Cost-controlled subagent models — per-node model for cost balance | Done | `runtime/dag-runner.ts` (`resolveNodeModel`) |
-| 4. Model-agnostic output quality — one canonical vocabulary, four-axis route | Done | `schema/llm.ts`, `llm/*` |
-| 5. Usable + extensible — directory-as-registration, plugin seam, execpolicy floor | Partial (registration done, consumers TBD) | `plugin/*`, `runtime/tools/*` |
-
-## Architecture (dependency direction)
-
-```
-schema (leaf) → core / llm → plugin → runtime → cli
-```
-
-- **schema** — canonical LLM vocabulary (`LLMRequest`/`LLMEvent`), event shape `(aggregate_id, seq, type, data)`, session/execpolicy types.
-- **core** — seam container, event-sourced session, admission inbox, agent turn loop, DAG topology, `Initiator` (trusted caller kind), deny-all execpolicy fallback. Never imports upper layers.
-- **llm** — four-axis Route (Protocol / Endpoint / Auth / Framing), three protocols (openai / openai-responses / anthropic), uniform error taxonomy + retry.
-- **plugin** — five-kind capability registry + directory discovery (`tools/` `agents/` `commands/` `hooks/` `skills/`).
-- **runtime** — `createApp` domain assembly, builtin toolset (read/write/edit/list/search/bash), execpolicy engine, butler tools + session hub, DAG dispatcher.
-- **cli** — thin transport: `newhorse [--prompt TEXT] [--provider ...] [--butler]`.
-
-## Quick start
-
-Requires `OPENAI_API_KEY` (for `openai`/`openai-compatible`) or `ANTHROPIC_API_KEY` (for `anthropic`).
+## Run
 
 ```bash
-bun install
-bun run packages/cli/src/index.ts --prompt "Read package.json and tell me the name" --data-dir ~/.newhorse/data
+# 1. Build the UI
+cd apps/web && bun install && bun run build       # → apps/web/dist
+
+# 2. Run the engine (agent-runtime) with this UI served on the same origin
+NEWHORSE_UI_DIR="$(pwd)/apps/web/dist" bun run agent-runtime/packages/server/src/main.ts
+# open http://127.0.0.1:3927
+
+# Dev mode (hot reload, /v1 proxied to the runtime server on 3927)
+bun run dev                                        # http://127.0.0.1:4173
 ```
 
-Run tests from package dirs (never repo root):
+## Layout
 
-```bash
-cd packages/core && bun test && bunx tsc --noEmit
+```
+apps/web/
+  src/api/       client.ts (typed /v1 boundary), bus.ts (SSE), fold.ts (event log → turns)
+  src/components/ Transcript, Composer, Sidebar, Markdown(→mermaid), ThinkingTrace, ToolTrace …
+  src/state/     store.tsx (AppProvider/StreamProvider), stream-ownership.ts
+  src/lib/       completion, url, useMediaQuery
 ```
 
-## Key invariants
-
-- **model-visible ⟺ logged**: everything the model sees is in the append-only log first.
-- **seam register-as-disposer**: capabilities register through a seam, not `if`/`switch` chains.
-- **fail-closed**: no execpolicy → deny-all; no approve gate → `prompt` forbids; interrupted tools settle as `Tool execution interrupted`, never replay silently.
-
-## Known gaps (see `docs/` §17 + `specs/v2/plan.md`)
-
-Current direction: **runtime server first; model-driven orchestration as the main entrance, declarative DAG as the batch/planned form — both on one child-session base.** The child-session base (workspace inheritance + driven child) is **Phase 2, a prerequisite before orchestration** — not M4. Deferred to M4 or later: cross-session effect delivery + full `SessionManager`, fine-grained permissions bootstrap, web fetch / image read / memory tool, plugin TS loading, CLI entry for DAG (Phase 3 has `dag` subcommand). Memory is a *reserved seam* (events + message kind planned in schema; pluggable index), skills discovery works but needs a `skill` loader tool. The `specs/v2/` status lines mark implemented vs deferred.
+For the engine's architecture / capability list / design records, head to **agent-runtime**: `README.md`, `docs/architecture-map.md`, `docs/core-technology-notes.md`.
