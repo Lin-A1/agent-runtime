@@ -62,8 +62,8 @@ The engine packages (`schema → core / llm → plugin → memory → mcp → ru
 
 ```bash
 bun install
-cd packages/core && bun test        # per-package tests (299 total, all green)
-bunx tsc --noEmit                   # strict, clean in every package
+cd packages/core && bun test        # per-package tests (483 total, all green)
+bun run typecheck                   # strict, clean in every package
 ```
 
-Design record: `docs/core-technology-notes.md` (24 sections) + `docs/architecture-map.md` (drift sentinel). Plans: `specs/v2/`.
+Design records: `docs/architecture-map.md` (drift sentinel), `docs/core-technology-notes.md` (24 sections), and the comparison/retrospective notes in the same dir. Plans: `specs/v2/`.
