@@ -317,11 +317,11 @@ export function Composer({
           // Resolution unavailable — send the original text with the raw refs.
         }
       }
-      // 改写语义：编辑的消息先回退到该 turn（truncate 删除它及之后的所有
-      // 历史），再发送新文本 —— 不是追加重复回合。
+      // 改写语义：编辑的消息先回退到该 turn 之前（truncate seq-1 删除这条
+      // 用户消息本身及其后所有历史），再发送新文本 —— 不是追加重复回合。
       if (rewriteSeq !== null) {
         try {
-          await api.truncateSession(sessionId, rewriteSeq);
+          await api.truncateSession(sessionId, rewriteSeq - 1);
         } catch (err) {
           setText(originalText);
           setImages(originalImages);

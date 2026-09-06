@@ -759,11 +759,12 @@ export function Transcript({
   }, [sessionId, load])
 
   const rewindTo = (seq: number): void => {
-    // In-place rewind (Session.Truncated). The destructive-action confirmation
-    // happens inline in the turn card (window.confirm is suppressed in some
-    // embedded webviews).
+    // In-place rewind (Session.Truncated). The turn card sits at the event
+    // that STARTS the user message (Prompted/PromptAdmitted), so a rewind to
+    // seq-1 removes the message itself + everything after it — rewinding to
+    // `seq` would leave the user message visible (only the reply vanishes).
     void api
-      .truncateSession(sessionId, seq)
+      .truncateSession(sessionId, seq - 1)
       .then(() => {
         void load()
         window.dispatchEvent(new Event("nh-refresh-sessions"))
