@@ -8,11 +8,12 @@
  *    stop aborts the stream and posts interrupt.
  */
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react"
-import { api, streamPrompt } from "../api/client"
+import { updateOwnedTurn } from "./stream-ownership"
+import { api, ClientError, streamPrompt } from "../api/client"
 import type { ChatImage, PanelInfo, SessionRow, SettingsView } from "../api/types"
 import { useBus } from "../api/bus"
 import { normWorkspace } from "../lib/workspace"
-import { deriveAutoTitle } from "../api/fold"
+import { deriveAutoTitle, type FileChange } from "../api/fold"
 
 // ---------- app store ----------
 
@@ -23,6 +24,9 @@ interface AppStore {
   sessionsLoading: boolean
   refreshSessions: () => Promise<void>
   refreshSettings: () => Promise<void>
+  /** Switch the active provider (+ optional model) via settings.write; refreshes
+   *  the effective settings + session list after. */
+  switchProvider: (providerId: string, model?: string) => Promise<void>
   /** Effective workspace for list filtering + creation (selection wins). */
   workspace: string
 }
@@ -49,6 +53,14 @@ export function AppProvider({ children }: { children: ReactNode }): React.ReactE
       // settings are non-critical chrome; the page still works without them
     }
   }, [])
+
+  const switchProvider = useCallback(async (providerId: string, model?: string) => {
+    // Provider switch is a host settings change (settings.write), never a
+    // client-only illusion: PUT the patch then re-read the effective settings.
+    await api.putSettings(model ? { activeProviderId: providerId, model } : { activeProviderId: providerId })
+    await refreshSettings()
+    window.dispatchEvent(new Event("nh-refresh-sessions"))
+  }, [refreshSettings])
 
   const refreshSessions = useCallback(async () => {
     try {
@@ -100,7 +112,7 @@ export function AppProvider({ children }: { children: ReactNode }): React.ReactE
     return () => window.removeEventListener("nh-refresh-sessions", on)
   }, [refreshSessions])
 
-  const value: AppStore = { settings, sessions, sessionsError, sessionsLoading, refreshSessions, refreshSettings, workspace }
+  const value: AppStore = { settings, sessions, sessionsError, sessionsLoading, refreshSessions, refreshSettings, switchProvider, workspace }
   return <AppCtx.Provider value={value}>{children}</AppCtx.Provider>
 }
 
@@ -109,14 +121,17 @@ export function AppProvider({ children }: { children: ReactNode }): React.ReactE
 export type LiveBlock =
   | { kind: "text"; text: string }
   | { kind: "thinking"; text: string }
-  | { kind: "tool"; name: string; input: unknown; output?: string; isError?: boolean }
+  | { kind: "tool"; callId: string; name: string; input: unknown; output?: string; isError?: boolean; streaming?: boolean }
   | { kind: "note"; text: string; variant: "steer" | "error" | "info" }
 
 export interface LiveTurn {
   userPrompt: string
+  promptId: string
   images?: ChatImage[]
   blocks: LiveBlock[]
   panels: PanelInfo[]
+  changes?: FileChange[]
+  error?: string
   step: number
   busy: boolean
   startedAt: number
@@ -124,9 +139,12 @@ export interface LiveTurn {
 
 interface StreamStore {
   live: ReadonlyMap<string, LiveTurn>
-  send: (sessionId: string, text: string, images?: ChatImage[]) => Promise<void>
+  /** Resolves false when the prompt failed to send (transport error) — the
+   *  transcript already shows the note; the composer uses it to restore the
+   *  draft instead of burning it. */
+  send: (sessionId: string, text: string, images?: ChatImage[]) => Promise<boolean>
   steer: (sessionId: string, text: string) => Promise<void>
-  stop: (sessionId: string) => Promise<void>
+  stop: (sessionId: string, startedAt?: number) => Promise<void>
   /** Drop the settled live turn (after the folded log has been refetched). */
   dismiss: (sessionId: string, startedAt?: number) => void
 }
@@ -137,6 +155,14 @@ export function useStream(): StreamStore {
   const v = useContext(StreamCtx)
   if (!v) throw new Error("useStream outside StreamProvider")
   return v
+}
+
+function findLiveToolBlock(blocks: LiveBlock[], callId: string): number {
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const b = blocks[i]!
+    if (b.kind === "tool" && b.callId === callId) return i
+  }
+  return -1
 }
 
 function outputText(output: unknown): string {
@@ -154,38 +180,43 @@ export function StreamProvider({ children }: { children: ReactNode }): React.Rea
   liveRef.current = live
   const aborts = useRef(new Map<string, AbortController>())
 
-  const updateTurn = useCallback((id: string, fn: (t: LiveTurn) => LiveTurn) => {
-    setLive((prev) => {
-      const cur = prev.get(id)
-      if (!cur) return prev
-      const next = new Map(prev)
-      next.set(id, fn(cur))
-      return next
-    })
+  const updateTurn = useCallback((id: string, promptId: string, fn: (t: LiveTurn) => LiveTurn) => {
+    setLive((prev) => updateOwnedTurn(prev, id, promptId, fn))
   }, [])
 
   const steer = useCallback(
     async (sessionId: string, text: string) => {
+      const promptId = liveRef.current.get(sessionId)?.promptId
+      const ctrl = aborts.current.get(sessionId)
       await api.steer(sessionId, text)
-      updateTurn(sessionId, (t) => ({ ...t, blocks: [...t.blocks, { kind: "note", text, variant: "steer" as const }] }))
+      if (promptId && ctrl && !ctrl.signal.aborted && aborts.current.get(sessionId) === ctrl) {
+        updateTurn(sessionId, promptId, (t) => ({ ...t, blocks: [...t.blocks, { kind: "note", text, variant: "steer" as const }] }))
+      }
     },
     [updateTurn],
   )
 
   const send = useCallback(
     async (sessionId: string, text: string, images?: ChatImage[]) => {
-      if (liveRef.current.get(sessionId)?.busy) {
-        await steer(sessionId, text)
-        return
+      if (aborts.current.has(sessionId)) {
+        if (images?.length) return false
+        try {
+          await steer(sessionId, text)
+          return true
+        } catch {
+          return false
+        }
       }
       // create (updateTurn only patches an existing entry)
+      const ctrl = new AbortController()
+      const startedAt = Date.now()
+      const promptId = crypto.randomUUID()
+      aborts.current.set(sessionId, ctrl)
       setLive((prev) => {
         const next = new Map(prev)
-        next.set(sessionId, { userPrompt: text, images, blocks: [], panels: [], step: 0, busy: true, startedAt: Date.now() })
+        next.set(sessionId, { userPrompt: text, promptId, images, blocks: [], panels: [], step: 0, busy: true, startedAt })
         return next
       })
-      const ctrl = new AbortController()
-      aborts.current.set(sessionId, ctrl)
 
       // Auto-title on prompt: derive clean semantic topic and persist (only on unnamed sessions)
       void (async () => {
@@ -203,7 +234,9 @@ export function StreamProvider({ children }: { children: ReactNode }): React.Rea
       })()
 
       const apply = (ev: import("../api/client").StreamEvent): void => {
-        updateTurn(sessionId, (t) => {
+        if (ctrl.signal.aborted || aborts.current.get(sessionId) !== ctrl) return
+        updateTurn(sessionId, promptId, (t) => {
+          if (ctrl.signal.aborted) return t
           const blocks = [...t.blocks]
           const last = blocks[blocks.length - 1]
           switch (ev.type) {
@@ -216,15 +249,25 @@ export function StreamProvider({ children }: { children: ReactNode }): React.Rea
               else blocks.push({ kind: "thinking", text: ev.text })
               return { ...t, blocks }
             case "tool":
-              blocks.push({ kind: "tool", name: ev.name, input: ev.input })
+              blocks.push({ kind: "tool", callId: ev.callId, name: ev.name, input: ev.input })
               return { ...t, blocks }
+            case "tool-progress": {
+              // Live partial output from a running tool (bash streams stdout).
+              // Prefer the block already mid-stream, else the newest pending
+              // one; the tail is capped so a firehose command cannot balloon.
+              const i = findLiveToolBlock(blocks, ev.callId)
+              if (i >= 0) {
+                const b = blocks[i] as LiveBlock & { kind: "tool" }
+                const next = (b.output ?? "") + ev.text
+                blocks[i] = { ...b, output: next.length > 16_000 ? next.slice(-16_000) : next, streaming: true }
+              }
+              return { ...t, blocks }
+            }
             case "tool-result": {
-              for (let i = blocks.length - 1; i >= 0; i--) {
-                const b = blocks[i]
-                if (b.kind === "tool" && b.name === ev.name && b.output === undefined) {
-                  blocks[i] = { ...b, output: outputText(ev.output), ...(ev.isError ? { isError: true } : {}) }
-                  break
-                }
+              const i = findLiveToolBlock(blocks, ev.callId)
+              if (i >= 0) {
+                const b = blocks[i] as LiveBlock & { kind: "tool" }
+                blocks[i] = { ...b, output: outputText(ev.output), streaming: false, ...(ev.isError ? { isError: true } : {}) }
               }
               return { ...t, blocks }
             }
@@ -237,7 +280,7 @@ export function StreamProvider({ children }: { children: ReactNode }): React.Rea
               return { ...t, step: ev.step }
             case "error":
               blocks.push({ kind: "note", text: `${ev.code}: ${ev.message}`, variant: "error" })
-              return { ...t, blocks }
+              return { ...t, error: `${ev.code}: ${ev.message}`, blocks }
             default:
               return t
           }
@@ -245,25 +288,33 @@ export function StreamProvider({ children }: { children: ReactNode }): React.Rea
       }
 
       try {
-        await streamPrompt(sessionId, text, { signal: ctrl.signal, onEvent: apply }, images)
+        await streamPrompt(sessionId, text, { signal: ctrl.signal, onEvent: apply }, images, { promptId })
       } catch (err) {
-        const aborted = ctrl.signal.aborted
-        const msg = err instanceof Error ? err.message : String(err)
-        updateTurn(sessionId, (t) => ({
-          ...t,
-          blocks: aborted ? t.blocks : [...t.blocks, { kind: "note", text: msg, variant: "error" as const }],
-        }))
+        if (!ctrl.signal.aborted && aborts.current.get(sessionId) === ctrl) {
+          const msg = err instanceof Error ? err.message : String(err)
+          updateTurn(sessionId, promptId, (t) => ({ ...t, error: msg, blocks: [...t.blocks, { kind: "note", text: msg, variant: "error" as const }] }))
+          // Only explicit client rejection establishes that the draft is safe
+          // to restore. EOF/network/5xx can follow durable admission.
+          return !(err instanceof ClientError && err.status >= 400 && err.status < 500)
+        }
       } finally {
-        aborts.current.delete(sessionId)
-        updateTurn(sessionId, (t) => ({ ...t, busy: false }))
+        if (aborts.current.get(sessionId) === ctrl) aborts.current.delete(sessionId)
+        updateTurn(sessionId, promptId, (t) => ({ ...t, busy: false }))
       }
+      return true
     },
     [steer, updateTurn],
   )
 
   const stop = useCallback(
-    async (sessionId: string) => {
-      aborts.current.get(sessionId)?.abort()
+    async (sessionId: string, startedAt?: number) => {
+      const currentTurn = liveRef.current.get(sessionId)
+      if (!currentTurn?.busy || (startedAt !== undefined && currentTurn.startedAt !== startedAt)) return
+      const ctrl = aborts.current.get(sessionId)
+      if (!ctrl) return
+      aborts.current.delete(sessionId)
+      ctrl.abort()
+      updateTurn(sessionId, currentTurn.promptId, (t) => ({ ...t, busy: false }))
       try {
         await api.interrupt(sessionId)
       } catch {

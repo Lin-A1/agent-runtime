@@ -1,176 +1,176 @@
 /**
- * Transcript — high-end chat stream:
+ * Transcript — High-end chat stream:
  * - Empty State: exclusive celestial hero planetary Emo Ball (floating gentle,
- *   full interactive animation, planetary orbit ring, starter prompt pills)
- * - User Message: modern clean bubble with subtle card elevation & avatar
- * - Assistant Output: pro typography ladder, sleek tool capsules, codeblocks
- * - Seamless live-to-history transition with no duplicate cards
+ *   full interactive animation, planetary orbit ring, starter prompt pills),
+ *   with centered hero Composer on Desktop.
+ * - Mobile: Fixed bottom dock composer, off-canvas mobile drawer trigger
+ * - User Message: modern clean bubble with subtle elevation
+ * - Assistant Output: ToolTrace & ThinkingTrace ported from BeautifulUI, ChangeList git diffs
+ * - Live Generation: dynamic live Emo Ball avatar reflecting real-time agent mood
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react"
+import { useNavigate } from "react-router-dom"
 import {
-  Brain,
   ChevronDown,
+  ChevronRight,
   Code2,
   Compass,
-  FileDiff,
-  FileText,
+  Copy,
+  Folder,
+  GitBranch,
   Globe,
-  Sparkles,
-  Terminal,
-  Wrench,
+  Menu,
+  PanelRight,
+  Pencil,
+  Plus,
+  Undo2,
 } from "lucide-react"
 import { api } from "../api/client"
 import {
+  fmtClock,
   foldTranscript,
   imageUrl,
   prettyTitle,
   toolSummary,
-  type FileChange,
   type ToolBlock,
   type TurnBlock,
   type UserTurn,
 } from "../api/fold"
 import type { StoredEventRow } from "../api/types"
 import { useBus } from "../api/bus"
-import { useApp, useStream, type LiveTurn } from "../state/store"
+import { useApp, useStream, type LiveBlock, type LiveTurn } from "../state/store"
 import { EmptyState, Spinner } from "./ui"
 import { Markdown } from "./Markdown"
 import { PanelCard } from "./PanelCard"
-import { EmotionBall } from "./EmotionBall"
+import { EmotionBall, type BallMood } from "./EmotionBall"
+import { ToolTrace } from "./ToolTrace"
+import { ThinkingTrace } from "./ThinkingTrace"
+import { ChangeList } from "./ChangeList"
+import { Composer } from "./Composer"
+import { TurnFooter } from "./TurnFooter"
+import { PixelLoader } from "./PixelLoader"
+import { useMediaQuery } from "../lib/useMediaQuery"
 
-// ---------- Tool icon mapping ----------
-function getToolIcon(name: string): React.ReactElement {
-  const lc = name.toLowerCase()
-  if (lc.includes("bash") || lc.includes("command")) return <Terminal size={12} className="text-amber-500" />
-  if (lc.includes("search")) return <Globe size={12} className="text-sky-400" />
-  if (lc.includes("read") || lc.includes("file")) return <FileText size={12} className="text-indigo-400" />
-  if (lc.includes("edit") || lc.includes("write")) return <Code2 size={12} className="text-emerald-400" />
-  return <Wrench size={12} className="text-dim" />
+// ---------- Group consecutive context-gathering tools into a single group ----------
+/** Context-gathering tools (folded into a group with the agent's first
+ *  turn): names borrowed from the removed ContextToolGroup — the grouping
+ *  stays useful even though the dedicated view is gone. */
+const CONTEXT_TOOLS = new Set([
+  "read",
+  "glob",
+  "grep",
+  "list",
+  "search",
+  "web_search",
+  "webfetch",
+  "web_fetch",
+  "file",
+  "list_sessions",
+])
+function isContextTool(name: string): boolean {
+  return CONTEXT_TOOLS.has(name.toLowerCase())
 }
 
-// ---------- Tool row (sleek capsule -> terminal drop) ----------
+type GroupedBlock =
+  | { kind: "block"; b: TurnBlock }
+  | { kind: "context-group"; tools: ToolBlock[] }
 
-function ToolRow({
-  name,
-  summary,
-  output,
-  isError,
-  pending,
-}: {
-  name: string
-  summary: string
-  output?: string
-  isError?: boolean
-  pending?: boolean
-}): React.ReactElement {
-  const [open, setOpen] = useState(false)
-  const hasOutput = output !== undefined
+function groupBlocks(blocks: TurnBlock[]): GroupedBlock[] {
+  const result: GroupedBlock[] = []
+  let contextBuffer: ToolBlock[] = []
 
-  return (
-    <div className="my-1 min-w-0">
-      <button
-        onClick={() => hasOutput && setOpen((v) => !v)}
-        className={`tool-capsule ${isError ? "!border-bad/40 !bg-bad/5 text-bad" : ""}`}
-        title={hasOutput ? (open ? "点击折叠输出" : "点击展开输出") : "工具运行中…"}
-      >
-        {pending ? <Spinner size={11} className="text-accent" /> : getToolIcon(name)}
-        <span className="font-medium text-fg">{name}</span>
-        <span className="max-w-xs truncate text-faint">{summary}</span>
-        {isError && <span className="rounded bg-bad/15 px-1.5 py-0.5 text-2xs text-bad">失败</span>}
-        {hasOutput && (
-          <ChevronDown
-            size={11}
-            className={`flex-none text-ghost transition-transform duration-150 ${open ? "rotate-180" : ""}`}
-          />
-        )}
-      </button>
+  const flush = (): void => {
+    if (contextBuffer.length === 0) return
+    result.push({ kind: "context-group", tools: contextBuffer })
+    contextBuffer = []
+  }
 
-      {open && hasOutput && (
-        <div className="pop-in codeblock-body mt-1.5 max-h-72 overflow-auto rounded-xl border border-line bg-bg2 p-3 text-2xs leading-relaxed shadow-sm">
-          <pre className="whitespace-pre-wrap break-all font-mono text-dim">{output}</pre>
-        </div>
-      )}
-    </div>
-  )
+  for (const b of blocks) {
+    if (b.kind === "tool" && isContextTool(b.name)) {
+      contextBuffer.push(b)
+    } else {
+      flush()
+      result.push({ kind: "block", b })
+    }
+  }
+  flush()
+  return result
 }
 
-function ToolBlockView({ b, pending }: { b: Omit<ToolBlock, "summary">; pending?: boolean }): React.ReactElement {
-  const input = (b.input ?? {}) as Record<string, unknown>
-  return <ToolRow name={b.name} summary={toolSummary(b.name, input)} output={b.output} isError={b.isError} pending={pending} />
+/** A lone context tool reads better as a plain row (读取 xxx / 搜索 xxx) than
+ *  as a one-item "已搜集上下文" group — the wrapper only earns its keep at 2+. */
+function compactSingletonGroups(groups: GroupedBlock[]): GroupedBlock[]
+function compactSingletonGroups(groups: GroupedLiveBlock[]): GroupedLiveBlock[]
+/** A lone context tool reads better as a plain row (读取 xxx / 搜索 xxx) than
+ *  as a one-item "已搜集上下文" group — the wrapper only earns its keep at 2+. */
+function compactSingletonGroups(
+  groups: Array<{ kind: "block"; b: unknown } | { kind: "context-group"; tools: unknown[] }>,
+): unknown[] {
+  return groups.flatMap((g) => {
+    if (g.kind === "context-group" && g.tools.length === 1) {
+      return [{ kind: "block" as const, b: g.tools[0]! }]
+    }
+    return [g]
+  })
 }
 
-// ---------- Thinking block ----------
+type GroupedLiveBlock =
+  | { kind: "block"; b: LiveBlock }
+  | { kind: "context-group"; tools: Array<{ kind: "tool"; callId: string; name: string; input: unknown; output?: string; isError?: boolean; streaming?: boolean }> }
 
-function ThinkingBlock({ text, live }: { text: string; live?: boolean }): React.ReactElement {
-  const [open, setOpen] = useState(false)
-  useEffect(() => {
-    if (live) setOpen(true)
-  }, [live])
+function groupLiveBlocks(blocks: LiveBlock[]): GroupedLiveBlock[] {
+  const result: GroupedLiveBlock[] = []
+  let contextBuffer: Array<{ kind: "tool"; callId: string; name: string; input: unknown; output?: string; isError?: boolean; streaming?: boolean }> = []
 
-  return (
-    <div className="my-1.5">
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="inline-flex items-center gap-1.5 rounded-lg border border-line/60 bg-hover/40 px-2 py-1 text-2xs text-faint transition-colors hover:text-dim"
-      >
-        <Brain size={12} className="text-purple-400/80" />
-        <span>思考过程{live ? "…" : ""}</span>
-        <ChevronDown size={11} className={`transition-transform duration-150 ${open ? "rotate-180" : ""}`} />
-      </button>
-      {open && (
-        <div className="pop-in mt-1.5 whitespace-pre-wrap rounded-xl border-l-2 border-purple-400/40 bg-hover/20 p-3 text-xs leading-relaxed text-dim/90 shadow-sm">
-          {text}
-        </div>
-      )}
-    </div>
-  )
+  const flush = (): void => {
+    if (contextBuffer.length === 0) return
+    result.push({ kind: "context-group", tools: contextBuffer })
+    contextBuffer = []
+  }
+
+  for (const b of blocks) {
+    if (b.kind === "tool" && isContextTool(b.name)) {
+      contextBuffer.push(b)
+    } else {
+      flush()
+      result.push({ kind: "block", b })
+    }
+  }
+  flush()
+  return result
 }
 
-// ---------- File changes ----------
-
-function ChangeList({ changes }: { changes: FileChange[] }): React.ReactElement | null {
-  const [open, setOpen] = useState<string | null>(null)
-  if (changes.length === 0) return null
-
-  return (
-    <div className="my-2 flex flex-col gap-1">
-      {changes.map((c) => (
-        <div key={c.path} className="min-w-0">
-          <button
-            onClick={() => setOpen(open === c.path ? null : c.path)}
-            className="flex w-full min-w-0 items-center gap-2 rounded-lg border border-line bg-card px-2.5 py-1.5 text-left text-xs transition-colors hover:bg-hover"
-          >
-            <FileDiff size={12} className="flex-none text-accent" />
-            <span className="min-w-0 flex-1 truncate font-mono text-dim">{c.path}</span>
-            <span className="flex-none font-mono text-2xs text-ok">+{c.added}</span>
-            <span className="flex-none font-mono text-2xs text-bad">−{c.removed}</span>
-          </button>
-          {open === c.path && (
-            <div className="codeblock-body mt-1 max-h-72 overflow-auto rounded-lg py-1 text-2xs leading-relaxed">
-              {c.diff.map((d, i) => (
-                <div key={i} className={`cline ${d.kind}`}>
-                  <span className="whitespace-pre-wrap break-all">{d.text}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      ))}
-    </div>
-  )
+// ---------- Infer real-time Live Mood from agent execution blocks ----------
+function inferLiveMood(turn: LiveTurn): BallMood {
+  if (turn.error) return "error"
+  if (!turn.busy) return "done"
+  const lastBlock = turn.blocks[turn.blocks.length - 1]
+  if (!lastBlock) return "receiving"
+  if (lastBlock.kind === "thinking") return "thinking"
+  if (lastBlock.kind === "tool") {
+    const n = lastBlock.name.toLowerCase()
+    if (n.includes("search") || n.includes("glob") || n.includes("find") || n.includes("fetch")) {
+      return "searching"
+    }
+    if (n.includes("memory") || n.includes("recall")) {
+      return "recalling"
+    }
+    return "working"
+  }
+  if (lastBlock.kind === "text") return "replying"
+  return "working"
 }
 
-// ---------- General blocks ----------
-
+// ---------- General blocks (Text / Thinking / Panel / Note) ----------
 function BlockView({
   b,
   streaming,
 }: {
   b: TurnBlock | { kind: "note"; text: string; variant: string }
   streaming?: boolean
-}): React.ReactElement | null {
+}): ReactElement | null {
   if (b.kind === "text") return <Markdown text={b.text} streaming={streaming} />
-  if (b.kind === "thinking") return <ThinkingBlock text={b.text} live={streaming} />
+  if (b.kind === "thinking") return <ThinkingTrace text={b.text} live={streaming} />
   if (b.kind === "panel") {
     return (
       <div className="my-2.5">
@@ -190,145 +190,459 @@ function BlockView({
   return null
 }
 
-// ---------- User Turn ----------
-
-function UserTurnView({ turn }: { turn: UserTurn }): React.ReactElement {
+function ToolBlockView({
+  b,
+  pending,
+  diff,
+}: {
+  b: Omit<ToolBlock, "summary">
+  pending?: boolean
+  diff?: { added: number; removed: number }
+}): ReactElement {
+  const input = (b.input ?? {}) as Record<string, unknown>
   return (
-    <div className="fade-up my-4 flex flex-col items-end gap-2">
-      <div className="flex max-w-[88%] items-start gap-2.5">
-        <div className="user-bubble min-w-0">
-          {turn.text ? (
-            <div className="whitespace-pre-wrap text-sm leading-relaxed text-fg select-text">{turn.text}</div>
-          ) : null}
-          {turn.images && turn.images.length > 0 && (
-            <div className="mt-2.5 flex flex-wrap gap-2">
-              {turn.images.map((img, i) => (
-                <img
-                  key={i}
-                  src={imageUrl(img)}
-                  alt=""
-                  className="max-h-48 rounded-xl border border-line object-contain shadow-sm"
-                />
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
+    <ToolTrace
+      name={b.name}
+      summary={toolSummary(b.name, input)}
+      output={b.output}
+      isError={b.isError}
+      pending={pending}
+      diff={diff}
+    />
   )
 }
 
-// ---------- Assistant Turn (History) ----------
+// ---------- User Turn View (ZCode remote v4 style elevated card) ----------
+function UserTurnView({
+  turn,
+  onEdit,
+  onRewind,
+}: {
+  turn: UserTurn
+  onEdit?: () => void
+  onRewind?: () => void
+}): ReactElement {
+  const navigate = useNavigate()
+  const [copied, setCopied] = useState(false)
+  // Inline rewind confirmation — window.confirm is suppressed in embedded
+  // webviews, which made the rewind button look dead. Clicking the undo icon
+  // swaps the action row into an explicit 确认/取消 strip instead.
+  const [confirmingRewind, setConfirmingRewind] = useState(false)
 
-function AssistantTurnView({ turn }: { turn: UserTurn }): React.ReactElement | null {
-  const hasContent = turn.blocks.length > 0 || turn.panels.length > 0 || turn.changes.length > 0
-  if (!hasContent) return null
+  const copyText = (): void => {
+    if (!turn.text) return
+    void navigator.clipboard.writeText(turn.text).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    })
+  }
+
+  // Runtime-promoted child report — the payload is FOR THE AGENT (it feeds
+  // the parent's next turn), not for the human. Collapse to a one-line jump
+  // into the child session instead of rendering the full report.
+  if (turn.child) {
+    const label =
+      turn.child.kind === "result"
+        ? "子代理结果"
+        : turn.child.kind === "interrupted"
+        ? "子代理中断"
+        : "子代理失败"
+    return (
+      <div className="fade-up my-2 flex w-full">
+        <button
+          type="button"
+          className="group -mx-1.5 inline-flex h-7 items-center gap-2 rounded-md px-1.5 text-left transition-colors hover:bg-hover cursor-pointer"
+          title="打开子代理会话"
+          onClick={() => navigate(`/s/${turn.child!.id}`)}
+        >
+          <GitBranch size={14} className="flex-none text-faint" />
+          <span className="flex-none text-[14px] font-medium text-dim transition-colors group-hover:text-fg">
+            {label}
+          </span>
+          <span className="font-mono text-xs text-ghost transition-colors group-hover:text-faint">
+            {turn.child.id.slice(0, 8)}
+          </span>
+          <ChevronRight size={13} className="text-ghost transition-colors group-hover:text-faint" />
+          <span className="text-xs text-ghost transition-colors group-hover:text-dim">查看子会话</span>
+        </button>
+      </div>
+    )
+  }
 
   return (
-    <div className="fade-up my-4 flex flex-col gap-2.5">
-      <div className="flex items-center gap-2 text-2xs font-medium text-faint">
-        <span className="flex h-4 w-4 items-center justify-center rounded-full bg-accent/15 text-accent ring-1 ring-accent/30">
-          <Sparkles size={10} />
-        </span>
-        <span className="font-semibold text-fg">newhorse</span>
-      </div>
+    <div className="fade-up my-4 flex w-full flex-col items-end">
+      <div className="w-fit max-w-full rounded-lg border border-line bg-surface p-3 transition-colors hover:border-line-strong sm:max-w-[75%]">
+        {turn.text ? (
+          <div className="whitespace-pre-wrap break-words text-[14px] leading-[1.7] text-ink [overflow-wrap:anywhere] select-text">
+            {turn.text}
+          </div>
+        ) : null}
 
-      <div className="assistant-bubble min-w-0 pl-1">
-        {turn.blocks.map((b, i) =>
-          b.kind === "tool" ? (
-            <ToolBlockView key={i} b={b} />
-          ) : (
-            <BlockView key={i} b={b} />
-          ),
+        {turn.images && turn.images.length > 0 && (
+          <div className="mt-3 flex flex-wrap gap-2">
+            {turn.images.map((img, i) => (
+              <img
+                key={i}
+                src={imageUrl(img)}
+                alt=""
+                className="max-h-48 max-w-full rounded-xl border border-line object-contain shadow-hairline"
+              />
+            ))}
+          </div>
         )}
       </div>
 
-      <ChangeList changes={turn.changes} />
+      {/* Action icons below card on the right (ZCode style); the rewind icon
+          swaps this row into an inline confirm strip (webviews suppress
+          window.confirm, which made the button look dead). */}
+      {confirmingRewind ? (
+        <div className="flex items-center gap-1.5 mt-1 mr-1 rounded-md border border-bad/30 bg-bad/10 px-2 py-0.5 text-2xs select-none">
+          <span className="text-bad">回退将删除本条及其后所有内容</span>
+          <button
+            type="button"
+            className="rounded bg-bad px-2 py-0.5 font-medium text-white transition-colors hover:bg-bad/90"
+            onClick={() => {
+              setConfirmingRewind(false)
+              onRewind?.()
+            }}
+          >
+            回退
+          </button>
+          <button
+            type="button"
+            className="rounded px-1.5 py-0.5 text-dim transition-colors hover:bg-hover hover:text-fg"
+            onClick={() => setConfirmingRewind(false)}
+          >
+            取消
+          </button>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2 mt-1 mr-1 text-ghost text-xs">
+          <button
+            type="button"
+            onClick={copyText}
+            className="hover:text-dim transition-colors p-1"
+            title="复制提问"
+          >
+            <Copy size={13} className={copied ? "text-green" : ""} />
+          </button>
+          {onEdit && !turn.child && (
+            <button
+              type="button"
+              onClick={onEdit}
+              className="hover:text-dim transition-colors p-1"
+              title="编辑提问（填回输入框）"
+            >
+              <Pencil size={13} />
+            </button>
+          )}
+          {onRewind && !turn.child && (
+            <button
+              type="button"
+              onClick={() => setConfirmingRewind(true)}
+              className="hover:text-dim transition-colors p-1"
+              title="回退到这一步（删除本条及之后）"
+            >
+              <Undo2 size={13} />
+            </button>
+          )}
+        </div>
+      )}
     </div>
   )
 }
 
-// ---------- Live Turn (User Bubble first, then streaming assistant reply) ----------
+/** ZCode status-bar clock: 48 秒 / 2 分 43 秒 / 1 小时 2 分 */
+// ---------- Assistant Turn View (History Stage) ----------
+function AssistantTurnView({
+  turn,
+  onRetry,
+}: {
+  turn: UserTurn
+  onRetry?: () => void
+}): ReactElement | null {
+  // Settled turns collapse the execution (thinking + tools) into the status
+  // bar; prose stays visible either way. (ZCode 已工作 X 分 X 秒 > semantics)
+  const [stepsOpen, setStepsOpen] = useState(false)
 
-function LiveTurnView({ turn }: { turn: LiveTurn }): React.ReactElement {
-  const lastText = [...turn.blocks].reverse().find((b) => b.kind === "text")
+  const hasContent = turn.blocks.length > 0 || turn.panels.length > 0 || turn.changes.length > 0
+  if (!hasContent) return null
+
+  const grouped = compactSingletonGroups(groupBlocks(turn.blocks))
+  const hasSteps = grouped.some((g) => g.kind === "context-group" || g.b.kind === "tool" || g.b.kind === "thinking")
+  const fullText = turn.blocks
+    .filter((b): b is { kind: "text"; text: string; ts?: number } => b.kind === "text")
+    .map((b) => b.text)
+    .join("\n\n")
+
+  // Per-path diffstats for ZCode-style edit rows (+A -D next to the file).
+  const diffByPath = new Map(turn.changes.map((c) => [c.path, c]))
+  const diffOf = (b: TurnBlock): { added: number; removed: number } | undefined => {
+    if (b.kind !== "tool") return undefined
+    const inp = (b.input ?? {}) as Record<string, unknown>
+    return diffByPath.get(String(inp.path ?? inp.file_path ?? ""))
+  }
+
+  // Footer timestamp: the last timestamped block (honest history time), not
+  // the render time.
+  const lastTs = [...turn.blocks].reverse().find((b) => typeof (b as { ts?: number }).ts === "number") as
+    | { ts: number }
+    | undefined
+  const timeStr = lastTs
+    ? new Date(lastTs.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    : undefined
+
+  // Settle feedback (ZCode/Claude-Code-style end-of-turn summary): duration and
+  // token counts aggregated from this turn's model calls.
+  const stats = turn.modelCalls.length
+    ? {
+        ms: turn.modelCalls.reduce((n, c) => n + (c.durationMs ?? 0), 0),
+        tokIn: turn.modelCalls.reduce((n, c) => n + (c.inputTokens ?? 0), 0),
+        tokOut: turn.modelCalls.reduce((n, c) => n + (c.outputTokens ?? 0), 0),
+      }
+    : undefined
+
+  // Status-bar duration: WALL CLOCK (prompt admitted → last event), matching
+  // the running turn's timer. stats.ms (model-call time only) is a fallback —
+  // using it there made the number visibly shrink at settle.
+  const firstTs = turn.ts ?? (turn.blocks.find((b) => typeof (b as { ts?: number }).ts === "number") as { ts?: number } | undefined)?.ts
+  const wallMs = firstTs && lastTs ? lastTs.ts - firstTs : 0
+  const workedMs = wallMs > 0 ? wallMs : (stats?.ms ?? 0)
+  const workedLabel = workedMs > 0 ? "已工作 " + fmtClock(workedMs) : "已工作"
 
   return (
-    <div className="fade-up my-4 flex flex-col gap-2.5">
-      {/* 1. Immediate User Question Bubble (renders instantly upon send) */}
+    <div className="fade-up my-4 flex flex-col gap-2">
+      {/* ZCode status bar: the turn's execution collapses into one line —
+          已工作 X 分 X 秒 > — prose reads clean, steps expand on demand */}
+      {hasSteps && (
+        <button
+          type="button"
+          aria-expanded={stepsOpen}
+          title={stepsOpen ? "收起执行步骤" : "展开执行步骤"}
+          onClick={() => setStepsOpen((v) => !v)}
+          className="group -mx-1.5 inline-flex h-7 w-fit items-center gap-1.5 rounded-md px-1.5 text-[13px] font-medium text-faint transition-colors hover:bg-hover hover:text-dim active:bg-hover cursor-pointer select-none"
+        >
+          <span>{workedLabel}</span>
+          <ChevronRight
+            size={12}
+            className={`transition-transform duration-200 text-faint group-hover:text-dim ${stepsOpen ? "rotate-90" : ""}`}
+          />
+        </button>
+      )}
+
+      {/* Chronological flow: prose always visible; thinking/tools follow the
+          status bar's open state */}
+      <div className="flex flex-col gap-2 text-[14px] leading-[1.75] text-ink">
+        {grouped.map((g, i) => {
+          if (g.kind === "context-group") {
+            if (!stepsOpen) return null
+            return g.tools.map((tool) => <ToolBlockView key={`cg-${i}-${tool.callId}`} b={tool} diff={diffOf(tool)} />)
+          }
+          const b = g.b
+          if (b.kind === "tool") {
+            if (!stepsOpen) return null
+            return <ToolBlockView key={`tb-${i}`} b={b} diff={diffOf(b)} />
+          }
+          if (b.kind === "thinking") {
+            if (!stepsOpen) return null
+            return <BlockView key={`bv-${i}`} b={b} />
+          }
+          return <BlockView key={`bv-${i}`} b={b} />
+        })}
+      </div>
+
+      <ChangeList changes={turn.changes ?? []} />
+
+      {/* ZCode style action bar */}
+      <TurnFooter textToCopy={fullText} timestamp={timeStr} onRetry={onRetry} stats={stats} />
+    </div>
+  )
+}
+
+// ---------- Live Streaming Turn View (Runtime Stream Stage) ----------
+function LiveTurnView({ turn }: { turn: LiveTurn }): ReactElement {
+  const lastText = [...turn.blocks].reverse().find((b) => b.kind === "text")
+  const currentMood = inferLiveMood(turn)
+  const grouped = compactSingletonGroups(groupLiveBlocks(turn.blocks))
+
+  // While the turn runs the steps stream live (status bar expanded); when it
+  // settles the steps fold back into the 已工作 status line.
+  const [stepsOpen, setStepsOpen] = useState(turn.busy)
+  const [liveSec, setLiveSec] = useState(0)
+  useEffect(() => {
+    if (turn.busy) {
+      setStepsOpen(true)
+      setLiveSec(Math.floor((Date.now() - turn.startedAt) / 1000))
+      const t = setInterval(() => setLiveSec(Math.floor((Date.now() - turn.startedAt) / 1000)), 1000)
+      return () => clearInterval(t)
+    }
+    setStepsOpen(false)
+  }, [turn.busy, turn.startedAt])
+  const hasSteps = grouped.some((g) => g.kind === "context-group" || g.b.kind === "tool" || g.b.kind === "thinking")
+
+  return (
+    <div className="fade-up my-4 flex flex-col gap-2">
+      {/* 1. Immediate User Prompt Card (ZCode style) */}
       {turn.userPrompt && (
-        <div className="my-2 flex flex-col items-end gap-2">
-          <div className="flex max-w-[88%] items-start gap-2.5">
-            <div className="user-bubble min-w-0">
-              <div className="whitespace-pre-wrap text-sm leading-relaxed text-fg select-text">{turn.userPrompt}</div>
-              {turn.images && turn.images.length > 0 && (
-                <div className="mt-2.5 flex flex-wrap gap-2">
-                  {turn.images.map((img, i) => (
-                    <img
-                      key={i}
-                      src={imageUrl(img)}
-                      alt=""
-                      className="max-h-48 rounded-xl border border-line object-contain shadow-sm"
-                    />
-                  ))}
-                </div>
-              )}
+        <div className="my-2 flex w-full flex-col items-end">
+          <div className="w-fit max-w-full rounded-lg border border-line bg-surface p-3 sm:max-w-[75%]">
+            <div className="whitespace-pre-wrap break-words text-[14px] leading-[1.7] text-ink [overflow-wrap:anywhere] select-text">
+              {turn.userPrompt}
             </div>
+            {turn.images && turn.images.length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {turn.images.map((img, i) => (
+                  <img
+                    key={i}
+                    src={imageUrl(img)}
+                    alt=""
+                    className="max-h-48 max-w-full rounded-xl border border-line object-contain shadow-hairline"
+                  />
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
 
-      {/* 2. Assistant Streaming Reply */}
-      <div className="flex items-center gap-2 text-2xs font-medium text-faint">
-        <span className="flex h-4 w-4 items-center justify-center rounded-full bg-accent/20 text-accent ring-1 ring-accent/40 animate-pulse">
-          <Sparkles size={10} />
-        </span>
-        <span className="font-semibold text-fg">newhorse</span>
-        {turn.busy && <span className="text-ghost">· 正在生成…</span>}
-      </div>
+      {/* 2. ZCode status bar: 工作中 X 分 X 秒 > — steps stream below while
+          running and fold back into the line when the turn settles */}
+      {hasSteps ? (
+        <button
+          type="button"
+          aria-expanded={stepsOpen}
+          title={stepsOpen ? "收起执行步骤" : "展开执行步骤"}
+          onClick={() => setStepsOpen((v) => !v)}
+          className="group -mx-1.5 my-0.5 inline-flex h-7 w-fit items-center gap-2 rounded-md px-1.5 text-[13px] font-medium text-faint transition-colors hover:bg-hover hover:text-dim active:bg-hover cursor-pointer select-none"
+        >
+          <EmotionBall mood={currentMood} size={16} lite hasRing={false} />
+          {!turn.busy && turn.error ? (
+            <span className="text-bad">已中断</span>
+          ) : (
+            <span>
+              {turn.busy ? "工作中" : "已工作"}
+              {liveSec > 0 ? " " + fmtClock(liveSec * 1000) : ""}
+            </span>
+          )}
+          {!turn.busy && turn.error && (
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" className="flex-none text-bad">
+              <path d="M18 6L6 18M6 6l12 12" />
+            </svg>
+          )}
+          {turn.busy && <PixelLoader label="" showTimer={false} />}
+          <ChevronRight
+            size={12}
+            className={`flex-none transition-transform duration-200 text-faint group-hover:text-dim ${stepsOpen ? "rotate-90" : ""}`}
+          />
+        </button>
+      ) : (
+        <div className="group -mx-1.5 my-0.5 inline-flex h-7 w-fit items-center gap-2 rounded-md px-1.5 text-[13px] font-medium text-faint select-none">
+          <EmotionBall mood={currentMood} size={16} lite hasRing={false} />
+          {turn.busy && (
+            <PixelLoader
+              label={
+                currentMood === "searching"
+                  ? "正在检索资料"
+                  : currentMood === "thinking"
+                  ? "正在推导演化"
+                  : currentMood === "working"
+                  ? "正在执行操作"
+                  : "工作中"
+              }
+            />
+          )}
+        </div>
+      )}
 
-      <div className="assistant-bubble min-w-0 pl-1">
-        {turn.blocks.map((b, i) => {
+      {/* 3. Chronological flow: reasoning / tools / prose in event order */}
+      <div className="flex flex-col gap-2 text-[14px] leading-[1.75] text-ink">
+        {grouped.map((g, i) => {
+          if (g.kind === "context-group") {
+            if (!stepsOpen) return null
+            const isGroupPending = g.tools.some((t) => t.output === undefined)
+            return (
+              <>
+                {g.tools.map((tool) => (
+                  <ToolBlockView
+                    key={`lcg-${i}-${tool.callId}`}
+                    b={{ kind: "tool", callId: tool.callId, name: tool.name, input: tool.input, output: tool.output, isError: tool.isError }}
+                    pending={isGroupPending || tool.streaming === true}
+                  />
+                ))}
+              </>
+            )
+          }
+          const b = g.b
           if (b.kind === "tool") {
+            if (!stepsOpen) return null
             return (
               <ToolBlockView
-                key={i}
-                b={{ kind: "tool", name: b.name, input: b.input, output: b.output, isError: b.isError }}
-                pending={b.output === undefined}
+                key={`ltb-${i}`}
+                b={{ kind: "tool", callId: b.callId, name: b.name, input: b.input, output: b.output, isError: b.isError }}
+                pending={b.streaming === true || b.output === undefined}
               />
             )
           }
-          const streaming = b.kind === "thinking" || b === lastText
-          return <BlockView key={i} b={b} streaming={streaming || undefined} />
+          if (b.kind === "thinking") {
+            if (!stepsOpen) return null
+            return <BlockView key={`lbv-${i}`} b={b} streaming={true} />
+          }
+          if (b.kind === "text") {
+            return <BlockView key={`ltext-${i}`} b={b} streaming={g.b === lastText || undefined} />
+          }
+          if (b.kind === "note") {
+            return <BlockView key={`lnote-${i}`} b={b} />
+          }
+          return null
         })}
       </div>
 
       {turn.panels.map((p) => (
         <PanelCard key={p.panelId} panel={p} />
       ))}
+
+      <ChangeList changes={turn.changes ?? []} />
     </div>
   )
 }
 
-// ---------- The Transcript Component ----------
-
-export function Transcript({ sessionId }: { sessionId: string }): React.ReactElement {
-  const { sessions } = useApp()
-  const { live, dismiss } = useStream()
+// ---------- Main Transcript Component ----------
+export function Transcript({
+  sessionId,
+  onOpenMobileNav,
+  onNewTask,
+  mobileNavOpen = false,
+}: {
+  mobileNavOpen?: boolean
+  sessionId: string
+  onOpenMobileNav?: () => void
+  onNewTask?: () => void
+}): ReactElement {
+  const { sessions, workspace } = useApp()
+  const { live, dismiss, stop } = useStream()
 
   const [events, setEvents] = useState<StoredEventRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  // Workspace Pulse is the single source for live session status; the resource
+  // pane stays focused on opening and operating host capabilities.
+  const navMode = useMediaQuery("(max-width: 767px)")
+  const loadSeq = useRef(0)
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (): Promise<StoredEventRow[] | null> => {
+    const requestId = ++loadSeq.current
     try {
       const rows = await api.events(sessionId)
+      if (requestId !== loadSeq.current) return null
       setEvents(rows)
       setError(null)
+      return rows
     } catch (err) {
+      if (requestId !== loadSeq.current) return null
       setError(err instanceof Error ? err.message : String(err))
+      return null
     } finally {
-      setLoading(false)
+      if (requestId === loadSeq.current) setLoading(false)
     }
   }, [sessionId])
 
@@ -359,15 +673,47 @@ export function Transcript({ sessionId }: { sessionId: string }): React.ReactEle
     if (!settled) return
     let alive = true
     void (async () => {
-      await load()
-      if (alive && liveTurn) dismiss(sessionId, liveTurn.startedAt)
+      const rows = await load()
+      if (alive && rows && liveTurn) {
+        const promptSeq = rows
+          .filter((event) => (event.type === "Session.Prompted" || event.type === "Session.PromptAdmitted") && String(event.data?.id ?? "") === liveTurn.promptId)
+          .reduce<number | undefined>((max, event) => max === undefined || event.seq > max ? event.seq : max, undefined)
+        const settledAfterPrompt = promptSeq !== undefined && rows.some((event) => event.seq > promptSeq && (event.type === "Session.StepEnded" || event.type === "Session.Interrupted"))
+        if (settledAfterPrompt) dismiss(sessionId, liveTurn.startedAt)
+      }
     })()
     return () => {
       alive = false
     }
-  }, [settled, sessionId, load, dismiss])
+  }, [settled, sessionId, load, dismiss, liveTurn])
 
   const items = useMemo(() => foldTranscript(events ?? []), [events])
+
+  const livePromptSeq = useMemo(() => {
+    if (!liveTurn) return undefined
+    return [...(events ?? [])].reverse().find((event) =>
+      (event.type === "Session.PromptAdmitted" || event.type === "Session.Prompted") && String(event.data?.id ?? "") === liveTurn.promptId,
+    )?.seq
+  }, [events, liveTurn])
+
+  // the folded log — rendering both the folded card and the LiveTurnView card
+  // would duplicate the user message (most visible after switching sessions
+  // away and back). Drop only the exact durable event that belongs to this live
+  // prompt; identical prompt text is not an identity.
+  const visibleItems = useMemo(() => {
+    if (!liveTurn) return items
+    // Primary identity: the durable prompt's id (the runtime uses the client's
+    // promptId for PromptAdmitted/Prompted). Fallback: identical user text, so a
+    // turn whose id did not survive the round-trip (e.g. a pre-existing log with
+    // a bogus/empty id) still does not render twice while streaming.
+    let idx = items.findIndex((it) => it.kind === "user" && it.promptId && it.promptId === liveTurn.promptId)
+    if (idx === -1 && liveTurn.userPrompt?.trim()) {
+      const target = liveTurn.userPrompt.trim()
+      idx = items.findIndex((it) => it.kind === "user" && it.text.trim() === target)
+    }
+    if (idx === -1) return items
+    return items.filter((_, i) => i !== idx)
+  }, [items, liveTurn])
 
   // --- Auto scroll ---
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -388,15 +734,61 @@ export function Transcript({ sessionId }: { sessionId: string }): React.ReactEle
   const title = row ? (row.role === "butler" ? "newhorse" : prettyTitle(row.title, "未命名会话")) : sessionId.slice(0, 12)
   const empty = !loading && !error && events !== null && events.length <= 1 && !liveTurn
 
+  const wsName = row?.workspace
+    ? row.workspace.split(/[/\\]/).filter(Boolean).pop() ?? "newhorse"
+    : "newhorse"
+
   const onSelectPrompt = (promptText: string): void => {
     window.dispatchEvent(new CustomEvent("nh-fill-prompt", { detail: promptText }))
   }
 
+  // A model pick in the sidebar switcher applies to the OPEN session too
+  // (Session.ModelSet) — otherwise the choice only affects future sessions and
+  // the composer label looks stuck.
+  useEffect(() => {
+    const onApply = (event: Event): void => {
+      const model = (event as CustomEvent<string>).detail
+      if (!model) return
+      void api.setSessionModel(sessionId, model).then(() => {
+        void load()
+        window.dispatchEvent(new Event("nh-refresh-sessions"))
+      }).catch(() => {})
+    }
+    window.addEventListener("nh-apply-session-model", onApply)
+    return () => window.removeEventListener("nh-apply-session-model", onApply)
+  }, [sessionId, load])
+
+  const rewindTo = (seq: number): void => {
+    // In-place rewind (Session.Truncated). The destructive-action confirmation
+    // happens inline in the turn card (window.confirm is suppressed in some
+    // embedded webviews).
+    void api
+      .truncateSession(sessionId, seq)
+      .then(() => {
+        void load()
+        window.dispatchEvent(new Event("nh-refresh-sessions"))
+      })
+      .catch((err) => {
+        // Surface a non-fatal toast; do not navigate away.
+        window.dispatchEvent(new CustomEvent("nh-toast", { detail: err instanceof Error ? err.message : "回退失败" }))
+      })
+  }
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      {/* Sleek Header Bar */}
-      <div className="flex flex-none items-center justify-between border-b border-line bg-panel/60 px-6 py-3 backdrop-blur-md">
-        <div className="flex min-w-0 items-center gap-2.5">
+      {/* Sleek Header Bar — aligned with ZCode remote v4 */}
+      <div className="relative flex flex-none items-center justify-between border-b border-line bg-panel px-3 sm:px-6 py-2 sm:py-2.5 pt-safe-top">
+        <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
+          {/* Hamburger button on mobile */}
+          <button
+            type="button"
+            className="icon-btn !h-9 !w-9 md:hidden text-fg"
+            title="展开会话列表"
+            onClick={() => onOpenMobileNav?.()}
+          >
+            <Menu size={18} />
+          </button>
+
           <span
             className={`dot flex-none ${
               liveTurn?.busy || row?.status === "active"
@@ -406,14 +798,39 @@ export function Transcript({ sessionId }: { sessionId: string }): React.ReactEle
                 : "dot-settled"
             }`}
           />
-          <h1 className="min-w-0 truncate text-sm font-semibold tracking-tight text-fg">{title}</h1>
+          <h1 className="min-w-0 truncate text-xs sm:text-sm font-semibold tracking-tight text-fg">
+            {title}
+          </h1>
+
+          {/* Workspace capsule */}
+          <span className="hidden sm:inline-flex items-center gap-1 rounded-md border border-line bg-surface/80 px-2 py-0.5 text-2xs text-dim font-mono select-none">
+            <Folder size={11} className="text-dim" />
+            <span>{wsName}</span>
+          </span>
+
+
+        </div>
+
+        {/* Right header actions */}
+        <div className="flex items-center gap-2">
+          {/* Mobile New Task Shortcut */}
+          <button
+            type="button"
+            className="icon-btn !h-9 !w-9 md:hidden text-dim hover:text-fg"
+            title="新建任务"
+            onClick={onNewTask}
+          >
+            <Plus size={18} />
+          </button>
         </div>
       </div>
 
-      {/* Main chat stream container (responsive wide for 2K & ultrawide) */}
-      <div className="relative min-h-0 flex-1">
-        <div ref={scrollRef} onScroll={onScroll} className="h-full overflow-y-auto">
-          <div className="mx-auto flex min-h-full w-full max-w-4xl lg:max-w-5xl 2xl:max-w-6xl flex-col px-4 sm:px-6 lg:px-8 py-8">
+      <div className="relative flex min-h-0 flex-1">
+        {/* Chat sub-column: stream + composer share one column */}
+        <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+          <div className="relative min-h-0 flex-1">
+            <div ref={scrollRef} onScroll={onScroll} className="h-full overflow-y-auto">
+              <div className="mx-auto flex min-h-full w-full max-w-[880px] flex-col px-3 sm:px-6 lg:px-8 py-4 sm:py-8">
             {loading && (
               <div className="flex justify-center py-16">
                 <Spinner size={20} />
@@ -432,56 +849,28 @@ export function Transcript({ sessionId }: { sessionId: string }): React.ReactEle
               />
             )}
 
-            {/* Exclusive Planetary Hero Empty State — only place with the live Emo Ball */}
             {empty && (
-              <div className="pop-in my-auto flex flex-col items-center py-12 text-center">
-                <div className="float-gentle mb-4">
-                  <EmotionBall mood="listening" size={136} interactive hasRing />
-                </div>
-                <h2 className="text-xl font-bold tracking-tight text-fg">newhorse 随时就绪</h2>
-                <p className="mt-1.5 max-w-md text-xs leading-relaxed text-dim">
-                  模型无关的智能体引擎。支持调用工具、读写代码、检索网络并实时呈现可视化面板。
-                </p>
-
-                {/* Prompt starter pills */}
-                <div className="mt-8 flex flex-wrap justify-center gap-2.5">
-                  <button
-                    className="prompt-pill"
-                    onClick={() => onSelectPrompt("请读取当前仓库结构，分析并总结代码工程模块。")}
-                  >
-                    <Compass size={13} className="text-accent" />
-                    <span>读取当前仓库结构并总结</span>
-                  </button>
-                  <button
-                    className="prompt-pill"
-                    onClick={() =>
-                      onSelectPrompt("请使用 web_search 检索最新的 LLM Agent 架构发展趋势并列出要点。")
-                    }
-                  >
-                    <Globe size={13} className="text-sky-400" />
-                    <span>检索前沿 Agent 架构趋势</span>
-                  </button>
-                  <button
-                    className="prompt-pill"
-                    onClick={() =>
-                      onSelectPrompt("请用规范的 Mermaid flowchart TD 语法绘制一个多代理协作拓扑图。")
-                    }
-                  >
-                    <Code2 size={13} className="text-emerald-400" />
-                    <span>绘制多 Agent 架构拓扑图</span>
-                  </button>
-                </div>
+              <div className="my-auto flex w-full flex-col items-center gap-5 py-12 text-center">
+                <EmotionBall mood="listening" size={116} interactive hasRing className="float-gentle" />
+                <div><h2 className="text-xl font-semibold tracking-tight text-fg">准备好了</h2><p className="mt-2 text-sm text-faint">描述目标，newhorse 会在当前工作区持续推进。</p></div>
               </div>
             )}
 
             {/* Chat message stream */}
             {!loading &&
               !error &&
-              items.map((it, i) =>
+              visibleItems.map((it, i) =>
                 it.kind === "user" ? (
                   <div key={`turn-${i}`}>
-                    <UserTurnView turn={it} />
-                    <AssistantTurnView turn={it} />
+                    <UserTurnView
+                      turn={it}
+                      onEdit={() => it.text && onSelectPrompt(it.text)}
+                      onRewind={() => rewindTo(it.seq)}
+                    />
+                    <AssistantTurnView
+                      turn={it}
+                      onRetry={() => it.text && onSelectPrompt(it.text)}
+                    />
                   </div>
                 ) : (
                   <BlockView key={`note-${i}`} b={it} />
@@ -493,18 +882,27 @@ export function Transcript({ sessionId }: { sessionId: string }): React.ReactEle
           </div>
         </div>
 
-        {/* Floating scroll to bottom anchor */}
-        {!sticky && (
-          <button
-            className="pop-in btn absolute bottom-4 left-1/2 z-20 -translate-x-1/2 !bg-panel/95 !border-line-strong text-fg shadow-overlay backdrop-blur-md"
-            onClick={() => {
-              const el = scrollRef.current
-              if (el) el.scrollTop = el.scrollHeight
-            }}
-          >
-            <ChevronDown size={13} /> 回到底部
-          </button>
-        )}
+            {/* Floating scroll to bottom anchor */}
+            {!sticky && (
+              <button
+                type="button"
+                className="pop-in btn absolute bottom-4 left-1/2 z-20 -translate-x-1/2 !bg-panel/95 !border-line-strong text-fg shadow-overlay backdrop-blur-md"
+                onClick={() => {
+                  const el = scrollRef.current
+                  if (el) el.scrollTop = el.scrollHeight
+                }}
+              >
+                <ChevronDown size={13} /> 回到底部
+              </button>
+            )}
+          </div>
+
+          {/* Dock composer lives INSIDE the chat sub-column so it stays
+              center-aligned with the stream column (mobile keeps it pinned) */}
+          <div>
+            <Composer sessionId={sessionId} variant="dock" />
+          </div>
+        </div>
       </div>
     </div>
   )

@@ -9,6 +9,7 @@
 import { ArrowUpRight, Braces, FileDiff, ImageIcon, Table2 } from "lucide-react"
 import { Markdown } from "./Markdown"
 import type { PanelInfo } from "../api/types"
+import { safeExternalUrl } from "../lib/url"
 
 const KIND_ICON: Record<string, React.ReactElement> = {
   diff: <FileDiff size={13} />,
@@ -56,11 +57,14 @@ function TableBody({ payload }: { payload: Record<string, unknown> }): React.Rea
       <div className="flex flex-col gap-2 p-2.5">
         {rows.map((r, i) => (
           <div key={i} className="min-w-0">
-            {typeof r.url === "string" && r.url ? (
-              <a href={r.url} target="_blank" rel="noreferrer" className="block truncate text-xs font-medium text-accent hover:underline">
-                {String(r.title ?? r.url)}
-              </a>
-            ) : (
+            {typeof r.url === "string" && r.url ? (() => {
+              const href = safeExternalUrl(r.url)
+              return href ? (
+                <a href={href} target="_blank" rel="noreferrer" className="block truncate text-xs font-medium text-accent hover:underline">
+                  {String(r.title ?? r.url)}
+                </a>
+              ) : <span className="block truncate text-xs font-medium text-dim" title="链接协议不受支持">{String(r.title ?? r.url)}</span>
+            })() : (
               <span className="truncate text-xs font-medium text-fg">{String(r.title ?? "")}</span>
             )}
             {typeof r.snippet === "string" && r.snippet ? <div className="mt-0.5 line-clamp-2 text-2xs leading-relaxed text-dim">{r.snippet}</div> : null}
@@ -78,11 +82,14 @@ function UrlBody({ payload }: { payload: Record<string, unknown> }): React.React
   const preview = typeof payload.preview === "string" ? payload.preview : ""
   return (
     <div className="p-2.5">
-      {url ? (
-        <a href={url} target="_blank" rel="noreferrer" className="flex items-center gap-1 break-all text-xs font-medium text-accent hover:underline">
-          {url} <ArrowUpRight size={12} className="flex-none" />
-        </a>
-      ) : null}
+      {url ? (() => {
+        const href = safeExternalUrl(url)
+        return href ? (
+          <a href={href} target="_blank" rel="noreferrer" className="flex items-center gap-1 break-all text-xs font-medium text-accent hover:underline">
+            {url} <ArrowUpRight size={12} className="flex-none" />
+          </a>
+        ) : <span className="text-xs text-dim" title="链接协议不受支持">{url}</span>
+      })() : null}
       {preview ? (
         <div className="mt-1.5 max-h-40 overflow-y-auto whitespace-pre-wrap break-words text-2xs leading-relaxed text-dim">{preview}</div>
       ) : null}

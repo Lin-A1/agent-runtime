@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react"
 import { Check, Copy, Download, Image as ImageIcon } from "lucide-react"
+import { safeExternalUrl } from "../lib/url"
 
 /**
  * Markdown renderer for assistant turns:
@@ -58,6 +59,15 @@ export function Markdown({ text, streaming }: { text: string; streaming?: boolea
       continue
     }
 
+    // Horizontal rule: a line that is ONLY the markdown divider (--- / *** /
+    // ___). The model often uses `---` to separate sections; without this it
+    // renders as a literal "---" text line (looks like a broken render).
+    if (/^(\s*)(-{3,}|\*{3,}|_{3,})(\s*)$/.test(line) && !line.trim().startsWith("- ")) {
+      blocks.push(<hr key={key++} className="my-4 border-0 border-t border-line-strong" />)
+      i++
+      continue
+    }
+
     if (/^>\s?/.test(line)) {
       const buf: string[] = []
       while (i < lines.length && /^>\s?/.test(lines[i]!)) {
@@ -65,7 +75,7 @@ export function Markdown({ text, streaming }: { text: string; streaming?: boolea
         i++
       }
       blocks.push(
-        <blockquote key={key++} className="my-2.5 border-l-2 border-accent/60 pl-3.5 text-xs leading-relaxed text-dim italic">
+        <blockquote key={key++} className="my-2.5 border-l-2 border-accent/60 pl-3.5 text-xs leading-relaxed text-dim">
           {inline(buf.join(" "))}
         </blockquote>,
       )
@@ -84,7 +94,7 @@ export function Markdown({ text, streaming }: { text: string; streaming?: boolea
         i++
       }
       blocks.push(
-        <div key={key++} className="my-3 overflow-x-auto rounded-xl border border-line bg-card shadow-sm">
+        <div key={key++} className="my-3 overflow-x-auto rounded-md border border-line bg-card">
           <table className="w-full text-left text-xs border-collapse">
             <thead>
               <tr className="border-b border-line bg-hover/40 text-2xs font-semibold uppercase text-faint">
@@ -121,11 +131,11 @@ export function Markdown({ text, streaming }: { text: string; streaming?: boolea
       }
       blocks.push(
         ordered ? (
-          <ol key={key++} className="my-2 ml-5 list-decimal text-sm leading-relaxed text-dim space-y-0.5">
+          <ol key={key++} className="my-2 ml-5 list-decimal text-dim space-y-0.5">
             {items}
           </ol>
         ) : (
-          <ul key={key++} className="my-2 ml-5 list-disc text-sm leading-relaxed text-dim space-y-0.5">
+          <ul key={key++} className="my-2 ml-5 list-disc text-dim space-y-0.5">
             {items}
           </ul>
         ),
@@ -152,7 +162,7 @@ export function Markdown({ text, streaming }: { text: string; streaming?: boolea
       i++
     }
     blocks.push(
-      <p key={key++} className="my-2 text-sm leading-relaxed text-fg">
+      <p key={key++} className="my-2 text-fg">
         {inline(buf.join("\n"))}
       </p>,
     )
@@ -297,7 +307,7 @@ function MermaidBlock({ code, isClosed = true }: { code: string; isClosed?: bool
   }
 
   return (
-    <div className="codeblock my-3 overflow-hidden rounded-xl border border-line bg-card shadow-sm">
+    <div className="codeblock my-3 overflow-hidden rounded-md border border-line bg-card">
       <div className="codeblock-bar flex items-center justify-between border-b border-line bg-hover/30 px-3 py-1.5 text-2xs text-faint">
         <span className="font-mono font-medium text-dim">mermaid 拓扑图</span>
         <div className="flex items-center gap-2">
@@ -349,7 +359,7 @@ function CodeBlock({ lang, code }: { lang: string; code: string }): React.ReactE
   const bodyLines = code.replace(/\n$/, "").split("\n")
 
   return (
-    <div className="codeblock my-3 overflow-hidden rounded-xl border border-line bg-surface shadow-sm">
+    <div className="codeblock my-3 overflow-hidden rounded-md border border-line bg-surface">
       <div className="codeblock-bar flex items-center justify-between border-b border-line bg-hover/30 px-3 py-1.5 text-2xs text-faint">
         <span className="font-mono text-dim">{lang || "code"}</span>
         <button
@@ -394,10 +404,15 @@ function inline(text: string): React.ReactNode[] {
       )
     else {
       const mm = token.match(/\[([^\]]+)\]\(([^)]+)\)/)!
+      const href = safeExternalUrl(mm[2])
       out.push(
-        <a key={k++} href={mm[2]} target="_blank" rel="noreferrer" className="text-accent underline underline-offset-2 hover:text-accent-strong">
-          {mm[1]}
-        </a>,
+        href ? (
+          <a key={k++} href={href} target="_blank" rel="noreferrer" className="text-accent underline underline-offset-2 hover:text-accent-strong">
+            {mm[1]}
+          </a>
+        ) : (
+          <span key={k++} className="text-dim" title="链接协议不受支持">{mm[1]}</span>
+        ),
       )
     }
     last = m.index + token.length

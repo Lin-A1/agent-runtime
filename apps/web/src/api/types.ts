@@ -139,6 +139,10 @@ export interface ApprovalRequest {
   options?: string[]
   createdAt?: number
   expiresAt?: number
+  sessionId?: string
+  promptId?: string
+  tool?: string
+  callId?: string
 }
 
 // --- schedules (runtime/scheduler.ts) ---
@@ -305,20 +309,46 @@ export interface CommandInfo {
 }
 
 /** Flat — the server returns {catalog: ModelCatalog | null}; api.catalog()
- *  already unwraps the envelope, so this is the inner shape. */
+ *  already unwraps the envelope, so this is the inner shape. Mirrors the
+ *  runtime catalog contract (provider endpoints/defaultKind, model
+ *  modalities object, reasoning as unknown capability flag). */
 export interface ModelCatalog {
   schemaVersion: number
   providers: Array<{
     id: string
+    name?: string
+    endpoints?: { baseURL?: string; paths?: string[] }
+    defaultKind?: string
     models: Array<{
       id: string
+      name?: string
       kinds?: string[]
-      modalities?: string[]
+      modalities?: { input?: string[]; output?: string[] }
       contextWindowTokens?: number
       maxOutputTokens?: number
-      reasoning?: boolean
+      reasoning?: unknown
     }>
   }>
+}
+
+/** Redacted provider profile view — GET /v1/providers. Never carries secrets. */
+export interface ProviderProfileView {
+  id: string
+  name?: string
+  kind: string
+  baseUrl: string
+  model?: string
+  contextWindowTokens?: number
+  maxOutputTokens?: number
+  hasApiKey: boolean
+  apiKeyHint?: string
+}
+
+export interface ProvidersView {
+  activeProviderId?: string
+  providers: ProviderProfileView[]
+  provider: { kind: string; baseUrl: string; hasApiKey?: boolean }
+  model: string
 }
 
 // --- per-session surfaces ---
@@ -342,6 +372,31 @@ export interface ContextView {
   estTokens: number
   windowTokens?: number
   ratio?: number
+  /** Number of model calls this session has made. */
+  calls?: number
+  /** Real token accounting folded from Session.ModelCalled usage. */
+  inputTokens?: number
+  outputTokens?: number
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
+  reasoningTokens?: number
+  /** Average cache hit rate across calls (cacheRead/input). */
+  avgCacheHitRate?: number
+  /** Last model + provider identity (from the most recent ModelCalled). */
+  model?: string
+  providerId?: string
+  /** Single-model-view compaction state. */
+  compacted?: boolean
+  compactedAt?: number
+  compactedSeq?: number
+  /** Composition breakdown (token estimates per bucket). */
+  breakdown?: {
+    systemPromptTokens: number
+    messagesTokens: number
+    builtinToolsTokens: number
+    mcpToolsTokens: number
+    otherTokens: number
+  }
 }
 
 /** A panel card posted by a tool's `presents` derivation (Session.PanelPosted

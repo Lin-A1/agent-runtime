@@ -23,6 +23,7 @@ import type {
   MemoryRecord,
   MemoryType,
   ModelCatalog,
+  ProvidersView,
   Schedule,
   SessionRow,
   SettingsView,
@@ -109,16 +110,20 @@ export async function retry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
   throw lastErr
 }
 
-async function request<T>(path: string, init?: { method?: string; body?: unknown }): Promise<T> {
-  return retry(async () => {
+async function request<T>(path: string, init?: { method?: string; body?: unknown; signal?: AbortSignal }): Promise<T> {
+  const operation = async (): Promise<T> => {
     const res = await fetch(baseUrl() + path, {
       method: init?.method ?? "GET",
       headers: headers(),
       ...(init?.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
+      ...(init?.signal ? { signal: init.signal } : {}),
     })
     if (!res.ok) throw await parseError(res)
     return (await res.json()) as T
-  })
+  }
+  // A transport retry is safe for reads, but a disconnected write may already
+  // have reached the server; replaying it could duplicate a side effect.
+  return init?.method && init.method !== "GET" ? operation() : retry(operation)
 }
 
 function qs(params: Record<string, string | number | undefined>): string {
@@ -133,19 +138,28 @@ function qs(params: Record<string, string | number | undefined>): string {
 
 const MAX_FRAME_BYTES = 16 * 1024 * 1024
 
-async function* sseFrames(res: Response): AsyncGenerator<string> {
-  const reader = res.body!.getReader()
+async function* sseFrames(res: Response, signal?: AbortSignal): AsyncGenerator<string> {
+  if (!res.body) throw new StreamInterruptedError()
+  const reader = res.body.getReader()
+  const cancel = (): void => { void reader.cancel().catch(() => {}) }
+  signal?.addEventListener("abort", cancel, { once: true })
   const decoder = new TextDecoder()
   let buffer = ""
+  let pendingCR = false
   try {
     for (;;) {
+      signal?.throwIfAborted()
       const { done, value } = await reader.read()
+      signal?.throwIfAborted()
       if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      if (buffer.length > MAX_FRAME_BYTES) throw new Error("SSE frame too large")
-      buffer = buffer.replaceAll("\r\n", "\n").replaceAll("\r", "\n")
+      const decoded = decoder.decode(value, { stream: true })
+      // A CRLF pair may straddle network chunks. Never turn it into a blank line.
+      const text = pendingCR && decoded.startsWith("\n") ? decoded.slice(1) : decoded
+      if (decoded) pendingCR = decoded.endsWith("\r")
+      buffer += text.replaceAll("\r\n", "\n").replaceAll("\r", "\n")
       let blockEnd: number
       while ((blockEnd = buffer.indexOf("\n\n")) !== -1) {
+        if (blockEnd > MAX_FRAME_BYTES) throw new Error("SSE frame too large")
         const block = buffer.slice(0, blockEnd)
         buffer = buffer.slice(blockEnd + 2)
         const data = block
@@ -154,8 +168,11 @@ async function* sseFrames(res: Response): AsyncGenerator<string> {
           .join("\n")
         if (data !== "") yield data
       }
+      if (buffer.length > MAX_FRAME_BYTES) throw new Error("SSE frame too large")
     }
   } finally {
+    signal?.removeEventListener("abort", cancel)
+    cancel()
     reader.releaseLock()
   }
 }
@@ -165,12 +182,13 @@ async function* sseFrames(res: Response): AsyncGenerator<string> {
 export type StreamEvent =
   | { type: "text"; text: string }
   | { type: "reasoning"; text: string }
-  | { type: "tool"; name: string; input: unknown }
-  | { type: "tool-result"; name: string; output: unknown; isError?: boolean }
+  | { type: "tool"; callId: string; name: string; input: unknown }
+  | { type: "tool-progress"; callId: string; name: string; text: string }
+  | { type: "tool-result"; callId: string; name: string; output: unknown; isError?: boolean }
   | { type: "step"; step: number }
   | { type: "panel"; panelId: string; kind: string; title?: string; payload: Record<string, unknown> }
   | { type: "error"; code: string; message: string }
-  | { type: "done"; step: number; needsContinuation: boolean; finish: string }
+  | { type: "done"; step: number; needsContinuation: boolean; finish: string; promptId?: string }
   | { type: "result"; [k: string]: unknown }
 
 export interface StreamHandlers {
@@ -178,56 +196,87 @@ export interface StreamHandlers {
   signal?: AbortSignal
 }
 
-/** POST /v1/session/:id/prompt and consume the SSE stream. Resolves with the
- *  final finish reason. The client-side abort doubles as interrupt (the
- *  engine treats a closed prompt connection as interrupt). */
-export async function streamPrompt(id: string, text: string, handlers: StreamHandlers, images?: ChatImage[]): Promise<{ finish: string }> {
+export class StreamInterruptedError extends Error {
+  constructor() {
+    super("Prompt stream interrupted before completion; check session history before resending.")
+    this.name = "StreamInterruptedError"
+  }
+}
+
+/** Consume a finite prompt response; EOF alone is not a completion marker. */
+export async function consumePromptStream(res: Response, handlers: StreamHandlers): Promise<{ finish: string }> {
+  let finish = "stop"
+  let terminal = false
+  for await (const data of sseFrames(res, handlers.signal)) {
+    handlers.signal?.throwIfAborted()
+    if (data === "[DONE]") return { finish }
+    let ev: StreamEvent
+    try {
+      ev = JSON.parse(data) as StreamEvent
+    } catch {
+      continue
+    }
+    if (!ev || typeof ev !== "object" || typeof ev.type !== "string") continue
+    if ((ev.type === "done" || ev.type === "result") && typeof ev.finish === "string" && ev.finish) {
+      finish = ev.finish
+      terminal = true
+    }
+    handlers.onEvent(ev)
+  }
+  handlers.signal?.throwIfAborted()
+  if (!terminal) throw new StreamInterruptedError()
+  return { finish }
+}
+
+/** POST once. Closing this connection does not prove the engine stopped. */
+export async function streamPrompt(id: string, text: string, handlers: StreamHandlers, images?: ChatImage[], opts?: { promptId?: string }): Promise<{ finish: string }> {
   const res = await fetch(`${baseUrl()}/v1/session/${id}/prompt`, {
     method: "POST",
     headers: headers(),
-    body: JSON.stringify({ text, ...(images?.length ? { images } : {}) }),
+    body: JSON.stringify({ text, ...(images?.length ? { images } : {}), ...(opts?.promptId ? { promptId: opts.promptId } : {}) }),
     signal: handlers.signal,
   })
   if (!res.ok) throw await parseError(res)
-  let finish = "stop"
-  for await (const data of sseFrames(res)) {
-    if (data === "[DONE]") return { finish }
-    try {
-      const ev = JSON.parse(data) as StreamEvent
-      if (ev.type === "done") finish = ev.finish
-      handlers.onEvent(ev)
-    } catch {
-      // malformed frame — skip
-    }
-  }
-  return { finish }
+  return consumePromptStream(res, handlers)
 }
 
 // --- the api surface (all shapes verified against packages/server) ---
 
 export const api = {
   health: () => request<{ status: string }>("/v1/health"),
-  createSession: (sessionId?: string, workspace?: string, asButler?: boolean) =>
-    request<{ sessionId: string; messageCount: number }>("/v1/session", { method: "POST", body: { sessionId, workspace, asButler } }),
-  sessions: (workspace?: string, status?: string) => request<SessionRow[]>(`/v1/sessions${qs({ workspace, status })}`),
+  createSession: (sessionId?: string, workspace?: string, asButler?: boolean, projectId?: string) =>
+    request<{ sessionId: string; messageCount: number }>("/v1/session", { method: "POST", body: { sessionId, workspace, asButler, projectId } }),
+  sessions: (workspace?: string, status?: string, projectId?: string) => request<SessionRow[]>(`/v1/sessions${qs({ workspace, status, projectId })}`),
   snapshot: (id: string) => request<{ id: string; headSeq: number }>(`/v1/session/${id}`),
   events: (id: string) => request<StoredEventRow[]>(`/v1/session/${id}/events`),
   streamPrompt,
   interrupt: (id: string) => request<{ interrupted: boolean }>(`/v1/session/${id}/interrupt`, { method: "POST" }),
   steer: (id: string, text: string) => request<{ admitted: boolean }>(`/v1/session/${id}/steer`, { method: "POST", body: { text } }),
+  /** Workbench terminal: ONE command through the session's own bash tool +
+   *  exec policy (same rules as the agent). */
+  exec: (id: string, command: string, opts?: { signal?: AbortSignal }) =>
+    request<{ result: unknown }>(`/v1/session/${id}/exec`, { method: "POST", body: { command }, signal: opts?.signal }).then((r) => r.result),
+  /** Shared workbench terminal (human half of the persistent shell). */
+  terminalWrite: (id: string, input: string, mode: "command" | "raw" = "command") =>
+    request<{ accepted: boolean }>(`/v1/session/${id}/terminal`, { method: "POST", body: { input, mode } }),
+  terminalRead: (id: string, since: number, opts?: { signal?: AbortSignal }) =>
+    request<{ cursor: number; text: string; alive: boolean; activity: Array<{ source: "human" | "agent"; text: string; ts: number }> }>(`/v1/session/${id}/terminal${qs({ since })}`, { signal: opts?.signal }),
   compact: (id: string) => request<{ boundarySeq: number; summary: string }>(`/v1/session/${id}/compact`, { method: "POST" }),
 
-  policy: (id: string) => request<{ policy: "strict" | "readonly" | "trusted" }>(`/v1/session/${id}/policy`),
+  policy: (id: string, opts?: { signal?: AbortSignal }) => request<{ policy: "strict" | "readonly" | "trusted" }>(`/v1/session/${id}/policy`, { signal: opts?.signal }),
   setPolicy: (id: string, policy: "strict" | "readonly" | "trusted") =>
     request<{ policy: string }>(`/v1/session/${id}/policy`, { method: "POST", body: { policy } }),
 
   commands: () => request<{ commands: CommandInfo[] }>("/v1/commands"),
   runCommand: (id: string, text: string) => request<{ output: string }>(`/v1/session/${id}/command`, { method: "POST", body: { text } }),
+  resolveReferences: (id: string, text: string) =>
+    request<{ expanded: string; resolved: Array<{ kind: "agent" | "skill" | "mcp"; label: string; content: string }> }>(`/v1/session/${id}/references/resolve`, { method: "POST", body: { text } }),
 
   settings: () => request<SettingsView>("/v1/settings"),
   putSettings: (patch: unknown) => request<SettingsView>("/v1/settings", { method: "PUT", body: patch }),
   models: () => request<{ models: string[] }>("/v1/models").then((r) => r.models),
   catalog: () => request<{ catalog: ModelCatalog | null }>("/v1/models/catalog").then((r) => r.catalog),
+  providers: () => request<ProvidersView>("/v1/providers"),
 
   approvals: () => request<{ approvals: ApprovalRequest[] }>("/v1/approvals"),
   approve: (id: string, allow: boolean, reply?: string) =>
@@ -241,22 +290,26 @@ export const api = {
   removeSchedule: (id: string) => request<{ removed: boolean }>(`/v1/schedules/${id}`, { method: "DELETE" }),
   runSchedule: (id: string) => request<{ triggered: boolean }>(`/v1/schedules/${id}/run`, { method: "POST" }),
 
-  goal: (id: string) => request<{ goal: GoalView | null; tokensUsed: number }>(`/v1/session/${id}/goal`),
+  goal: (id: string, opts?: { signal?: AbortSignal }) => request<{ goal: GoalView | null; tokensUsed: number }>(`/v1/session/${id}/goal`, { signal: opts?.signal }),
   setGoal: (id: string, objective: string, tokenBudget?: number) =>
     request<{ objective: string }>(`/v1/session/${id}/goal`, { method: "POST", body: { objective, ...(tokenBudget !== undefined ? { tokenBudget } : {}) } }),
-  todos: (id: string) => request<{ todos: TodoItem[] }>(`/v1/session/${id}/todos`),
-  context: (id: string) => request<ContextView>(`/v1/session/${id}/context`),
+  todos: (id: string, opts?: { signal?: AbortSignal }) => request<{ todos: TodoItem[] }>(`/v1/session/${id}/todos`, { signal: opts?.signal }),
+  context: (id: string, opts?: { signal?: AbortSignal }) => request<ContextView>(`/v1/session/${id}/context`, { signal: opts?.signal }),
 
   archiveSession: (id: string) => request<{ archived: boolean }>(`/v1/session/${id}/archive`, { method: "POST", body: { archived: true } }),
   unarchiveSession: (id: string) => request<{ archived: boolean }>(`/v1/session/${id}/archive`, { method: "POST", body: { archived: false } }),
   deleteSession: (id: string) => request<{ deleted: boolean }>(`/v1/session/${id}`, { method: "DELETE" }),
   forkSession: (id: string, atSeq?: number) =>
     request<{ sessionId: string; forkedFrom: string }>(`/v1/session/${id}/fork`, { method: "POST", body: atSeq !== undefined ? { atSeq } : {} }),
+  truncateSession: (id: string, atSeq: number) =>
+    request<{ truncated: boolean; atSeq: number }>(`/v1/session/${id}/truncate`, { method: "POST", body: { atSeq } }),
+  setSessionModel: (id: string, model: string) =>
+    request<{ model: string }>(`/v1/session/${id}/model`, { method: "POST", body: { model } }),
   setTitle: (id: string, title: string) => request<{ title: string }>(`/v1/session/${id}/title`, { method: "POST", body: { title } }),
 
-  fs: (workspace?: string, path?: string) => request<{ path: string; entries: FsEntry[] }>(`/v1/fs${qs({ workspace, path })}`),
-  findFiles: (q: string, workspace?: string) => request<{ results: string[] }>(`/v1/files/find${qs({ q, workspace })}`).then((r) => r.results),
-  file: (workspace: string | undefined, path: string) => request<FileContent>(`/v1/file${qs({ workspace, path })}`),
+  fs: (workspace?: string, path?: string, opts?: { signal?: AbortSignal }) => request<{ path: string; entries: FsEntry[] }>(`/v1/fs${qs({ workspace, path })}`, { signal: opts?.signal }),
+  findFiles: (q: string, workspace?: string, opts?: { signal?: AbortSignal }) => request<{ results: string[] }>(`/v1/files/find${qs({ q, workspace })}`, { signal: opts?.signal }).then((r) => r.results),
+  file: (workspace: string | undefined, path: string, opts?: { signal?: AbortSignal }) => request<FileContent>(`/v1/file${qs({ workspace, path })}`, { signal: opts?.signal }),
 
   mcpResources: () =>
     request<{ byServer: Record<string, { resources: Array<{ uri: string; name?: string; description?: string; mimeType?: string }>; error?: string }> }>("/v1/mcp/resources"),
@@ -286,6 +339,7 @@ export const api = {
   channelTest: (id: string, text: string) =>
     request<{ channelId: string; sessionId: string; finish: string; reply: string }>(`/v1/channel/${id}/inbound`, { method: "POST", body: { text } }),
 }
+
 
 // Shell conveniences kept from the fixture pass: the workspace-bound resident
 // session id is DERIVED by the engine (stableSessionId(workspace)) — create

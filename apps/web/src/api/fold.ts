@@ -21,6 +21,10 @@ export interface ToolBlock {
   kind: "tool"
   name: string
   input: unknown
+  /** Stable live call id when the source is a streamed tool call. */
+  callId?: string
+  /** A legacy frame may omit callId; such a block is not safe for exact pairing. */
+  callIdKnown?: boolean
   /** One-line argument preview for the collapsed chip. */
   summary: string
   output?: string
@@ -49,6 +53,16 @@ export interface FileChange {
 
 export type ActivityKind = "create" | "modify" | "view" | "delete"
 
+export function formatRelativeTime(ts: number): string {
+  if (!ts) return ""
+  const diff = Date.now() - ts
+  if (diff < 60_000) return "刚刚"
+  if (diff < 3600_000) return `${Math.floor(diff / 60_000)}分钟`
+  if (diff < 86400_000) return `${Math.floor(diff / 3600_000)}小时`
+  if (diff < 86400_000 * 30) return `${Math.floor(diff / 86400_000)}天`
+  return `${Math.floor(diff / (86400_000 * 30))}月`
+}
+
 export interface FileActivity {
   path: string
   kind: ActivityKind
@@ -59,6 +73,8 @@ export interface UserTurn {
   kind: "user"
   text: string
   seq: number
+  /** Stable admission/promotion id from Session.PromptAdmitted/Prompted. */
+  promptId?: string
   ts?: number
   images?: ChatImage[]
   blocks: TurnBlock[]
@@ -67,6 +83,9 @@ export interface UserTurn {
   modelCalls: ModelCallRow[]
   /** Panel cards posted during this turn (Session.PanelPosted). */
   panels: PanelInfo[]
+  /** Set when this prompt is a runtime-promoted child report
+   *  (`[child <id> result|interrupted|failed]`) rather than user speech. */
+  child?: { id: string; kind: "result" | "interrupted" | "failed" }
 }
 
 export type TranscriptItem = UserTurn | { kind: "note"; text: string; variant: NoteVariant; ts?: number }
@@ -129,7 +148,7 @@ function changeFor(name: string, input: Record<string, unknown>, prev: FileChang
 
 /** Fold the durable event log into user turns with their assistant blocks. */
 export function foldTranscript(events: StoredEventRow[]): TranscriptItem[] {
-  const out: TranscriptItem[] = []
+  let out: TranscriptItem[] = []
   let turn: UserTurn | null = null
   // Every prompt lands TWICE in a real log: PromptAdmitted at admission, then
   // Prompted at promotion — same prompt id. Without this dedup every user
@@ -179,10 +198,16 @@ export function foldTranscript(events: StoredEventRow[]): TranscriptItem[] {
       if (promptId && seenPromptIds.has(promptId)) continue
       if (promptId) seenPromptIds.add(promptId)
       const steerMidTurn = delivery === "steer" && !turnClosed
+      // Child-report detection: the runtime promotes a settled subagent's text
+      // into the parent as `[child <id> result|interrupted|failed]` — render it
+      // as an inbound report card, never as raw user speech.
+      const rawText = String(d.prompt ?? d.text ?? "")
+      const child = rawText.match(/^\[child ([0-9a-f-]+) (result|interrupted|failed)\]\n?/)
       turn = {
         kind: "user",
-        text: String(d.prompt ?? d.text ?? ""),
+        text: child ? rawText.slice(child[0].length) : rawText,
         seq: e.seq,
+        ...(promptId ? { promptId } : {}),
         ...(e.ts ? { ts: e.ts } : {}),
         ...(images?.length ? { images } : {}),
         blocks: steerMidTurn ? [{ kind: "note", text: "回合中追加", variant: "steer" }] : [],
@@ -190,6 +215,7 @@ export function foldTranscript(events: StoredEventRow[]): TranscriptItem[] {
         activity: [],
         modelCalls: [],
         panels: [],
+        ...(child ? { child: { id: child[1]!, kind: child[2] as "result" | "interrupted" | "failed" } } : {}),
       }
       out.push(turn)
       turnClosed = false
@@ -316,9 +342,38 @@ export function foldTranscript(events: StoredEventRow[]): TranscriptItem[] {
       pushNote("上下文已压缩", "compact")
       continue
     }
+    if (e.type === "Session.Truncated") {
+      // In-place rewind (user "回退"): the log no longer contains events past
+      // atSeq, so drop every accumulated card that belonged to those turns and
+      // reset the fold state so following events start clean. A card is kept
+      // only when the turn's own Prompted seq is at/before the boundary; notes
+      // appended before the boundary survive, later ones are dropped.
+      const atSeq = Number(d.atSeq ?? -1)
+      if (atSeq >= 0) {
+        out = out.filter((it) => it.kind !== "user" || it.seq <= atSeq)
+      }
+      turn = null
+      textBuf = ""
+      textTs = undefined
+      pendingTools.clear()
+      pendingToolQueue.length = 0
+      seenPromptIds.clear()
+      turnClosed = true
+      continue
+    }
   }
   flushText()
   return out
+}
+
+/** ZCode status-bar clock: 45 秒 / 2 分 43 秒 — hours drop the seconds. */
+export function fmtClock(ms: number): string {
+  if (!(ms > 0)) return ""
+  const s = Math.floor(ms / 1000)
+  const h = Math.floor(s / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  const sec = s % 60
+  return `${h > 0 ? `${h} 小时 ` : ""}${h > 0 || m > 0 ? `${m} 分` : ""}${h > 0 ? "" : ` ${sec} 秒`}`
 }
 
 /** Latest todo list folded from Session.TodoUpdated events (the dock reads
@@ -331,6 +386,39 @@ export function foldTodos(events: StoredEventRow[]): TodoItem[] {
     todos = next
   }
   return todos
+}
+
+/** Latest goal folded from Session.GoalUpdated events (the context pane reads
+ *  this) — null when the session never set one. `startedTs` is the FIRST
+ *  GoalUpdated timestamp, feeding the workbench's live goal timer. */
+export interface GoalFold {
+  objective: string
+  status: string
+  startedTs?: number
+  /** When the goal reached complete/completed — the honest duration endpoint. */
+  settledTs?: number
+}
+
+export function foldGoal(events: StoredEventRow[]): GoalFold | null {
+  let first: number | undefined
+  let settled: number | undefined
+  let latest: { objective: string; status: string } | undefined
+  for (const e of events) {
+    if (e.type !== "Session.GoalUpdated") continue
+    const objective = String(e.data?.objective ?? "")
+    const st = String(e.data?.status ?? "")
+    if (!objective) continue
+    first = first ?? e.ts
+    latest = { objective, status: st }
+    if (st === "complete" || st === "completed") settled = e.ts
+  }
+  if (!latest) return null
+  return {
+    objective: latest.objective,
+    status: latest.status,
+    ...(first ? { startedTs: first } : {}),
+    ...(settled ? { settledTs: settled } : {}),
+  }
 }
 
 /** All panel cards in log order (right-column feed; the transcript renders
