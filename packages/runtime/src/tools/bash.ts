@@ -3,6 +3,7 @@ import { resolve } from "node:path"
 import { randomUUID } from "node:crypto"
 import { approve, denied, fail } from "./common"
 import type { Tool, ToolCtx } from "@newhorse/core"
+import type { TerminalSession } from "../terminal"
 
 const MAX_TIMEOUT = 60_000
 const MAX_OUTPUT = 60_000
@@ -55,7 +56,7 @@ function tailAppend(buf: string, chunk: string, max: number): string {
   return buf.length + chunk.length <= max ? buf + chunk : (buf + chunk).slice(-max)
 }
 
-export function createBashTools(workspace: string): Tool[] {
+export function createBashTools(workspace: string, persistentShell?: TerminalSession): Tool[] {
   const background = new Map<string, BackgroundTask>()
 
   const gate = async (command: string, ctx?: ToolCtx): Promise<unknown> => {
@@ -101,6 +102,30 @@ export function createBashTools(workspace: string): Tool[] {
       // supplied value into [1, MAX_TIMEOUT] so a 0/negative/NaN never becomes a
       // 1ms kill-all default.
       const timeout = clamp(Math.floor(timeoutMs ?? MAX_TIMEOUT), 1, MAX_TIMEOUT)
+      // Persistent-shell path (codex unified_exec analog): when the host hands
+      // a TerminalSession, foreground commands ride its ONE persistent shell so
+      // `cd` / exported env / interactive state survive between tool calls.
+      // Background runs stay on their own detached process (watchers/servers
+      // must not die with the shared shell).
+      if (persistentShell) {
+        try {
+          const r = await persistentShell.agentSend(command, timeout)
+          const text = r.output ?? ""
+          const stdoutTrunc = text.length > MAX_OUTPUT
+          return {
+            command,
+            exitCode: r.exitCode,
+            stdout: text.slice(0, MAX_OUTPUT),
+            stderr: "",
+            stdoutTruncated: stdoutTrunc,
+            stderrTruncated: false,
+            timedOut: false,
+            note: "持久 shell",
+          }
+        } catch (err) {
+          return fail(err instanceof Error ? err.message : String(err))
+        }
+      }
       return run(command, resolve(workspace), timeout, ctx?.signal, ctx?.onProgress)
     },
   }

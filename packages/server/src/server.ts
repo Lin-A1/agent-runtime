@@ -1679,14 +1679,17 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
         return json(200, { approvals: approvals.pending() })
       }
 
-      // POST /v1/approvals/:id {allow, reply?} — settle one pending approval;
-      // a question-kind request carries the operator's answer in `reply`.
+      // POST /v1/approvals/:id {allow, reply?, scope?} — settle one pending
+      // approval; a question-kind request carries the operator's answer in
+      // `reply`; `scope: "workspace"` remembers the approval across sessions
+      // of the same project (session is the default).
       if (method === "POST" && parts.length === 3 && parts[1] === "approvals") {
         if (!approvals) return json(404, { error: "no approval hub configured" })
-        const parsed = await readJsonOr400<{ allow?: boolean; reply?: string }>(req)
+        const parsed = await readJsonOr400<{ allow?: boolean; reply?: string; scope?: "session" | "workspace" }>(req)
         if (parsed instanceof Response) return parsed
         if ("error" in parsed) return json(400, parsed)
-        const settled = approvals.resolve(parts[2]!, parsed.allow === true, typeof parsed.reply === "string" ? parsed.reply : undefined)
+        const scope = parsed.scope === "workspace" ? "workspace" : undefined
+        const settled = approvals.resolve(parts[2]!, parsed.allow === true, typeof parsed.reply === "string" ? parsed.reply : undefined, scope)
         return json(settled ? 200 : 404, settled ? { settled: true } : { error: "unknown or already-settled approval id" })
       }
 

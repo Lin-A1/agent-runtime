@@ -46,6 +46,11 @@ export interface ApprovalRequest {
   readonly tool?: string
   /** Stable tool-call id for streamed/model tool invocations. */
   readonly callId?: string
+  /** How long an approval sticks: session (default, in-memory) or workspace
+   *  (same project/workspace across sessions, still process-scoped). The
+   *  operator picks this when settling; runtime keys its approved-command
+   *  memory on it. */
+  readonly scope?: "session" | "workspace"
 }
 
 /**

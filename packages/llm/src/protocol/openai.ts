@@ -224,7 +224,7 @@ interface State {
 
 type ChatChunk = {
   choices?: { delta?: { role?: string; content?: string; reasoning_content?: string; tool_calls?: ToolCallFragment[] }; finish_reason?: string }[]
-  usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } }
+  usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number }; completion_tokens_details?: { reasoning_tokens?: number } }
 }
 
 type ToolCallFragment = {

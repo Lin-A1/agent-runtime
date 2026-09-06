@@ -18,6 +18,7 @@ import { createTodoWriteTool } from "./todo"
 import { createGoalTools } from "./goal"
 import { createWebFetchTool } from "./webfetch"
 import { createWebSearchTool } from "./web-search"
+import type { TerminalSession } from "../terminal"
 import { createSelfTools, type SelfAwarenessOptions } from "./self"
 
 export { createExecPolicy, createBuiltinExecPolicy, rulesFilePath, simpleHash } from "./execpolicy"
@@ -51,6 +52,9 @@ export interface BuiltinToolsOptions {
   readonly self?: SelfAwarenessOptions
   /** Opt-in web tools (wave 12: web_fetch + web_search): escape the fs sandbox like bash. */
   readonly enableWeb?: boolean
+  /** Persistent shell for bash foreground commands (codex unified_exec analog):
+   *  when provided, bash rides THIS shell so cd/env survive between calls. */
+  readonly persistentShell?: TerminalSession
 }
 
 export function createBuiltinTools(opts: BuiltinToolsOptions): Tool[] {
@@ -66,7 +70,7 @@ export function createBuiltinTools(opts: BuiltinToolsOptions): Tool[] {
     createEnterPlanModeTool(),
     createLspTool(opts.workspace),
   ]
-  if (opts.enableBash) tools.push(...createBashTools(opts.workspace))
+  if (opts.enableBash) tools.push(...createBashTools(opts.workspace, opts.persistentShell))
   if (opts.enableWeb) tools.push(createWebFetchTool(), createWebSearchTool())
   if (opts.memoryStore) {
     tools.push(createMemorySearchTool(opts.memoryStore))

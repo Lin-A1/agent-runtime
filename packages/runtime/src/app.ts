@@ -382,6 +382,12 @@ export async function createApp(config: AppConfig): Promise<App> {
       void backfill().catch(() => {})
     }
   }
+  // Shared workbench terminal (human-machine co-operation seam): ONE persistent
+  // shell per session that the human (web terminal) and the agent
+  // (terminal_send/terminal_read tools) drive together. Available to EVERY
+  // session — never a butler privilege. The agent's commands ride the same
+  // exec-policy floor as bash.
+  const sharedTerminal = new TerminalSession(workspace)
   // skillsDir = the plugin dir (its `skills/` sub-tree is discovered lazily by
   // the skill tool). The tool is only exposed when a pluginsDir is configured.
   const builtin = createBuiltinTools({
@@ -426,12 +432,6 @@ export async function createApp(config: AppConfig): Promise<App> {
     ? []
     : [...explicitTools, ...pluginTools, ...builtin]
 
-  // Shared workbench terminal (human-machine co-operation seam): ONE persistent
-  // shell per session that the human (web terminal) and the agent
-  // (terminal_send/terminal_read tools) drive together. Available to EVERY
-  // session — never a butler privilege. The agent's commands ride the same
-  // exec-policy floor as bash.
-  const sharedTerminal = new TerminalSession(workspace)
   if (tools.length > 0) tools.push(...createSharedTerminalTools(sharedTerminal))
 
   // Butler toolset (M2b): a signed set of privileged tools whose execute reads
@@ -679,24 +679,31 @@ export async function createApp(config: AppConfig): Promise<App> {
   })
 
   // ApprovedForSession (wave 8, codex semantics): an interactively approved
-  // command is remembered FOR THIS SESSION (exact-string match) — the next
-  // identical command runs without re-prompting. Discipline: the base decide
-  // still runs first, so only a base "prompt" can be upgraded to "allow" —
-  // explicit forbids never lift. A DANGEROUS command that was once approved
-  // IS replayed as allowed (the floor forced exactly one human decision;
-  // codex ApprovedForSession semantics) — and the memory is session-scoped
-  // (gone on restart).
-  const sessionApproved = new Set<string>()
+  // command is remembered (exact-string match) — the next identical command
+  // runs without re-prompting. Discipline: the base decide still runs first,
+  // so only a base "prompt" can be upgraded to "allow" — explicit forbids
+  // never lift. Scope: "session" (default, keyed by session id) or
+  // "workspace" (keyed by session's workspace, shared across sessions of the
+  // same project). The memory is process-scoped (gone on restart).
+  const sessionApproved = new Map<string, Set<string>>()
+  const approvedKey = (scope: "session" | "workspace", sessionId: string, workspace?: string): string =>
+    scope === "workspace" ? `ws:${workspace ?? ""}` : `sess:${sessionId}`
+  const hasApproved = (target: string, scope: "session" | "workspace"): boolean =>
+    sessionApproved.get(approvedKey(scope, sessionId, workspace))?.has(target) ?? false
+  const addApproved = (target: string, scope: "session" | "workspace"): void => {
+    const key = approvedKey(scope, sessionId, workspace)
+    sessionApproved.set(key, new Set([...(sessionApproved.get(key) ?? []), target]))
+  }
   const execPolicySession: ExecPolicy = {
     decide: (cmd) => {
       const base = execPolicy.decide(cmd)
-      if (base === "prompt" && sessionApproved.has(cmd)) return "allow"
+      if (base === "prompt" && (hasApproved(cmd, "workspace") || hasApproved(cmd, "session"))) return "allow"
       return base
     },
     decidePath: (path) => execPolicy.decidePath(path),
     approve: async (req) => {
       const ok = (await execPolicy.approve?.(req)) ?? false
-      if (ok && req.kind === "command" && req.target) sessionApproved.add(req.target)
+      if (ok && req.kind === "command" && req.target) addApproved(req.target, req.scope ?? "session")
       return ok
     },
   }

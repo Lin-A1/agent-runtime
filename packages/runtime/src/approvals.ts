@@ -18,18 +18,20 @@ export interface ApprovalHub {
   readonly gate: (req: ApprovalRequest) => Promise<boolean>
   /** Question channel: like gate, but the operator's reply text comes back
    *  (an option label or a custom answer). Auto-deny after the timeout. */
-  readonly ask: (req: ApprovalRequest) => Promise<{ allow: boolean; reply?: string }>
+  readonly ask: (req: ApprovalRequest) => Promise<{ allow: boolean; reply?: string; scope?: "session" | "workspace" }>
   /** Currently pending requests (the client polls this). */
   readonly pending: () => PendingApproval[]
-  /** Resolve one pending request; false when the id is unknown/settled. */
-  readonly resolve: (id: string, allow: boolean, reply?: string) => boolean
+  /** Resolve one pending request; false when the id is unknown/settled.
+   *  The optional scope (session|workspace) extends the approved-command
+   *  memory beyond a single session. */
+  readonly resolve: (id: string, allow: boolean, reply?: string, scope?: "session" | "workspace") => boolean
 }
 
 export function createApprovalHub(opts?: { timeoutMs?: number }): ApprovalHub {
   const timeoutMs = opts?.timeoutMs ?? 120_000
-  const pending = new Map<string, { req: PendingApproval; resolve: (allow: boolean, reply?: string) => void; timer: ReturnType<typeof setTimeout> }>()
-  const park = (req: ApprovalRequest): Promise<{ allow: boolean; reply?: string }> =>
-    new Promise<{ allow: boolean; reply?: string }>((resolve) => {
+  const pending = new Map<string, { req: PendingApproval; resolve: (allow: boolean, reply?: string, scope?: "session" | "workspace") => void; timer: ReturnType<typeof setTimeout> }>()
+  const park = (req: ApprovalRequest): Promise<{ allow: boolean; reply?: string; scope?: "session" | "workspace" }> =>
+    new Promise<{ allow: boolean; reply?: string; scope?: "session" | "workspace" }>((resolve) => {
       const entry: PendingApproval = { ...req, createdAt: Date.now(), expiresAt: Date.now() + timeoutMs }
       // Ref'd on purpose: the auto-deny MUST fire (fail-closed). Bun 1.3.x
       // unref'd timers were observed not to fire on an idle loop.
@@ -42,19 +44,19 @@ export function createApprovalHub(opts?: { timeoutMs?: number }): ApprovalHub {
       pending.set(req.id, {
         req: entry,
         timer,
-        resolve: (allow: boolean, reply?: string) => resolve({ allow, ...(reply !== undefined ? { reply } : {}) }),
+        resolve: (allow: boolean, reply?: string, scope?: "session" | "workspace") => resolve({ allow, ...(reply !== undefined ? { reply } : {}), ...(scope ? { scope } : {}) }),
       })
     })
   return {
     gate: async (req) => (await park(req)).allow,
     ask: park,
     pending: () => [...pending.values()].map((p) => p.req).sort((a, b) => a.createdAt - b.createdAt),
-    resolve(id, allow, reply) {
+    resolve(id, allow, reply, scope) {
       const entry = pending.get(id)
       if (!entry) return false
       clearTimeout(entry.timer)
       pending.delete(id)
-      entry.resolve(allow, reply)
+      entry.resolve(allow, reply, scope)
       return true
     },
   }
