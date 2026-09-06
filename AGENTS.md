@@ -81,14 +81,13 @@ The runtime treats **AGENTS.md as an ambient, model-visible context source** —
 ## Repository Topology
 
 ```
-newhorse (this monorepo: engine DEVELOPMENT ground + first host project)
-  ──runtime changes developed here, synced──▶  agent-runtime (github.com/Lin-A1/agent-runtime: standalone storage / reuse boundary)
+newhorse (this repo: the reference WEB UI — a thin HTTP/SSE consumer of the runtime)
+agent-runtime (github.com/Lin-A1/agent-runtime: the ENGINE — authoritative, developed directly there)
 ```
 
-- **This repo owns engine development.** Runtime-side changes (packages `schema/core/llm/plugin/memory/mcp/runtime/server/sdk`) must be **synced to agent-runtime** after landing here (`git pull upstream dev` there; the mirror tracks this repo's `dev`).
-- **agent-runtime is the reuse boundary**: downstream AI-native products embed the runtime via that repo (SDK / HTTP). Its README/AGENTS describe the runtime from the CONSUMER's perspective and must stay in sync with reality here.
-- **Naming discipline**: in this repo, "the engine" refers to the runtime packages; "newhorse" covers both the engine and the host project (CLI shell, host flows). In agent-runtime docs, only the engine is described.
-- **Non-runtime work** (host flows, project-specific tooling) stays in this repo and is NOT synced.
+- **This repo is the host shell.** The web client lives in `apps/web` and talks to the runtime **only** through its HTTP/SSE `v1` endpoints (or the `@newhorse/sdk`) — no runtime internals are imported.
+- **The engine lives in agent-runtime** (packages `schema/core/llm/plugin/memory/mcp/runtime/server/sdk`). Engine changes are made **there**, not here — this repo keeps a copy of the runtime packages only so the dev server can run standalone (`bun run --preload` against `packages/*`); it is a build convenience, not a second source of truth.
+- **Naming discipline**: "agent-runtime" = the engine (the other repo); "newhorse" = this repo and its web shell (host flows, UI).
 
 ## Environment & Tech
 

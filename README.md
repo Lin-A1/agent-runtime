@@ -1,12 +1,10 @@
 # newhorse
 
-**Model-agnostic, non-captive agent engine (v2).** An agent runtime that schedules subagents with a declarative DAG, keeps long-horizon work restartable via an append-only event log, and lets cheap models do the cheap work.
+**The reference web shell for agent-runtime.** A minimal, good-looking chat UI that drives the [**agent-runtime**](https://github.com/Lin-A1/agent-runtime) engine over its HTTP/SSE API — sessions, streaming turns, approvals, model switching, rewind/rewrite/retry. The engine itself (sessions, tool loops, declarative DAG, durable memory) lives in the agent-runtime repo.
 
-Not bound to one model; orchestrate agents with declarative scheduling instead of being orchestrated by another framework's runtime.
+> **Repository topology**: this repo is the **host shell (web UI)** — `apps/web` consumes the runtime's `/v1` endpoints only. The **engine** is developed directly in [**Lin-A1/agent-runtime**](https://github.com/Lin-A1/agent-runtime); see `AGENTS.md` → "Repository topology". No upstream/mirror relationship remains — the two repos are independent.
 
-> **Repository topology**: this monorepo is the ENGINE DEVELOPMENT ground and the first host project (its CLI shell). The runtime server is independently stored and reused at [**Lin-A1/agent-runtime**](https://github.com/Lin-A1/agent-runtime) — runtime changes developed here are synced there; see `AGENTS.md` → "Repository topology".
-
-> This README is a quick map. The target (north star) lives in `AGENTS.md`; the implemented/decision record lives in `docs/core-technology-notes.md`; the plans live in `specs/v2/`.
+> This README is a quick map. The target (north star) lives in `AGENTS.md`; implementation decisions for the engine live in agent-runtime's `docs/`.
 
 ## What it is (five differentiators)
 
