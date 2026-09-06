@@ -2,7 +2,7 @@
 
 **A reusable, model-agnostic agent runtime server.** Embed a full agent engine — sessions, tool loops, declarative DAG orchestration, durable memory, a permission layer — into any AI-native product via one HTTP/SSE boundary and a typed SDK.
 
-> The stable that houses the horses. Developed in the [`newhorse`](https://github.com/Lin-A1/newhorse) monorepo; this repository is its standalone storage for reuse.
+> The stable that houses the horses. This repository is the **authoritative engine** — the runtime is developed here directly. A companion host repo, [`newhorse`](https://github.com/Lin-A1/newhorse), carries the reference web UI (a thin HTTP/SSE consumer of this runtime); the two repos are independent — no upstream/mirror relationship remains.
 
 ## Quick start (zero code)
 
@@ -52,10 +52,11 @@ const result = await client.prompt(sessionId, "Fix the failing test", (e) => {
 ## Repository topology
 
 ```
-newhorse (monorepo, upstream)  ──develop──▶  agent-runtime (this repo, standalone storage/reuse)
+agent-runtime (this repo)  = the engine: schema → core / llm → plugin → memory → mcp → runtime → server / sdk
+newhorse (companion host)  = reference web UI (HTTP/SSE consumer of the runtime)
 ```
 
-The engine packages (`schema → core / llm → plugin → memory → mcp → runtime → server / sdk`) live here; `packages/cli` is a reference shell. Runtime changes are developed upstream and synced here (`git pull upstream dev`).
+The engine packages (`schema → core / llm → plugin → memory → mcp → runtime → server / sdk`) live here — all nine. There is deliberately **no `packages/cli` and no UI in this repo**: the runtime is a reusable library + HTTP/SSE server, and the CLI/web shells live in host projects (see `newhorse`).
 
 ## Development
 

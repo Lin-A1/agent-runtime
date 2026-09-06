@@ -1,17 +1,17 @@
 # AGENTS.md
 
-> This is the north star for **agent-runtime** — the standalone, reusable agent runtime server (developed in the `newhorse` monorepo, stored here for independent reuse). Per-mechanism detail lives in `specs/v2/`; implementation decisions in `docs/`; this file is the stable contract.
+> This is the north star for **agent-runtime** — the standalone, reusable agent runtime server (the **authoritative engine**: developed here directly). Per-mechanism detail lives in `specs/v2/`; implementation decisions in `docs/`; this file is the stable contract.
 
 ## Repository topology
 
 ```
-newhorse (monorepo, upstream: engine development + first host project)
-  ──develop & sync──▶  agent-runtime (this repo: standalone storage / reuse boundary)
+agent-runtime (this repo: the engine — schema → core / llm → plugin → memory → mcp → runtime → server / sdk)
+newhorse (companion host: reference web UI, a thin HTTP/SSE consumer of this runtime)
 ```
 
-- **Runtime changes are developed upstream** (newhorse) and synced here. Do not start new engine work in this repo.
+- **All engine work happens directly in this repo.** newhorse is a separate host project (web UI only); the two are independent — no upstream/mirror relationship.
 - **This repo is the reuse boundary**: downstream AI-native products depend on it (SDK / HTTP boundary), so its README and docs must describe the runtime from the CONSUMER's perspective.
-- Naming: the engine is "agent-runtime" (this repo); "newhorse" refers to the upstream monorepo and its host project (CLI shell, project-specific flows).
+- Naming: the engine is "agent-runtime" (this repo); "newhorse" refers to the companion host repo and its web shell (project-specific flows).
 
 ## Positioning
 
