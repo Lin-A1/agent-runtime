@@ -738,8 +738,8 @@ export function Transcript({
     ? row.workspace.split(/[/\\]/).filter(Boolean).pop() ?? "newhorse"
     : "newhorse"
 
-  const onSelectPrompt = (promptText: string): void => {
-    window.dispatchEvent(new CustomEvent("nh-fill-prompt", { detail: promptText }))
+  const onSelectPrompt = (promptText: string, promptId?: string): void => {
+    window.dispatchEvent(new CustomEvent("nh-fill-prompt", { detail: { text: promptText, ...(promptId ? { promptId } : {}) } }))
   }
 
   // A model pick in the sidebar switcher applies to the OPEN session too
@@ -864,7 +864,7 @@ export function Transcript({
                   <div key={`turn-${i}`}>
                     <UserTurnView
                       turn={it}
-                      onEdit={() => it.text && onSelectPrompt(it.text)}
+                      onEdit={() => it.text && onSelectPrompt(it.text, it.promptId)}
                       onRewind={() => rewindTo(it.seq)}
                     />
                     <AssistantTurnView

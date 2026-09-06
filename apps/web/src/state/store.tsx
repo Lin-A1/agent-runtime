@@ -142,7 +142,7 @@ interface StreamStore {
   /** Resolves false when the prompt failed to send (transport error) — the
    *  transcript already shows the note; the composer uses it to restore the
    *  draft instead of burning it. */
-  send: (sessionId: string, text: string, images?: ChatImage[]) => Promise<boolean>
+  send: (sessionId: string, text: string, images?: ChatImage[], opts?: { replace?: boolean; promptId?: string }) => Promise<boolean>
   steer: (sessionId: string, text: string) => Promise<void>
   stop: (sessionId: string, startedAt?: number) => Promise<void>
   /** Drop the settled live turn (after the folded log has been refetched). */
@@ -197,7 +197,7 @@ export function StreamProvider({ children }: { children: ReactNode }): React.Rea
   )
 
   const send = useCallback(
-    async (sessionId: string, text: string, images?: ChatImage[]) => {
+    async (sessionId: string, text: string, images?: ChatImage[], opts?: { replace?: boolean; promptId?: string }) => {
       if (aborts.current.has(sessionId)) {
         if (images?.length) return false
         try {
@@ -210,7 +210,7 @@ export function StreamProvider({ children }: { children: ReactNode }): React.Rea
       // create (updateTurn only patches an existing entry)
       const ctrl = new AbortController()
       const startedAt = Date.now()
-      const promptId = crypto.randomUUID()
+      const promptId = opts?.promptId ?? crypto.randomUUID()
       aborts.current.set(sessionId, ctrl)
       setLive((prev) => {
         const next = new Map(prev)
@@ -288,7 +288,7 @@ export function StreamProvider({ children }: { children: ReactNode }): React.Rea
       }
 
       try {
-        await streamPrompt(sessionId, text, { signal: ctrl.signal, onEvent: apply }, images, { promptId })
+        await streamPrompt(sessionId, text, { signal: ctrl.signal, onEvent: apply }, images, { promptId, ...(opts?.replace ? { replace: true } : {}) })
       } catch (err) {
         if (!ctrl.signal.aborted && aborts.current.get(sessionId) === ctrl) {
           const msg = err instanceof Error ? err.message : String(err)

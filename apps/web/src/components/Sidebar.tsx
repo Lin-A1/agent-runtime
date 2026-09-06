@@ -315,6 +315,21 @@ export function Sidebar({
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem("newhorse:sidebar:collapsed") === "true")
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({})
   useEffect(() => { localStorage.setItem("newhorse:sidebar:collapsed", String(collapsed)) }, [collapsed])
+  // Remember every workspace the user has ever seen (including cleared ones)
+  // so a "项目" group survives its last session being deleted — a project is
+  // a place, not a count of conversations.
+  const [knownWorkspaces, setKnownWorkspaces] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem("newhorse:sidebar:workspaces") ?? "[]") as string[] } catch { return [] }
+  })
+  useEffect(() => {
+    const wsNames = sessions.map((r) => normWorkspace(r.workspace)).filter(Boolean)
+    setKnownWorkspaces((prev) => {
+      const next = [...new Set([...prev, ...wsNames])]
+      if (next.length === prev.length) return prev
+      localStorage.setItem("newhorse:sidebar:workspaces", JSON.stringify(next))
+      return next
+    })
+  }, [sessions])
   const isMobile = useMediaQuery("(max-width: 767px)")
   const drawerOpen = mobileOpen && isMobile
   const searchRef = useRef<HTMLInputElement>(null)
@@ -337,6 +352,16 @@ export function Sidebar({
     const wsGroups = [...byWs.entries()]
       .map(([ws, rows]) => ({ ws, rows }))
       .sort((a, b) => b.rows[0]!.updatedAt - a.rows[0]!.updatedAt)
+    // Merge remembered (possibly now-empty) workspaces into the project view so
+    // a cleared project stays visible under its own header with an empty state.
+    if (scope === "project") {
+      const seen = new Set(wsGroups.map((g) => g.ws))
+      for (const ws of knownWorkspaces) {
+        if (!seen.has(ws)) wsGroups.push({ ws, rows: [] })
+        seen.add(ws)
+      }
+      wsGroups.sort((a, b) => (b.rows[0]?.updatedAt ?? 0) - (a.rows[0]?.updatedAt ?? 0))
+    }
 
     const groupsOut = scope === "project" ? wsGroups : [{ ws: "", rows: topLevel }]
     const normalized = query.trim().toLowerCase()
@@ -345,7 +370,7 @@ export function Sidebar({
       butler: butlerRow && ("newhorse".includes(normalized) ? butlerRow : undefined),
       groups: groupsOut.map((group) => ({ ...group, rows: group.rows.filter((row) => prettyTitle(row.title, "未命名会话").toLowerCase().includes(normalized)) })).filter((group) => group.rows.length > 0),
     }
-  }, [sessions, workspace, scope, query])
+  }, [sessions, workspace, scope, query, knownWorkspaces])
 
   const onDeleted = (deletedId: string): void => {
     if (selectedId === deletedId) navigate("/")
@@ -590,7 +615,9 @@ export function Sidebar({
               </button>
             ) : null}
             {(!g.ws || !collapsedGroups[g.ws]) && <div className="flex flex-col gap-0.5">
-              {g.rows.map((r) => (
+              {g.rows.length === 0 ? (
+                <div className="px-3 py-1.5 text-2xs text-faint">该项目暂无会话</div>
+              ) : g.rows.map((r) => (
                 <Row
                   key={r.sessionId}
                   row={r}

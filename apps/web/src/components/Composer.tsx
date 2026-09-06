@@ -89,6 +89,10 @@ export function Composer({
   const [imageError, setImageError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  // When the composer is filled via "编辑提问" the original turn's promptId is
+  // remembered so the resend can replace that turn (replace:true) instead of
+  // appending a fresh one — edit feels like editing, not duplicating.
+  const [editingPromptId, setEditingPromptId] = useState<string | null>(null);
   const [policy, setPolicy] = useState<PolicyLevel | null>(null);
   const [policyOpen, setPolicyOpen] = useState(false);
   const [policyBusy, setPolicyBusy] = useState(false);
@@ -172,9 +176,11 @@ export function Composer({
   }, [autoFocus]);
   useEffect(() => {
     const onFill = (event: Event): void => {
-      const value = (event as CustomEvent<string>).detail;
+      const detail = (event as CustomEvent<{ text?: string; promptId?: string } | string>).detail;
+      const value = typeof detail === "string" ? detail : detail?.text;
       if (!value) return;
       setText(value);
+      setEditingPromptId(typeof detail === "string" ? null : (detail?.promptId ?? null));
       sessionDrafts.set(sessionId, { text: value, images });
       requestAnimationFrame(() => taRef.current?.focus());
     };
@@ -279,6 +285,7 @@ export function Composer({
     setSending(true);
     setText("");
     setImages([]);
+    setEditingPromptId(null);
     sessionDrafts.delete(sessionId);
     setError(null);
     try {
@@ -309,7 +316,7 @@ export function Composer({
           // Resolution unavailable — send the original text with the raw refs.
         }
       }
-      const ok = await send(sessionId, prompt, originalImages);
+      const ok = await send(sessionId, prompt, originalImages, editingPromptId ? { replace: true, promptId: editingPromptId } : undefined);
       if (ok === false) {
         setText(originalText);
         setImages(originalImages);

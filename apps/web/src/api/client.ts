@@ -229,11 +229,11 @@ export async function consumePromptStream(res: Response, handlers: StreamHandler
 }
 
 /** POST once. Closing this connection does not prove the engine stopped. */
-export async function streamPrompt(id: string, text: string, handlers: StreamHandlers, images?: ChatImage[], opts?: { promptId?: string }): Promise<{ finish: string }> {
+export async function streamPrompt(id: string, text: string, handlers: StreamHandlers, images?: ChatImage[], opts?: { promptId?: string; replace?: boolean }): Promise<{ finish: string }> {
   const res = await fetch(`${baseUrl()}/v1/session/${id}/prompt`, {
     method: "POST",
     headers: headers(),
-    body: JSON.stringify({ text, ...(images?.length ? { images } : {}), ...(opts?.promptId ? { promptId: opts.promptId } : {}) }),
+    body: JSON.stringify({ text, ...(images?.length ? { images } : {}), ...(opts?.promptId ? { promptId: opts.promptId } : {}), ...(opts?.replace ? { replace: true } : {}) }),
     signal: handlers.signal,
   })
   if (!res.ok) throw await parseError(res)
