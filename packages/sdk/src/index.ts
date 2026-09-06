@@ -14,8 +14,9 @@
 export type SdkEvent =
   | { readonly type: "text"; readonly text: string }
   | { readonly type: "reasoning"; readonly text: string }
-  | { readonly type: "tool"; readonly name: string; readonly input: unknown }
-  | { readonly type: "tool-result"; readonly name: string; readonly output: unknown; readonly isError?: boolean }
+  | { readonly type: "tool"; readonly callId: string; readonly name: string; readonly input: unknown }
+  | { readonly type: "tool-progress"; readonly callId: string; readonly name: string; readonly text: string }
+  | { readonly type: "tool-result"; readonly callId: string; readonly name: string; readonly output: unknown; readonly isError?: boolean }
   | { readonly type: "step"; readonly step: number }
   | { readonly type: "error"; readonly code: string; readonly message: string }
   | { readonly type: "done"; readonly step: number; readonly needsContinuation: boolean; readonly finish: string }
@@ -43,6 +44,50 @@ export interface SdkCreateOptions {
   readonly dataDir?: string
 }
 
+// --- provider/model catalog (read-only; mirrors the server wire shapes) ---
+
+export interface SdkProviderProfile {
+  readonly id: string
+  readonly name?: string
+  readonly kind: string
+  readonly baseUrl: string
+  readonly model?: string
+  readonly contextWindowTokens?: number
+  readonly maxOutputTokens?: number
+  readonly hasApiKey: boolean
+  readonly apiKeyHint?: string
+}
+
+export interface SdkProvidersView {
+  readonly activeProviderId?: string
+  readonly providers: readonly SdkProviderProfile[]
+  readonly provider: { readonly kind: string; readonly baseUrl: string; readonly hasApiKey?: boolean }
+  readonly model: string
+}
+
+export interface SdkCatalogModel {
+  readonly id: string
+  readonly name?: string
+  readonly kinds?: readonly string[]
+  readonly modalities?: { readonly input?: readonly string[]; readonly output?: readonly string[] }
+  readonly contextWindowTokens?: number
+  readonly maxOutputTokens?: number
+  readonly reasoning?: unknown
+}
+
+export interface SdkCatalogProvider {
+  readonly id: string
+  readonly name?: string
+  readonly endpoints?: { readonly baseURL?: string; readonly paths?: readonly string[] }
+  readonly defaultKind?: string
+  readonly models: readonly SdkCatalogModel[]
+}
+
+export interface SdkModelCatalog {
+  readonly schemaVersion: number
+  readonly providers: readonly SdkCatalogProvider[]
+}
+
 export interface SdkClient {
   /** Create (or attach to) a session; returns its id. */
   readonly createSession: (opts?: SdkCreateOptions) => Promise<string>
@@ -60,6 +105,12 @@ export interface SdkClient {
   readonly events: (sessionId: string) => Promise<ReadonlyArray<{ type: string; data: unknown }>>
   /** Read the audit trail. */
   readonly audit: (actorSessionId?: string) => Promise<unknown[]>
+  /** List redacted provider profiles (ids/kinds/endpoints/hasApiKey; never secrets). */
+  readonly providers: () => Promise<SdkProvidersView>
+  /** Read the model capability catalog (reference data; null when none). */
+  readonly catalog: () => Promise<SdkModelCatalog | null>
+  /** Discover dynamic model ids for the server's configured provider. */
+  readonly models: () => Promise<string[]>
   readonly close: () => Promise<void>
 }
 
@@ -166,6 +217,23 @@ export function createSdkClient(opts: SdkOptions): SdkClient {
       const qs = actorSessionId ? `?actorSessionId=${encodeURIComponent(actorSessionId)}` : ""
       const res = await f(`${base}/v1/audit${qs}`, { headers: headers() })
       return json<unknown[]>(res)
+    },
+
+    async providers() {
+      const res = await f(`${base}/v1/providers`, { headers: headers() })
+      return json<SdkProvidersView>(res)
+    },
+
+    async catalog() {
+      const res = await f(`${base}/v1/models/catalog`, { headers: headers() })
+      const body = await json<{ catalog: SdkModelCatalog | null }>(res)
+      return body.catalog
+    },
+
+    async models() {
+      const res = await f(`${base}/v1/models`, { headers: headers() })
+      const body = await json<{ models: string[] }>(res)
+      return body.models
     },
 
     async close() {

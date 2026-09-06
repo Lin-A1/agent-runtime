@@ -9,6 +9,16 @@ const MAX_OUTPUT = 60_000
 const BG_TAIL = 20_000
 
 /**
+ * The Windows command shell, resolved through ComSpec (the authoritative path
+ * Windows itself uses for cmd). A bare `spawn("cmd", {shell:false})` relies on
+ * PATH lookup that can fail with ENOENT ("uv_spawn 'cmd'") when the host PATH is
+ * trimmed (common in service/sandbox launches). ComSpec is always absolute.
+ */
+const SHELL_CMD = process.platform === "win32"
+  ? process.env.ComSpec ?? "cmd"
+  : "/bin/sh"
+
+/**
  * Execute a shell command in the workspace. M3.5 §2.2:
  *   - bash is NOT constrained by the fs sandbox — enabling it authorizes this
  *     session to read/write/execute any reachable path with the process user's
@@ -54,7 +64,7 @@ export function createBashTools(workspace: string): Tool[] {
     const decision = policy.decide(command)
     if (decision === "forbid") return denied(`denied by execpolicy: ${command}`)
     if (decision === "prompt") {
-      const ok = await approve(policy, { id: randomUUID(), kind: "command", target: command, decision: "prompt", reason: "shell command" })
+      const ok = await approve(policy, { id: randomUUID(), kind: "command", target: command, decision: "prompt", reason: "shell command" }, ctx)
       if (!ok) return denied(`denied by execpolicy (prompt not approved): ${command}`)
     }
     return undefined
@@ -91,7 +101,7 @@ export function createBashTools(workspace: string): Tool[] {
       // supplied value into [1, MAX_TIMEOUT] so a 0/negative/NaN never becomes a
       // 1ms kill-all default.
       const timeout = clamp(Math.floor(timeoutMs ?? MAX_TIMEOUT), 1, MAX_TIMEOUT)
-      return run(command, resolve(workspace), timeout, ctx?.signal)
+      return run(command, resolve(workspace), timeout, ctx?.signal, ctx?.onProgress)
     },
   }
 
@@ -166,7 +176,7 @@ export function createBashTools(workspace: string): Tool[] {
 
 function spawnBackground(command: string, cwd: string, taskId: string, registry: Map<string, BackgroundTask>): ReturnType<typeof spawn> {
   const shell = process.platform === "win32"
-    ? { cmd: "cmd", args: ["/d", "/s", "/c", command] }
+    ? { cmd: SHELL_CMD, args: ["/d", "/s", "/c", command] }
     : { cmd: "/bin/sh", args: ["-c", command] }
   // POSIX: detached + process-group kill so grandchildren (the servers and
   // watchers this feature exists for) die with the shell. Windows uses the
@@ -219,9 +229,9 @@ function clamp(n: number, lo: number, hi: number): number {
   return n > hi ? hi : n
 }
 
-async function run(command: string, cwd: string, timeout: number, signal?: AbortSignal): Promise<unknown> {
+async function run(command: string, cwd: string, timeout: number, signal?: AbortSignal, onProgress?: (text: string) => void): Promise<unknown> {
   const shell = process.platform === "win32"
-    ? { cmd: "cmd", args: ["/d", "/s", "/c", command] }
+    ? { cmd: SHELL_CMD, args: ["/d", "/s", "/c", command] }
     : { cmd: "/bin/sh", args: ["-c", command] }
 
   const child = spawn(shell.cmd, shell.args, { cwd, shell: false, stdio: ["ignore", "pipe", "pipe"] })
@@ -229,6 +239,27 @@ async function run(command: string, cwd: string, timeout: number, signal?: Abort
   let stderr = ""
   let done = false
   let timedOut = false
+
+  // Live progress: stdout+stderr chunks stream to the transport while the
+  // command runs (throttled to one frame per PROGRESS_INTERVAL_MS, tail-capped
+  // so a firehose command cannot flood the event channel).
+  const PROGRESS_INTERVAL_MS = 120
+  const PROGRESS_WINDOW = 4_000
+  let progressBuf = ""
+  let lastFlush = 0
+  const flushProgress = (force = false): void => {
+    if (!onProgress || !progressBuf) return
+    const now = Date.now()
+    if (!force && now - lastFlush < PROGRESS_INTERVAL_MS) return
+    onProgress(progressBuf)
+    progressBuf = ""
+    lastFlush = now
+  }
+  const pushProgress = (chunk: string): void => {
+    if (!onProgress) return
+    progressBuf = (progressBuf + chunk).slice(-PROGRESS_WINDOW)
+    flushProgress()
+  }
 
   const kill = () => killTree(child)
 
@@ -244,6 +275,7 @@ async function run(command: string, cwd: string, timeout: number, signal?: Abort
     done = true
     clearTimeout(timer)
     signal?.removeEventListener("abort", onAbort)
+    flushProgress(true)
     const stdoutTrunc = stdout.length > MAX_OUTPUT
     const stderrTrunc = stderr.length > MAX_OUTPUT
     return {
@@ -259,9 +291,11 @@ async function run(command: string, cwd: string, timeout: number, signal?: Abort
 
   child.stdout?.on("data", (chunk: Buffer) => {
     if (stdout.length < MAX_OUTPUT) stdout += chunk.toString("utf8")
+    pushProgress(chunk.toString("utf8"))
   })
   child.stderr?.on("data", (chunk: Buffer) => {
     if (stderr.length < MAX_OUTPUT) stderr += chunk.toString("utf8")
+    pushProgress(chunk.toString("utf8"))
   })
 
   return new Promise<unknown>((resolvePromise) => {

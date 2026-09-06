@@ -102,6 +102,34 @@ describe("runtime server", () => {
     expect(text).toContain(" world")
   })
 
+  it("GET /v1/session/:id/context folds real usage (cache/reasoning) + model + providerId", async () => {
+    // A dedicated final usage frame (no delta), matching how the adapter folds
+    // usage: the OpenAI chat protocol reads prompt_tokens_details.cached_tokens.
+    const payload = [
+      "data: " + JSON.stringify({ choices: [{ delta: { role: "assistant", content: "ok" }, finish_reason: null }] }) + "\n\n",
+      // Usage rides the finish chunk (empty delta + finish_reason + usage): the
+      // openai protocol flushes step-finish with usage on the same chunk.
+      "data: " + JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 100, completion_tokens: 5, prompt_tokens_details: { cached_tokens: 80 } } }) + "\n\n",
+      "data: [DONE]\n\n",
+    ].join("")
+    handle = await createServer({ port: 0, sessionConfig: () => ({ provider, model: "m", fetch: mockFetch(payload) }) })
+    const base = handle.baseUrl
+    const { sessionId } = (await (await fetch(`${base}/v1/session`, { method: "POST", body: JSON.stringify({}) })).json()) as { sessionId: string }
+    await fetch(`${base}/v1/session/${sessionId}/prompt`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "hi" }) }).then((r) => r.text())
+    const res = await fetch(`${base}/v1/session/${sessionId}/context`)
+    expect(res.status).toBe(200)
+    const ctx = (await res.json()) as { calls?: number; inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; reasoningTokens?: number; model?: string; providerId?: string; compacted?: boolean }
+    expect(ctx.calls).toBeGreaterThan(0)
+    expect(ctx.model).toBe("m")
+    expect(ctx.providerId).toBe("openai")
+    // The OpenAI chat adapter folds prompt_tokens_details.cached_tokens into the
+    // canonical cacheReadTokens; the fold surfaces it here.
+    expect(ctx.cacheReadTokens).toBeGreaterThan(0)
+    expect(ctx.inputTokens).toBeGreaterThan(0)
+    expect(typeof ctx.outputTokens).toBe("number")
+    expect(typeof ctx.compacted).toBe("boolean")
+  })
+
   it("rejects a request to an unknown session with 404", async () => {
     handle = await createServer({ port: 0, sessionConfig: () => ({ provider, model: "m", fetch: mockFetch("") }) })
     const res = await fetch(`${handle.baseUrl}/v1/session/nope/prompt`, {
@@ -305,10 +333,19 @@ describe("butler role + policy + commands + fork (client surfaces)", () => {
     const { sessionId } = (await created.json()) as { sessionId: string }
 
     await fetch(`${base}/v1/session/${sessionId}/prompt`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "hi" }) })
-    const evs = (await (await fetch(`${base}/v1/session/${sessionId}/events`)).json()) as { type: string; data: Record<string, unknown> }[]
-    expect(evs.some((e) => e.type === "Session.Created" && (e.data as { role?: string }).role === "butler")).toBe(true)
-    const sys = evs.find((e) => e.type === "Session.MessageAppended" && (e.data as { message?: { kind?: string; text?: string } }).message?.kind === "system")
-    expect(((sys?.data as { message?: { text?: string } } | undefined)?.message?.text ?? "")).toContain("newhorse——用户的常驻主会话")
+    // The prompt handler flushes SSE headers immediately (a turn can go quiet),
+    // so `await fetch` may resolve BEFORE the system-context write lands on the
+    // log. Poll briefly for the system message rather than reading once — the
+    // role body is written at turn start, but a one-shot read can win the race.
+    let sysText = ""
+    for (let i = 0; i < 20 && !sysText; i++) {
+      const evs = (await (await fetch(`${base}/v1/session/${sessionId}/events`)).json()) as { type: string; data: Record<string, unknown> }[]
+      expect(evs.some((e) => e.type === "Session.Created" && (e.data as { role?: string }).role === "butler")).toBe(true)
+      const sys = evs.find((e) => e.type === "Session.MessageAppended" && (e.data as { message?: { kind?: string; text?: string } }).message?.kind === "system")
+      sysText = (sys?.data as { message?: { text?: string } } | undefined)?.message?.text ?? ""
+      if (!sysText) await new Promise((r) => setTimeout(r, 25))
+    }
+    expect(sysText).toContain("newhorse——用户的常驻主会话")
 
     // The durable registry projects the role for the client badge.
     const list = (await (await fetch(`${base}/v1/sessions`)).json()) as Array<{ sessionId: string; role?: string }>
@@ -354,6 +391,67 @@ describe("butler role + policy + commands + fork (client surfaces)", () => {
       expect((created?.data as { location?: string }).location).toBe("/proj-x")
       expect((created?.data as { role?: string }).role).toBe("butler")
       expect(evs.some((e) => e.type === "Session.Prompted")).toBe(true)
+    } finally {
+      await rm(dir, { recursive: true, force: true }).catch(() => {})
+    }
+  })
+
+  it("POST /v1/session/:id/truncate rewinds the durable log and records the boundary", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "nh-trunc-"))
+    try {
+      const payload = ["data: " + JSON.stringify({ choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] }) + "\n\n", "data: [DONE]\n\n"].join("")
+      handle = await createServer({ port: 0, sessionConfig: () => ({ provider, model: "m", workspace: "/w", dataDir: dir, fetch: mockFetch(payload) }) })
+      const base = handle.baseUrl
+      const { sessionId } = (await (await fetch(`${base}/v1/session`, { method: "POST", body: JSON.stringify({}) })).json()) as { sessionId: string }
+      await (await fetch(`${base}/v1/session/${sessionId}/prompt`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "turn one" }) })).text()
+
+      const before = (await (await fetch(`${base}/v1/session/${sessionId}/events`)).json()) as { seq: number; type: string }[]
+      // The Created event is seq 0; rewind to keep only it, dropping the turn.
+      const trunc = await fetch(`${base}/v1/session/${sessionId}/truncate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ atSeq: 0 }) })
+      expect(trunc.status).toBe(200)
+      const after = (await (await fetch(`${base}/v1/session/${sessionId}/events`)).json()) as { seq: number; type: string }[]
+      expect(after.length).toBeLessThan(before.length)
+      const truncated = after.find((e) => e.type === "Session.Truncated") as { type: string; data?: Record<string, unknown> } | undefined
+      expect(truncated).toBeTruthy()
+      expect((truncated?.data as { atSeq?: number } | undefined)?.atSeq).toBe(0)
+    } finally {
+      await rm(dir, { recursive: true, force: true }).catch(() => {})
+    }
+  })
+
+  it("POST /v1/session/:id/truncate rejects a malformed boundary", async () => {
+    handle = await createServer({ port: 0, sessionConfig: () => ({ provider, model: "m", fetch: mockFetch("") }) })
+    const base = handle.baseUrl
+    const { sessionId } = (await (await fetch(`${base}/v1/session`, { method: "POST", body: JSON.stringify({}) })).json()) as { sessionId: string }
+    for (const body of [{}, { atSeq: -1 }, { atSeq: "x" }]) {
+      const res = await fetch(`${base}/v1/session/${sessionId}/truncate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
+      expect(res.status).toBe(400)
+    }
+  })
+
+  it("POST /v1/session/:id/references/resolve inlines agent and skill content", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "nh-refs-"))
+    try {
+      await mkdir(join(dir, "agents"), { recursive: true })
+      await writeFile(join(dir, "agents", "architect.md"), "---\ndescription: 架构评审专家\n---\n你是资深架构师，负责评审系统设计。", "utf8")
+      await mkdir(join(dir, "skills", "code-review"), { recursive: true })
+      await writeFile(join(dir, "skills", "code-review", "SKILL.md"), "---\ndescription: 代码审查\n---\n按安全、可读、性能三个维度审查代码。", "utf8")
+      const payload = ["data: " + JSON.stringify({ choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] }) + "\n\n", "data: [DONE]\n\n"].join("")
+      handle = await createServer({ port: 0, pluginsDir: dir, sessionConfig: () => ({ provider, model: "m", pluginsDir: dir, fetch: mockFetch(payload) }) })
+      const base = handle.baseUrl
+      const { sessionId } = (await (await fetch(`${base}/v1/session`, { method: "POST", body: JSON.stringify({}) })).json()) as { sessionId: string }
+
+      const res = await fetch(`${base}/v1/session/${sessionId}/references/resolve`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "请 @agent:architect 评审 @skill:code-review 的结果" }),
+      })
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as { expanded: string; resolved: Array<{ kind: string; content: string }> }
+      expect(body.expanded).toContain("资深架构师")
+      expect(body.expanded).toContain("代码")
+      expect(body.resolved.some((r) => r.kind === "agent" && r.content.includes("架构师"))).toBe(true)
+      expect(body.resolved.some((r) => r.kind === "skill" && r.content.includes("安全"))).toBe(true)
     } finally {
       await rm(dir, { recursive: true, force: true }).catch(() => {})
     }
@@ -481,5 +579,23 @@ describe("POST /v1/dag/:id/abort", () => {
     const st = (await res.json()) as DagStatus
     expect(st.nodes[0]?.node).toBe("A")
     expect(st.nodes[0]?.state).toBe("running")
+  })
+
+  it("POST /v1/dag preflights a malformed graph (cycle) and returns 400, not a phantom dagId", async () => {
+    let ran = false
+    const runner: DagRunner = {
+      run: async () => { ran = true; return { dagId: "d1" } },
+      status: async () => undefined,
+      list: async () => [],
+      abort: async () => ({ aborted: true }),
+    }
+    handle = await createServer({ port: 0, sessionConfig: () => ({ provider, model: "m", fetch: mockFetch("") }), dagRunner: runner })
+    const res = await fetch(`${handle.baseUrl}/v1/dag`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ spec: { nodes: { A: { input: "x", agent: { name: "a" }, dependsOn: ["A"] } } } }),
+    })
+    expect(res.status).toBe(400)
+    expect(ran).toBe(false) // a cycle is rejected before the runner fires
   })
 })

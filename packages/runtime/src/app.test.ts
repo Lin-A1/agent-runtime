@@ -582,6 +582,62 @@ describe("butler fixed session role", () => {
     const auditLog = await butler.events.read("audit:butler-dag")
     expect(auditLog.some((e) => e.type === "Session.ButlerAction" && (e.data as { op?: string }).op === "declare_dag" && (e.data as { outcome?: string }).outcome === "allowed")).toBe(true)
   })
+
+  it("a butler with NO injected runner gets a default DAG runner over the SAME store, so a child is visible to followup_task", async () => {
+    // A single-node graph: the node child is driven to settlement; the butler
+    // must be able to SEE that child via its own list_sessions / followup_task
+    // because the default runner writes to THIS app's event store (the gap the
+    // cross-store runner introduced).
+    const dir = await mkdtemp(join(tmpdir(), "nh-dag-default-"))
+    const nodePayload = ["data: " + JSON.stringify({ choices: [{ delta: { content: "done" }, finish_reason: "stop" }] }) + "\n\n", "data: [DONE]\n\n"].join("")
+    const declareTurn = [
+      'data: ' + JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "c1", function: { name: "declare_dag", arguments: JSON.stringify({ spec: { nodes: { A: { id: "A", agent: { name: "a" }, input: "x" } } } }) } }] }, finish_reason: "tool_calls" }] }) + "\n\n",
+      "data: [DONE]\n\n",
+    ].join("")
+    // The FIRST call is the parent's declare_dag turn; every subsequent call
+    // (the parent's follow-up turn OR the node child's turn) returns a plain
+    // stop delta so both converge. Node children run concurrently with the
+    // parent drain, so ordering past the first call is intentionally loose.
+    let call = 0
+    const fetch: Fetcher = async () => sse(call++ === 0 ? declareTurn : nodePayload)
+    // The node's own LLM resolves through the runner's `getProvider`/fetcher; the
+    // runner uses the app's provider+fetch, so a node receives the nodePayload.
+    const butler = await createApp({
+      provider: { kind: "openai", baseUrl: "https://x", apiKey: "k" },
+      model: "m",
+      sessionId: "butler-default-dag",
+      workspace: "/w",
+      asButler: true,
+      dataDir: dir,
+      enableBash: false,
+      fetch: fetch as never,
+    })
+    try {
+      await butler.prompt("plan it")
+      // Let the fire-and-forget node child settle.
+      let childId: string | undefined
+      for (let i = 0; i < 120 && !childId; i++) {
+        const rows = await butler.listSessions({ parentId: "butler-default-dag" })
+        childId = rows.find((r) => r.origin === "dag")?.sessionId
+        if (!childId) await new Promise((r) => setTimeout(r, 50))
+      }
+      expect(childId).toBeTruthy()
+      // The child is queryable via the SAME store (followup_task reads the
+      // butler's event store) — the cross-store disconnect is gone. Wait for the
+      // fire-and-forget node to settle (its own LLM turn runs after the parent).
+      let settled = false
+      for (let i = 0; i < 120 && !settled; i++) {
+        const log = await butler.events.read(childId!)
+        settled = log.some((e) => e.type === "Session.Settled")
+        if (!settled) await new Promise((r) => setTimeout(r, 50))
+      }
+      const log = await butler.events.read(childId!)
+      expect(log.some((e) => e.type === "Session.Created" && (e.data as { location?: string }).location === "/w")).toBe(true)
+      expect(settled).toBe(true)
+    } finally {
+      await rm(dir, { recursive: true, force: true }).catch(() => {})
+    }
+  })
 })
 
 describe("durable role + policy restore (log is authoritative)", () => {

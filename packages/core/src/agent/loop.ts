@@ -30,8 +30,9 @@ export interface TurnResult {
 export type LoopEvent =
   | { readonly type: "text"; readonly text: string }
   | { readonly type: "reasoning"; readonly text: string }
-  | { readonly type: "tool"; readonly name: string; readonly input: unknown }
-  | { readonly type: "tool-result"; readonly name: string; readonly output: unknown; readonly isError?: boolean }
+  | { readonly type: "tool"; readonly callId: string; readonly name: string; readonly input: unknown }
+  | { readonly type: "tool-progress"; readonly callId: string; readonly name: string; readonly text: string }
+  | { readonly type: "tool-result"; readonly callId: string; readonly name: string; readonly output: unknown; readonly isError?: boolean }
   | { readonly type: "step"; readonly step: number }
   | { readonly type: "error"; readonly code: string; readonly message: string }
   | { readonly type: "panel"; readonly panelId: string; readonly kind: string; readonly title: string; readonly payload: unknown }
@@ -127,6 +128,8 @@ export interface RunOptions {
   readonly signal?: AbortSignal
   /** Trusted caller injected into tool ctx (M2b). Defaults to parent of sessionId. */
   readonly caller?: Initiator
+  /** Admission/prompt id for the current turn, propagated to tool approvals. */
+  readonly promptId?: string
   /** Extra tool-ctx fields to merge (e.g. registry/appendAudit for butler tools). */
   readonly toolCtx?: Omit<ToolCtx, "caller">
 }
@@ -154,6 +157,10 @@ export async function runSession(runtime: TurnRuntime, opts: RunOptions): Promis
   // context-overflow retry per drain — a second overflow means even the
   // compacted view does not fit, and the honest error beats a silent loop.
   let reactiveCompacted = false
+  // Transient-transport retry (one per drain): a zero-output step failure
+  // (connect / first-byte drop) is safe to re-run — no model-visible output
+  // was logged for it, so a retry cannot duplicate content.
+  let noOutputRetried = false
   // The provider's own last reported input-token count (the precise pressure
   // signal, unlike the char estimate) — fed from runTurn's usage payload.
   let lastInputTokens = 0
@@ -315,6 +322,17 @@ export async function runSession(runtime: TurnRuntime, opts: RunOptions): Promis
         await opts.runHooks?.("post-compact", { trigger: "reactive" })
         continue
       }
+      // A zero-output transport drop (connect or first-byte, before any part
+      // was logged) is retried once per drain: nothing model-visible exists
+      // for the failed step, so re-running it cannot duplicate content. A
+      // drop AFTER output stays an honest error (the partial message was
+      // already flushed by runTurn). Checked AFTER the overflow branch — an
+      // overflow owns its dedicated fold-and-retry path above.
+      if ((e as { nhNoOutput?: boolean }).nhNoOutput && !noOutputRetried && turns < MAX_STEPS) {
+        noOutputRetried = true
+        await new Promise((r) => setTimeout(r, 400))
+        continue
+      }
       throw e
     }
     needsContinuation = turn.needsContinuation
@@ -352,10 +370,17 @@ async function cancelledResult(runtime: TurnRuntime, opts: RunOptions, turns: nu
   return result
 }
 
+/** Tag a failure as "this step produced no model-visible output" — the drain
+ * may retry it once (a transport drop at connect/first-byte must not kill a
+ * long-horizon turn; with output already flushed the error stays honest). */
+function markNoOutput(e: unknown): unknown {
+  if (e instanceof Error) Object.assign(e, { nhNoOutput: true })
+  return e
+}
+
 /** Detect a cancellation from the llm transport or a fetch abort
  * (AbortError/DOMException). Core cannot import the llm package, so the llm
- * transport's LlmCancelled is matched structurally by name/tag. */
-function isCancelled(e: unknown): boolean {
+ * transport's LlmCancelled is matched structurally by name/tag. */function isCancelled(e: unknown): boolean {
   const err = e as { name?: string; _tag?: string; code?: number } | null
   if (!err) return false
   // llm transport's LlmCancelled.
@@ -423,7 +448,14 @@ async function runTurn(runtime: TurnRuntime, opts: RunOptions, request: LLMReque
   let usage: unknown
 
   const streamStart = performance.now()
-  const stream = await runtime.llm.stream(request, opts.signal)
+  let stream: AsyncIterable<LLMEvent>
+  try {
+    stream = await runtime.llm.stream(request, opts.signal)
+  } catch (e) {
+    // Connect-phase drop: nothing was emitted for this step — mark it so the
+    // drain may retry the whole step once.
+    throw markNoOutput(e)
+  }
   let providerError: string | undefined
   try {
     for await (const event of stream) {
@@ -459,7 +491,7 @@ async function runTurn(runtime: TurnRuntime, opts: RunOptions, request: LLMReque
           // never an opaque string, so tools don't need to defensively parse. This
           // is the canonical contract upstream of tool.execute.
           const input = normalizeToolInput(event.input)
-          opts.onEvent?.({ type: "tool", name: event.name, input })
+          opts.onEvent?.({ type: "tool", callId: event.id, name: event.name, input })
           assistantParts.push({ type: "tool-call", id: event.id, name: event.name, input })
           break
         }
@@ -490,7 +522,10 @@ async function runTurn(runtime: TurnRuntime, opts: RunOptions, request: LLMReque
         await appendMessage(runtime, opts.sessionId, { kind: "assistant", id: assistantId, seq: 0, content: assistantParts, model: opts.agent.model })
       }
     } finally {
-      throw e
+      // Zero parts = the drop landed before any model output — retryable one
+      // level up. With parts, the flush above already made it durable and the
+      // error stays honest.
+      throw assistantParts.length === 0 ? markNoOutput(e) : e
     }
   }
 
@@ -530,7 +565,7 @@ async function runTurn(runtime: TurnRuntime, opts: RunOptions, request: LLMReque
     // execpolicy defaults to deny-all so an unaudited tool never runs bare (M4).
     // pre-tool-use hook: a block skips the execution and records the reason as
     // an error result — the model sees the denial and self-corrects.
-    const ctx: ToolCtx = { caller: opts.caller ?? { kind: "parent", sessionId: opts.sessionId }, sessionId: opts.sessionId, signal: opts.signal, ...opts.toolCtx, execPolicy: opts.toolCtx?.execPolicy ?? denyAllExecPolicy }
+    const ctx: ToolCtx = { caller: opts.caller ?? { kind: "parent", sessionId: opts.sessionId }, sessionId: opts.sessionId, ...(opts.promptId ? { promptId: opts.promptId } : {}), signal: opts.signal, ...opts.toolCtx, execPolicy: opts.toolCtx?.execPolicy ?? denyAllExecPolicy }
     const settled = await Promise.allSettled(toolCalls.map(async (call) => {
       if (opts.runHooks) {
         const verdict = await opts.runHooks("pre-tool-use", { name: call.name, input: call.input })
@@ -540,7 +575,15 @@ async function runTurn(runtime: TurnRuntime, opts: RunOptions, request: LLMReque
           throw new Error(`denied by hook: ${verdict.reason ?? "blocked"}`)
         }
       }
-      return invokeTool(opts.resolveTool, call, ctx, opts.signal)
+      // Per-call progress channel: a streaming tool (bash) pushes partial
+      // output that rides the live event stream as tool-progress frames.
+      const callCtx: ToolCtx = {
+        ...ctx,
+        toolCallId: call.id,
+        toolName: call.name,
+        onProgress: (text) => opts.onEvent?.({ type: "tool-progress", callId: call.id, name: call.name, text }),
+      }
+      return invokeTool(opts.resolveTool, call, callCtx, opts.signal)
     }))
     for (let i = 0; i < settled.length; i++) {
       const call = toolCalls[i]!
@@ -548,7 +591,7 @@ async function runTurn(runtime: TurnRuntime, opts: RunOptions, request: LLMReque
       if (outcome.status === "fulfilled") {
         const output = truncateToolOutput(outcome.value, opts.toolOutputMaxChars ?? DEFAULT_TOOL_OUTPUT_CHARS)
         await appendMessage(runtime, opts.sessionId, { kind: "tool", id: crypto.randomUUID(), seq: 0, callId: call.id, name: call.name, output })
-        opts.onEvent?.({ type: "tool-result", name: call.name, output })
+        opts.onEvent?.({ type: "tool-result", callId: call.id, name: call.name, output })
         await opts.runHooks?.("post-tool-use", { name: call.name, callId: call.id, isError: false })
       } else {
         // A cancelled tool must be marked "Tool execution interrupted", matching
@@ -558,7 +601,7 @@ async function runTurn(runtime: TurnRuntime, opts: RunOptions, request: LLMReque
         const interrupted = isCancelled(outcome.reason)
         const text = interrupted ? "Tool execution interrupted" : `tool error: ${outcome.reason}`
         await appendMessage(runtime, opts.sessionId, { kind: "tool", id: crypto.randomUUID(), seq: 0, callId: call.id, name: call.name, output: text, isError: true })
-        opts.onEvent?.({ type: "tool-result", name: call.name, output: text, isError: true })
+        opts.onEvent?.({ type: "tool-result", callId: call.id, name: call.name, output: text, isError: true })
         await opts.runHooks?.("post-tool-use", { name: call.name, callId: call.id, isError: true })
       }
     }

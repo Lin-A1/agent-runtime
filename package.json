@@ -11,10 +11,8 @@
       "packages/runtime",
       "packages/memory",
       "packages/server",
-      "packages/cli",
       "packages/sdk",
-      "packages/mcp",
-      "apps/web"
+      "packages/mcp"
     ]
   },
   "scripts": {

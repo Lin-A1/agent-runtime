@@ -38,7 +38,7 @@ export function createWriteTool(workspace: string): Tool {
         const decision = policy.decidePath(abs)
         if (decision === "forbid") return denied(`denied by execpolicy: ${abs}`)
         if (decision === "prompt") {
-          const ok = await approve(policy, { id: randomUUID(), kind: "path", target: abs, decision: "prompt", reason: "path write" })
+          const ok = await approve(policy, { id: randomUUID(), kind: "path", target: abs, decision: "prompt", reason: "path write" }, ctx)
           if (!ok) return denied(`denied by execpolicy (prompt not approved): ${abs}`)
         }
         await mkdir(dirname(abs), { recursive: true })

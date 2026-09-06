@@ -38,6 +38,14 @@ export interface ApprovalRequest {
   readonly reason?: string
   /** question kind only: the choices the operator can pick from. */
   readonly options?: readonly string[]
+  /** Session that owns the pending decision. Older transports may omit it. */
+  readonly sessionId?: string
+  /** Admission/prompt id that caused the decision. */
+  readonly promptId?: string
+  /** Tool requesting the decision, when the request came from a tool call. */
+  readonly tool?: string
+  /** Stable tool-call id for streamed/model tool invocations. */
+  readonly callId?: string
 }
 
 /**

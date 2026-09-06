@@ -1,5 +1,6 @@
 import { lstat, readdir, stat } from "node:fs/promises"
 import { basename, join, relative } from "node:path"
+import type { ToolCtx } from "@newhorse/core"
 import type { ExecPolicy, ApprovalRequest } from "@newhorse/schema"
 
 /** Default directories excluded from list/search because they are either huge
@@ -36,16 +37,30 @@ export function denied(reason: string): ToolFailure & { readonly isError?: never
  * user never blocks a long-horizon turn (M4 #2); one approval is scoped to one
  * request id (concurrent tool calls don't cross-approve).
  */
-export function approve(policy: ExecPolicy, req: ApprovalRequest): Promise<boolean> {
+export function approve(policy: ExecPolicy, req: ApprovalRequest, ctx?: ToolCtx): Promise<boolean> {
   const gate = policy.approve
-  if (!gate) return Promise.resolve(false)
+  if (!gate || ctx?.signal?.aborted) return Promise.resolve(false)
+  const attributed: ApprovalRequest = {
+    ...req,
+    ...(ctx?.sessionId ? { sessionId: ctx.sessionId } : {}),
+    ...(ctx?.promptId ? { promptId: ctx.promptId } : {}),
+    ...(ctx?.toolName ? { tool: ctx.toolName } : {}),
+    ...(ctx?.toolCallId ? { callId: ctx.toolCallId } : {}),
+  }
   return new Promise<boolean>((resolvePromise) => {
     let settled = false
-    const t = setTimeout(() => { if (!settled) { settled = true; resolvePromise(false) } }, 30_000)
-    gate(req).then(
-      (v) => { if (!settled) { settled = true; clearTimeout(t); resolvePromise(v) } },
-      () => { if (!settled) { settled = true; clearTimeout(t); resolvePromise(false) } },
-    )
+    const settle = (value: boolean): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(t)
+      ctx?.signal?.removeEventListener("abort", onAbort)
+      resolvePromise(value)
+    }
+    const onAbort = (): void => settle(false)
+    const t = setTimeout(() => settle(false), 30_000)
+    ctx?.signal?.addEventListener("abort", onAbort, { once: true })
+    if (ctx?.signal?.aborted) return settle(false)
+    gate(attributed).then(settle, () => settle(false))
   })
 }
 

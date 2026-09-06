@@ -187,6 +187,15 @@ export function fold(stored: StoredEvent[]): SessionRow | undefined {
         status = "interrupted"
         break
       }
+      case "Session.Settled": {
+        // Durable settle boundary written by driveChildSession / hub (both the
+        // success path and the failure path). Without this, a DAG node or
+        // spawned child that fails before its first StepEnded would fold to
+        // a forever-"active" row — the exact zombie the boundary exists to end.
+        const d = event.data as { finish?: string }
+        status = d.finish === "error" || d.finish === "interrupted" ? "interrupted" : "settled"
+        break
+      }
       case "Session.Spawned": {
         // Record parent chain; does NOT set hasCreated (must pair with Created).
         const d = event.data as { parentId?: string; via?: "dag" | "spawn" }
@@ -223,6 +232,14 @@ export function fold(stored: StoredEvent[]): SessionRow | undefined {
       }
       case "Session.TitleSet": {
         title = (event.data as { title?: string }).title
+        break
+      }
+      case "Session.ModelSet": {
+        // Per-session model switch — the row reflects the choice immediately
+        // (the next assistant message would carry it anyway, but the picker
+        // label should not lag a whole turn).
+        const d = event.data as { model?: string }
+        if (d.model) model = d.model
         break
       }
       default:

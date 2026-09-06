@@ -51,6 +51,30 @@ describe("builtin tools", () => {
     }
   })
 
+  it("ask_user trims the question and sanitizes option choices to 2-4 non-empty short labels", async () => {
+    const { root, cleanup } = await ws()
+    try {
+      const ask = byName(createBuiltinTools({ workspace: root, enableBash: true }), "ask_user")
+      // Blank question -> a graceful failure, not a hang.
+      const blank = await ask.execute({ question: "   " }, allowCtx)
+      expect((blank as { error?: string }).error).toBeTruthy()
+      // No interactive channel -> explicit non-interactive answer (never hang).
+      const unavail = await ask.execute({ question: "  pick  ", options: ["a", "b", "c"] }, allowCtx) as { question?: string; interactive?: boolean }
+      expect(unavail.question).toBe("pick")
+      expect(unavail.interactive).toBe(false)
+      // With a channel: garbage options (empties/whitespace/oversized) are dropped;
+      // <2 survivors means the options key is omitted entirely.
+      let received: { question?: string; options?: readonly string[] } | undefined
+      const withCtx: ToolCtx = { caller: { kind: "user" }, askUser: async (req) => { received = req; return { allow: true, reply: "ok" } } }
+      await ask.execute({ question: "  pick  ", options: ["   ", "", "okay?", "x".repeat(80), "b"] }, withCtx)
+      expect(received?.question).toBe("pick")
+      // Only "okay?" and "b" survive sanitization -> passed through (2 valid).
+      expect(received?.options).toEqual(["okay?", "b"])
+    } finally {
+      await cleanup()
+    }
+  })
+
   it("write then read round-trips (line numbers, no truncation)", async () => {
     const { root, cleanup } = await ws()
     try {

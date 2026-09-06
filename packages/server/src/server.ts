@@ -1,5 +1,5 @@
 import { createApp, redactSettings, aggregateUsage, loadModelCatalog, createDagRunner, handleChannelInbound, channelSessionId, type App, type AppEvent, type AppConfig, type PromptResult, type SessionRow, type RegistryQuery, type AuditEventRow, type SessionDirectory, type DirectoryEntry, type SettingsController, type AgentHomeConfig, type ApprovalHub, type Scheduler, type ScheduleInput, type Schedule, type DagRunner, type DagStatus, type ChannelConfig } from "@newhorse/runtime"
-import { currentGoal, tokensUsed as foldTokensUsed, currentTodos, validateGoal, projectCompacted, clearStaleToolResults, compactLimit } from "@newhorse/core"
+import { currentGoal, tokensUsed as foldTokensUsed, currentTodos, validateGoal, projectCompacted, clearStaleToolResults, compactLimit, validate as validateDag } from "@newhorse/core"
 import { discoverSkills, discoverPlugin } from "@newhorse/plugin"
 import { SessionRegistry, SqliteEventStore, type DAGSpec } from "@newhorse/core"
 import { Database } from "bun:sqlite"
@@ -110,6 +110,9 @@ export interface SessionCreateRequest {
   readonly workspace?: string
   readonly sessionId?: string
   readonly model?: string
+  /** Optional project id (grouping key) — persisted on Session.Created so the
+   *  registry can fold + query sessions per project. */
+  readonly projectId?: string
   /** Create the session as the fixed BUTLER role (coordinator toolset + body). */
   readonly asButler?: boolean
   /** The create-model's context window in tokens (scales auto-compaction). */
@@ -161,29 +164,105 @@ function bearer(req: Request): string | undefined {
   return auth.slice(7)
 }
 
-async function readJson<T>(req: Request): Promise<T | undefined> {
-  try {
-    const text = await req.text()
-    if (!text) return undefined
-    return JSON.parse(text) as T
-  } catch {
-    return undefined
+/** Bound actual bytes before decoding or parsing, even for chunked requests. */
+export async function readJsonOr400<T>(req: Request, limit = MAX_PROMPT_BODY): Promise<T | { error: string } | Response> {
+  const reader = req.body?.getReader()
+  const oversized = (): Response => {
+    // Do not wait for an uncooperative sender to acknowledge cancellation.
+    void reader?.cancel().catch(() => {})
+    return json(413, { error: "request body too large" })
   }
-}
-
-/** Read a JSON body; a malformed (non-JSON) body is a client error, not a no-op. */
-async function readJsonOr400<T>(req: Request): Promise<T | { error: string }> {
   try {
-    const text = await req.text()
-    if (!text) return {} as T
-    return JSON.parse(text) as T
+    if (Number(req.headers.get("content-length")) > limit) return oversized()
+    if (!reader) return {} as T
+    const chunks: Uint8Array[] = []
+    let size = 0
+    for (;;) {
+      const chunk = await reader.read()
+      if (chunk.done) break
+      size += chunk.value.byteLength
+      if (size > limit) return oversized()
+      chunks.push(chunk.value)
+    }
+    if (!size) return {} as T
+    const bytes = new Uint8Array(size)
+    let offset = 0
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset)
+      offset += chunk.byteLength
+    }
+    return JSON.parse(new TextDecoder().decode(bytes)) as T
   } catch {
     return { error: "malformed JSON body" }
+  } finally {
+    reader?.releaseLock()
   }
 }
 
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
+}
+
+/** Inline materials resolved from text @-references. Each authorinjected block
+ *  is marked so the model sees it is injected context, not its own words. */
+async function expandReferences(
+  text: string,
+  sources: {
+    agents: Array<{ name: string; body?: string; description?: string }>
+    skills: Array<{ name: string; body?: string; description?: string }>
+    mcpResources: { readResource: (server: string, uri: string) => Promise<{ text: string; mimeType?: string }> } | null
+  },
+  resolved: Array<{ kind: "agent" | "skill" | "mcp"; label: string; content: string }>,
+): Promise<string> {
+  let out = text
+  // Pre-resolve MCP refs (they need an await — String.replace's callback is
+  // sync and would otherwise inline "[object Promise]").
+  const mcpContents = new Map<string, string>()
+  if (sources.mcpResources) {
+    const mcpRefs = new Set<string>()
+    for (const m of out.matchAll(/@mcp:([^\s]+)/g)) mcpRefs.add(m[1]!)
+    for (const ref of mcpRefs) {
+      const sep = ref.indexOf("/")
+      const server = sep === -1 ? ref : ref.slice(0, sep)
+      const uri = sep === -1 ? "" : ref.slice(sep + 1)
+      if (!server || !uri) continue
+      try {
+        const r = await sources.mcpResources.readResource(server, uri)
+        if (r.text) mcpContents.set(`@mcp:${ref}`, r.text)
+      } catch {
+        // Unresolvable — leave the literal token.
+      }
+    }
+  }
+  // Scan left-to-right; a ref resolved to content declares it and inlines it.
+  out = out.replace(/@(agent|skill|mcp):([^\s]+)/g, (raw, kind: string, ref: string) => {
+    const k = kind as "agent" | "skill" | "mcp"
+    if (k === "agent") {
+      const agent = sources.agents.find((a) => a.name === ref)
+      if (agent) {
+        const content = agent.body ?? agent.description ?? ""
+        if (content) resolved.push({ kind: "agent", label: raw, content })
+        return content || raw
+      }
+      return raw
+    }
+    if (k === "skill") {
+      const skill = sources.skills.find((s) => s.name === ref)
+      if (skill) {
+        const content = skill.body ?? skill.description ?? ""
+        if (content) resolved.push({ kind: "skill", label: raw, content })
+        return content || raw
+      }
+      return raw
+    }
+    const content = mcpContents.get(raw)
+    if (content) {
+      resolved.push({ kind: "mcp", label: raw, content })
+      return content
+    }
+    return raw
+  })
+  return out
 }
 
 /** Serve the built client UI with SPA fallback. Path traversal is blocked by
@@ -194,15 +273,19 @@ async function serveStatic(root: string, pathname: string): Promise<Response> {
   const rel = pathname === "/" ? "index.html" : decodeURIComponent(pathname.slice(1))
   const resolved = resolve(root, rel)
   if (resolved !== rootAbs && !resolved.startsWith(rootAbs + sep)) return json(403, { error: "forbidden" })
+  // Hashed assets are immutable (cache forever); index.html must revalidate on
+  // every load — a heuristic-cached shell pins stale bundle references and the
+  // client keeps booting an old build until a hard refresh.
   const file = Bun.file(resolved)
   if (await file.exists()) {
     const ext = resolved.slice(resolved.lastIndexOf(".")).toLowerCase()
-    return new Response(file, { headers: CONTENT_TYPES[ext] ? { "content-type": CONTENT_TYPES[ext]! } : {} })
+    const cache = ext === ".html" ? "no-cache" : "public, max-age=31536000, immutable"
+    return new Response(file, { headers: { ...(CONTENT_TYPES[ext] ? { "content-type": CONTENT_TYPES[ext]! } : {}), "cache-control": cache } })
   }
   // SPA fallback: unknown extension-less paths load the app shell.
   if (!rel.includes(".")) {
     const index = Bun.file(join(rootAbs, "index.html"))
-    if (await index.exists()) return new Response(index, { headers: { "content-type": CONTENT_TYPES[".html"]! } })
+    if (await index.exists()) return new Response(index, { headers: { "content-type": CONTENT_TYPES[".html"]!, "cache-control": "no-cache" } })
   }
   return json(404, { error: "not found" })
 }
@@ -295,6 +378,9 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
     apps.delete(sessionId)
     relays.get(sessionId)?.()
     relays.delete(sessionId)
+    // Kill the session's shared terminal shell — a detached session must not
+    // leak a live child process.
+    app?.terminalDispose()
     // Close the app's SQLite connection — a deleted session must not leak an
     // open Database handle (same discipline as the resolveApp conflict path).
     void (app?.events as { close?: () => void } | undefined)?.close?.()
@@ -406,7 +492,7 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
     const headers: Record<string, string> = { ...(init?.headers as Record<string, string> | undefined) }
     if (token) headers.authorization = `Bearer ${token}`
     try {
-      const res = await fetch(entry.endpoint + path, { ...init, headers, signal: AbortSignal.timeout(5000) })
+      const res = await fetch(entry.endpoint + path, { ...init, headers, signal: init?.signal ?? AbortSignal.timeout(5_000) })
       return new Response(await res.arrayBuffer(), { status: res.status, headers: { "content-type": res.headers.get("content-type") ?? "application/json" } })
     } catch {
       if (!init?.signal?.aborted && !(await ownerAlive(entry))) {
@@ -460,7 +546,7 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
     // Transport-level extra tools (mounted MCP servers) merge ADDITIVELY after
     // the session factory's own tools — runtime precedence (first same-name
     // occurrence wins, builtins last) resolves collisions deterministically.
-    const app = await createApp({ ...base, sessionId: id, onApprove: config.onApprove ?? config.approvals?.gate, ...(config.approvals ? { onAsk: (q: { question: string; options?: readonly string[] }) => config.approvals!.ask({ id: crypto.randomUUID(), kind: "question", target: q.question, decision: "prompt", ...(q.options ? { options: q.options } : {}) }) } : {}), ...(serverTools?.length ? { tools: [...(base.tools ?? []), ...serverTools] } : {}) })
+    const app = await createApp({ ...base, sessionId: id, onApprove: config.onApprove ?? config.approvals?.gate, ...(config.approvals ? { onAsk: (q: { question: string; options?: readonly string[]; sessionId?: string; promptId?: string; tool?: string; callId?: string }) => config.approvals!.ask({ id: crypto.randomUUID(), kind: "question", target: q.question, decision: "prompt", ...(q.options ? { options: q.options } : {}), ...(q.sessionId ? { sessionId: q.sessionId } : {}), ...(q.promptId ? { promptId: q.promptId } : {}), ...(q.tool ? { tool: q.tool } : {}), ...(q.callId ? { callId: q.callId } : {}) }) } : {}), ...(serverTools?.length ? { tools: [...(base.tools ?? []), ...serverTools] } : {}) })
     if (directory) {
       // Register cross-process ownership. register returns the PREVIOUS row:
       // a foreign FRESH row means a sibling owns this id and our pre-check
@@ -484,7 +570,7 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
    *  down cleanly instead of leaving a half-open SSE connection — Bun's
    *  server.stop() would otherwise crash on a pending disconnected stream. */
   let inFlight = 0
-  async function promptStream(app: App, text: string, principal?: "user" | "butler" | "parent", signal?: AbortSignal, images?: { mime: string; data: string }[], opts?: { replace?: boolean }): Promise<Response> {
+  async function promptStream(app: App, text: string, principal?: "user" | "butler" | "parent", signal?: AbortSignal, images?: { mime: string; data: string }[], opts?: { replace?: boolean }, promptId?: string): Promise<Response> {
     inFlight++
     const sse = sseStream()
     // Flush headers NOW with an SSE comment line: Bun does not send response
@@ -511,12 +597,14 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
         }
       }
     }
-    // Client went away → cancel the run. The loop settles as interrupted;
-    // further emit/close are no-ops on the closed controller.
-    const onAbort = (): void => app.interrupt()
+    // Client went away -> close the SSE stream only. The run continues in the
+    // background until it naturally completes or is explicitly interrupted.
+    const onAbort = (): void => {
+      sse.close()
+    }
     signal?.addEventListener("abort", onAbort, { once: true })
     app
-      .prompt(text, principal, images, opts)
+      .prompt(text, principal, images, { ...opts, ...(promptId ? { promptId } : {}) })
       .then((result) => {
         emitGlobal({ type: "result", ...result })
         sse.emit(`data: ${JSON.stringify({ type: "result", ...result })}\n\n`)
@@ -572,6 +660,7 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
       // POST /v1/session
       if (method === "POST" && parts.length === 2 && parts[1] === "session") {
         const parsed = await readJsonOr400<SessionCreateRequest>(req)
+        if (parsed instanceof Response) return parsed
         if ("error" in parsed) return json(400, parsed)
         // Split-brain guard: an explicit id that a SIBLING process owns must
         // not be re-created locally (two Apps would drive one log). The
@@ -580,6 +669,17 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
         if (parsed.sessionId && directory) {
           const entry = directory.lookup(parsed.sessionId)
           if (entry && entry.endpoint !== selfUrl() && Date.now() - entry.heartbeatAt < 30_000) return json(409, { error: `session "${parsed.sessionId}" is owned by ${entry.endpoint}` })
+        }
+        // A session's workspace must EXIST on disk: the fs tools and the bash
+        // terminal pin their cwd there, and a nonexistent cwd makes spawn fail
+        // with ENOENT. A UI "new project" may point at a not-yet-created dir —
+        // create it so files browse + terminal both work (mkdir -p semantics).
+        if (parsed.workspace) {
+          try {
+            await mkdir(parsed.workspace, { recursive: true })
+          } catch {
+            // Unwritable/odd path — let the app-level error surface honestly.
+          }
         }
         const resolved = await resolveApp(parsed)
         if (!resolved) return json(500, { error: "no sessionConfig provided; cannot create session" })
@@ -597,9 +697,8 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
         if (found.kind === "missing") return json(404, { error: found.error })
         // Bound the buffered read BEFORE parsing: the caps below bound what is
         // LOGGED, not what a hostile body could make us buffer.
-        const declared = Number(req.headers.get("content-length") ?? 0)
-        if (declared > MAX_PROMPT_BODY) return json(413, { error: "request body too large" })
-        const parsed = await readJsonOr400<{ text?: string; principal?: "user" | "butler" | "parent"; images?: { mime?: string; data?: string }[]; replace?: boolean }>(req)
+        const parsed = await readJsonOr400<{ text?: string; principal?: "user" | "butler" | "parent"; images?: { mime?: string; data?: string }[]; replace?: boolean; promptId?: string }>(req)
+        if (parsed instanceof Response) return parsed
         if ("error" in parsed) return json(400, parsed)
         const images: { mime: string; data: string }[] = []
         for (const img of parsed.images ?? []) {
@@ -609,8 +708,8 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
           images.push({ mime: img.mime, data: img.data })
         }
         if (!parsed.text && images.length === 0) return json(400, { error: "text or images required" })
-        if (found.kind === "remote") return proxyPrompt(found.entry, parts[2]!, JSON.stringify({ text: parsed.text ?? "", principal: parsed.principal, ...(images.length ? { images } : {}), replace: parsed.replace }), req.signal)
-        return promptStream(found.app, parsed.text ?? "", parsed.principal, req.signal, images, parsed.replace ? { replace: true } : undefined)
+        if (found.kind === "remote") return proxyPrompt(found.entry, parts[2]!, JSON.stringify({ text: parsed.text ?? "", principal: parsed.principal, ...(images.length ? { images } : {}), replace: parsed.replace, promptId: parsed.promptId }), req.signal)
+        return promptStream(found.app, parsed.text ?? "", parsed.principal, req.signal, images, parsed.replace ? { replace: true } : undefined, parsed.promptId)
       }
 
       // POST /v1/session/:id/steer
@@ -618,11 +717,27 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
         const found = await findSession(parts[2]!)
         if (found.kind === "missing") return json(404, { error: found.error })
         const parsed = await readJsonOr400<{ text?: string }>(req)
+        if (parsed instanceof Response) return parsed
         if ("error" in parsed) return json(400, parsed)
         if (!parsed.text) return json(400, { error: "text is required" })
         if (found.kind === "remote") return proxyJson(found.entry, `/v1/session/${parts[2]!}/steer`, { method: "POST", body: JSON.stringify({ text: parsed.text }) })
         await found.app.steer(parsed.text)
         return json(200, { admitted: true })
+      }
+
+      // POST /v1/session/:id/exec {command} — the workbench terminal: ONE
+      // command through the session's own bash tool + exec policy + approval
+      // gate (the operator's seat at the agent's console, same rules).
+      if (method === "POST" && parts.length === 4 && parts[1] === "session" && parts[3] === "exec") {
+        const found = await findSession(parts[2]!)
+        if (found.kind === "missing") return json(404, { error: found.error })
+        const parsed = await readJsonOr400<{ command?: string }>(req)
+        if (parsed instanceof Response) return parsed
+        if ("error" in parsed) return json(400, parsed)
+        if (!parsed.command?.trim()) return json(400, { error: "command is required" })
+        if (found.kind === "remote") return proxyJson(found.entry, `/v1/session/${parts[2]!}/exec`, { method: "POST", body: JSON.stringify({ command: parsed.command }), signal: req.signal })
+        const result = await found.app.exec(parsed.command.trim(), req.signal)
+        return json(200, { result })
       }
 
       // POST /v1/session/:id/interrupt
@@ -632,6 +747,33 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
         if (found.kind === "remote") return proxyJson(found.entry, `/v1/session/${parts[2]!}/interrupt`, { method: "POST" })
         found.app.interrupt()
         return json(200, { interrupted: true })
+      }
+
+      // POST /v1/session/:id/terminal {input, mode?} — the HUMAN half of the
+      // shared workbench terminal: a full command line ("command", default) or
+      // raw keystrokes ("raw", e.g. ^C) into the same persistent shell the
+      // agent's terminal_send/terminal_read tools drive.
+      if (method === "POST" && parts.length === 4 && parts[1] === "session" && parts[3] === "terminal") {
+        const found = await findSession(parts[2]!)
+        if (found.kind === "missing") return json(404, { error: found.error })
+        if (found.kind === "remote") return json(501, { error: "shared terminal on a remote-owned session is not proxied yet" })
+        const parsed = await readJsonOr400<{ input?: string; mode?: "command" | "raw" }>(req)
+        if (parsed instanceof Response) return parsed
+        if ("error" in parsed) return json(400, parsed)
+        if (!parsed.input) return json(400, { error: "input is required" })
+        found.app.terminalWrite(parsed.input, parsed.mode === "raw" ? "raw" : "command")
+        return json(200, { accepted: true })
+      }
+
+      // GET /v1/session/:id/terminal?since=N — incremental shared-terminal
+      // output + the human/agent activity ledger for the web terminal view.
+      if (method === "GET" && parts.length === 4 && parts[1] === "session" && parts[3] === "terminal") {
+        const found = await findSession(parts[2]!)
+        if (found.kind === "missing") return json(404, { error: found.error })
+        if (found.kind === "remote") return json(501, { error: "shared terminal on a remote-owned session is not proxied yet" })
+        const since = Number(url.searchParams.get("since") ?? "0")
+        const r = found.app.terminalRead(Number.isFinite(since) ? since : 0)
+        return json(200, r)
       }
 
       // GET /v1/models/catalog — the model capability catalog (reference data
@@ -644,6 +786,22 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
         return json(200, { catalog })
       }
 
+      // GET /v1/providers — redacted provider/profile view for the client:
+      // ids, kinds, endpoints, model/budget metadata and hasApiKey presence.
+      // NEVER returns apiKey/header/env values. Read-only; routing still reads
+      // the settings layer directly.
+      if (method === "GET" && parts.length === 2 && parts[1] === "providers") {
+        if (!settings) return json(404, { error: "no settings controller configured" })
+        const effective = settings.get()
+        const redacted = redactSettings(effective)
+        return json(200, {
+          activeProviderId: redacted.activeProviderId,
+          providers: redacted.providers ?? [],
+          provider: redacted.provider,
+          model: redacted.model,
+        })
+      }
+
       // POST /v1/channel/:id/inbound — an external channel message becomes an
       // ordinary prompt on the channel's bound (resident) session. Same durable
       // admission path as human prompts; the settled reply is POSTed to the
@@ -652,9 +810,8 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
       if (method === "POST" && parts.length === 4 && parts[1] === "channel" && parts[3] === "inbound") {
         const cfg = channels?.find((c) => c.id === parts[2]!)
         if (!cfg) return json(404, { error: `unknown channel "${parts[2]}"` })
-        const declared = Number(req.headers.get("content-length") ?? 0)
-        if (declared > MAX_PROMPT_BODY) return json(413, { error: "request body too large" })
         const parsed = await readJsonOr400<{ text?: string; userId?: string }>(req)
+        if (parsed instanceof Response) return parsed
         if ("error" in parsed) return json(400, parsed)
         try {
           const result = await handleChannelInbound({
@@ -709,12 +866,14 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
         const st = url.searchParams.get("status") ?? undefined
         const pid = url.searchParams.get("parentId") ?? undefined
         const exCh = url.searchParams.get("excludeChildren")
-        const query: RegistryQuery | undefined = ws || st || pid || exCh !== null
+        const proj = url.searchParams.get("projectId") ?? undefined
+        const query: RegistryQuery | undefined = ws || st || pid || exCh !== null || proj
           ? {
               ...(ws ? { workspace: ws } : {}),
               ...(st ? { status: st as RegistryQuery["status"] } : {}),
               ...(pid ? { parentId: pid } : {}),
               ...(exCh !== null ? { excludeChildren: exCh !== "false" } : {}),
+              ...(proj ? { projectId: proj } : {}),
             }
           : undefined
         if (settings) {
@@ -876,8 +1035,17 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
       if (method === "POST" && parts.length === 2 && parts[1] === "dag") {
         if (!dagRunner) return json(404, { error: "no dag runner configured" })
         const parsed = await readJsonOr400<{ spec?: DAGSpec; workspace?: string; todoSessionId?: string }>(req)
+        if (parsed instanceof Response) return parsed
         if ("error" in parsed) return json(400, parsed)
         if (!parsed.spec || typeof parsed.spec !== "object" || !parsed.spec.nodes || Object.keys(parsed.spec.nodes).length === 0) return json(400, { error: "spec.nodes is required (at least one node)" })
+        // Synchronous preflight: a malformed graph (cycle / unknown dep / self
+        // dep / dangling entry) would otherwise return 201 dagId and fail
+        // fire-and-forget AFTER the caller already saw success. Validate NOW.
+        try {
+          validateDag(parsed.spec)
+        } catch (e) {
+          return json(400, { error: e instanceof Error ? e.message : String(e) })
+        }
         try {
           const { dagId } = await dagRunner.run(parsed.spec, { workspace: parsed.workspace, todoSessionId: parsed.todoSessionId })
           return json(201, { dagId })
@@ -926,6 +1094,7 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
         if (found.kind === "missing") return json(404, { error: found.error })
         if (found.kind === "remote") return json(501, { error: "goal write on a remote-owned session is not proxied yet" })
         const parsed = await readJsonOr400<{ objective?: string; tokenBudget?: number }>(req)
+        if (parsed instanceof Response) return parsed
         if ("error" in parsed) return json(400, parsed)
         const valid = validateGoal(parsed.objective, "active", parsed.tokenBudget)
         if ("error" in valid) return json(400, { error: valid.error })
@@ -941,7 +1110,11 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
         return json(200, { todos: currentTodos(events) })
       }
 
-      // GET /v1/session/:id/context — visible context size vs the window.
+      // GET /v1/session/:id/context — visible context size vs the window, PLUS
+      // the real token accounting folded from the session's ModelCalled events
+      // (input/output/cache/reasoning), the active model + provider identity,
+      // and the compaction state. The previous view was a char estimate only —
+      // cache hits / reasoning spend live in usage and were never surfaced.
       if (method === "GET" && parts.length === 4 && parts[1] === "session" && parts[3] === "context") {
         const found = await findSession(parts[2]!)
         if (found.kind === "missing") return json(404, { error: found.error })
@@ -953,17 +1126,117 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
         // reported size must reflect what the model actually receives.
         const cpt = settingsNow?.charsPerToken ?? 2.5
         const limit = compactLimit({ contextWindowTokens: windowTokens, charsPerToken: cpt })
-        const { messages: projected } = projectCompacted(events)
+        const { messages: projected, boundary } = projectCompacted(events)
         const visible = clearStaleToolResults(projected, { thresholdChars: limit, visibleChars: projected.reduce((n, m) => n + JSON.stringify(m).length, 0) })
         const chars = visible.reduce((n, m) => n + JSON.stringify(m).length, 0)
         const estTokens = Math.ceil(chars / cpt)
-        return json(200, { chars, estTokens, ...(windowTokens ? { windowTokens, ratio: Math.min(1, estTokens / (windowTokens * 0.6)) } : {}) })
+        // Fold real usage from every ModelCalled the session made. usage is a
+        // raw passthrough (cache/reasoning are subsets of input/output, so we
+        // report them alongside, not double-counted in the estimate).
+        let inputTokens = 0, outputTokens = 0, cacheReadTokens = 0, cacheWriteTokens = 0, reasoningTokens = 0, calls = 0
+        let lastModel: string | undefined, lastProviderId: string | undefined
+        let compactedAt: number | undefined
+        // Cache-hit semantics differ by protocol origin: anthropic reports
+        // cache_read as DISJOINT from input_tokens (input = plain only), while
+        // openai-style providers (MiniMax M3 included) report cached_tokens as a
+        // SUBSET that is already inside prompt_tokens. Summing both kinds into
+        // one denominator would double-count the cached half of openai calls and
+        // halve the reported hit rate (43% instead of ~90%+). Track them apart.
+        let plainInputAnthropic = 0, cacheReadAnthropic = 0
+        let plainInputOpenai = 0, cacheReadOpenai = 0
+        for (const e of events) {
+          if (e.type === "Session.ModelCalled") {
+            const d = e.data as { model?: string; providerId?: string; source?: string; usage?: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; reasoningTokens?: number } }
+            calls++
+            lastModel = d.model
+            lastProviderId = d.providerId
+            const u = d.usage
+            if (u) {
+              inputTokens += u.inputTokens ?? 0
+              outputTokens += u.outputTokens ?? 0
+              cacheReadTokens += u.cacheReadTokens ?? 0
+              cacheWriteTokens += u.cacheWriteTokens ?? 0
+              reasoningTokens += u.reasoningTokens ?? 0
+              const isAnthropic = d.providerId === "anthropic"
+              const plain = u.inputTokens ?? 0
+              const cached = u.cacheReadTokens ?? 0
+              if (isAnthropic) {
+                plainInputAnthropic += plain
+                cacheReadAnthropic += cached
+              } else {
+                plainInputOpenai += plain
+                cacheReadOpenai += cached
+              }
+            }
+          } else if (e.type === "Session.Compacted" && e.ts) {
+            compactedAt = Math.max(compactedAt ?? 0, e.ts)
+          }
+        }
+        // Weighted hit rate: each call family uses its own denominator
+        // (anthropic: cached/(plain+cached); openai: cached/plain because the
+        // cached tokens are already part of plain). The two families are never
+        // mixed in one rate.
+        const anInputSide = plainInputAnthropic + cacheReadAnthropic
+        const oaInputSide = plainInputOpenai
+        const anRate = anInputSide > 0 ? cacheReadAnthropic / anInputSide : undefined
+        const oaRate = oaInputSide > 0 ? cacheReadOpenai / oaInputSide : undefined
+        const avgCacheHitRate = anRate !== undefined && oaRate !== undefined
+          ? (anRate + oaRate) / 2
+          : anRate ?? oaRate
+        // Window size: explicit setting first, else the model catalog's entry
+        // for the active model (a configured model should never show "0%").
+        let effectiveWindow = windowTokens
+        if (!effectiveWindow && lastModel && agentHome) {
+          try {
+            const cat = await loadModelCatalog(agentHome)
+            effectiveWindow = cat?.providers.flatMap((p) => p.models).find((m) => m.id === lastModel)?.contextWindowTokens
+          } catch {
+            // catalog load failure — stay unknown rather than guessing
+          }
+        }
+        const ratioOut = effectiveWindow ? Math.min(1, estTokens / (effectiveWindow * 0.6)) : undefined
+        // Composition breakdown (same chars-per-token as the estimate).
+        let breakdown: { systemPromptTokens: number; messagesTokens: number; builtinToolsTokens: number; mcpToolsTokens: number; otherTokens: number } | undefined
+        if (found.kind === "local") {
+          try {
+            const b = await found.app.contextBreakdown()
+            const toks = (chars: number) => Math.ceil(chars / cpt)
+            breakdown = {
+              systemPromptTokens: toks(b.systemPromptChars),
+              messagesTokens: toks(b.messagesChars),
+              builtinToolsTokens: toks(b.builtinToolsChars),
+              mcpToolsTokens: toks(b.mcpToolsChars),
+              otherTokens: toks(b.otherChars),
+            }
+          } catch {
+            // breakdown is enrichment; the base view still serves
+          }
+        }
+        return json(200, {
+          chars,
+          estTokens,
+          ...(effectiveWindow ? { windowTokens: effectiveWindow, ratio: ratioOut } : {}),
+          calls,
+          inputTokens,
+          outputTokens,
+          cacheReadTokens,
+          cacheWriteTokens,
+          reasoningTokens,
+          ...(avgCacheHitRate !== undefined ? { avgCacheHitRate } : {}),
+          ...(lastModel ? { model: lastModel } : {}),
+          ...(lastProviderId ? { providerId: lastProviderId } : {}),
+          compacted: compactedAt !== undefined,
+          ...(compactedAt ? { compactedAt } : {}),
+          ...(boundary >= 0 ? { compactedSeq: boundary } : {}),
+          ...(breakdown ? { breakdown } : {}),
+        })
       }
 
       // POST /v1/memory {content, type?, priority?} — client-side memory write.
       if (method === "POST" && parts.length === 2 && parts[1] === "memory") {
         if (!memory) return json(404, { error: "no memory store configured" })
         const parsed = await readJsonOr400<{ content?: string; type?: string; priority?: number }>(req)
+        if (parsed instanceof Response) return parsed
         if ("error" in parsed) return json(400, parsed)
         if (!parsed.content?.trim()) return json(400, { error: "content is required" })
         const rec = await memory.write({ content: parsed.content.trim(), type: (parsed.type as "fact") ?? "fact", priority: parsed.priority ?? 50, sessionId: "client" })
@@ -991,6 +1264,7 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
         if (found.kind === "missing") return json(404, { error: found.error })
         if (found.kind === "remote") return json(501, { error: "archive on a remote-owned session is not proxied yet" })
         const parsed = await readJsonOr400<{ archived?: boolean }>(req)
+        if (parsed instanceof Response) return parsed
         if ("error" in parsed) return json(400, parsed)
         const archived = parsed.archived !== false
         await found.app.events.append(parts[2]!, "Session.Archived", { sessionId: parts[2]!, archived, ts: Date.now() })
@@ -1003,6 +1277,7 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
         if (found.kind === "missing") return json(404, { error: found.error })
         if (found.kind === "remote") return json(501, { error: "rename on a remote-owned session is not proxied yet" })
         const parsed = await readJsonOr400<{ title?: string }>(req)
+        if (parsed instanceof Response) return parsed
         if ("error" in parsed) return json(400, parsed)
         const title = parsed.title?.trim()
         if (!title) return json(400, { error: "title is required" })
@@ -1019,6 +1294,7 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
         if (found.kind === "missing") return json(404, { error: found.error })
         if (found.kind === "remote") return json(501, { error: "fork of a remote-owned session is not proxied yet" })
         const parsed = await readJsonOr400<{ atSeq?: number }>(req)
+        if (parsed instanceof Response) return parsed
         if ("error" in parsed) return json(400, parsed)
         const source = await found.app.events.read(parts[2]!)
         const atSeq = parsed.atSeq !== undefined ? parsed.atSeq : Number.MAX_SAFE_INTEGER
@@ -1039,6 +1315,56 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
         return json(201, { sessionId: newId, forkedFrom: parts[2]!, atSeq: Math.min(atSeq, prefix[prefix.length - 1]!.seq) })
       }
 
+      // POST /v1/session/:id/model {model} — per-session model switch
+      // (Session.ModelSet). Takes effect on the NEXT prompt of THIS session.
+      if (method === "POST" && parts.length === 4 && parts[1] === "session" && parts[3] === "model") {
+        const found = await findSession(parts[2]!)
+        if (found.kind === "missing") return json(404, { error: found.error })
+        if (found.kind === "remote") return json(501, { error: "model switch on a remote-owned session is not proxied yet" })
+        const parsed = await readJsonOr400<{ model?: string }>(req)
+        if (parsed instanceof Response) return parsed
+        if ("error" in parsed) return json(400, parsed)
+        if (!parsed.model?.trim()) return json(400, { error: "model is required" })
+        try {
+          await found.app.setModel(parsed.model.trim())
+          return json(200, { model: parsed.model.trim() })
+        } catch (e) {
+          return json(400, { error: e instanceof Error ? e.message : String(e) })
+        }
+      }
+
+      // POST /v1/session/:id/truncate {atSeq} — in-place rewind (user "回退"):
+      // removes every durable event past atSeq so the session replays as if later
+      // turns never happened (Session.Truncated boundary). Destructive — the
+      // caller (UI) confirms before invoking. Refuses a malformed boundary.
+      if (method === "POST" && parts.length === 4 && parts[1] === "session" && parts[3] === "truncate") {
+        const found = await findSession(parts[2]!)
+        if (found.kind === "missing") return json(404, { error: found.error })
+        if (found.kind === "remote") return json(501, { error: "truncate on a remote-owned session is not proxied yet" })
+        const parsed = await readJsonOr400<{ atSeq?: number }>(req)
+        if (parsed instanceof Response) return parsed
+        if ("error" in parsed) return json(400, parsed)
+        const atSeq = parsed.atSeq
+        if (typeof atSeq !== "number" || !Number.isInteger(atSeq) || atSeq < 0) return json(400, { error: "atSeq must be a non-negative integer" })
+        try {
+          await found.app.truncate(atSeq)
+          // Broadcast a settle frame so attached clients fold the log again
+          // (Session.Truncated is a durable event, but the prompt-stream live
+          // feed only carries LoopEvents — a stale transcript must not linger).
+          const settle: BusEvent = { type: "done", step: 0, needsContinuation: false, finish: "stop" }
+          for (const l of globalListeners) {
+            try {
+              l({ sessionId: parts[2]!, event: settle })
+            } catch {
+              // isolated
+            }
+          }
+          return json(200, { truncated: true, atSeq })
+        } catch (e) {
+          return json(400, { error: e instanceof Error ? e.message : String(e) })
+        }
+      }
+
       // GET/POST /v1/session/:id/policy — read or change this session's
       // permission level (strict | readonly | trusted). The change is durable
       // (Session.PolicyChanged) and effective from the next prompt.
@@ -1048,6 +1374,7 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
         if (found.kind === "remote") return json(501, { error: "policy on a remote-owned session is not proxied yet" })
         if (method === "GET") return json(200, { policy: found.app.policy() })
         const parsed = await readJsonOr400<{ policy?: string }>(req)
+        if (parsed instanceof Response) return parsed
         if ("error" in parsed) return json(400, parsed)
         const policy = parsed.policy
         if (policy !== "strict" && policy !== "readonly" && policy !== "trusted") return json(400, { error: "policy must be strict | readonly | trusted" })
@@ -1242,6 +1569,7 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
       if (method === "POST" && parts.length === 2 && parts[1] === "skills") {
         if (!pluginsDir) return json(404, { error: "no pluginsDir configured" })
         const parsed = await readJsonOr400<{ name?: string; description?: string; body?: string }>(req)
+        if (parsed instanceof Response) return parsed
         if ("error" in parsed) return json(400, parsed)
         const name = (parsed.name ?? "").trim()
         if (!/^[a-z0-9][a-z0-9._-]*$/i.test(name)) return json(400, { error: "skill name must be a slug (letters, digits, -, _)" })
@@ -1288,11 +1616,37 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
         if (found.kind === "missing") return json(404, { error: found.error })
         if (found.kind === "remote") return json(501, { error: "commands on a remote-owned session are not proxied yet" })
         const parsed = await readJsonOr400<{ text?: string }>(req)
+        if (parsed instanceof Response) return parsed
         if ("error" in parsed) return json(400, parsed)
         if (!parsed.text?.trim()) return json(400, { error: "text is required" })
         const output = await found.app.runCommand(parsed.text)
         if (output === undefined) return json(404, { error: `unknown command: ${parsed.text.trim().split(/\s+/)[0]}` })
         return json(200, { output })
+      }
+
+      // POST /v1/session/:id/references/resolve {text} — active toolset for the
+      // "@" mention: parse @agent:name / @skill:name / @mcp:server/uri and inject
+      // the referenced CONTENT into the prompt so the model sees real material
+      // (agent body / skill body / mcp resource text), not a bare "@name" token.
+      // Unresolvable refs (unknown name, no pluginsDir) stay as literal text.
+      if (method === "POST" && parts.length === 5 && parts[1] === "session" && parts[3] === "references" && parts[4] === "resolve") {
+        if (parts[2] !== undefined) { /* session-scoped; found below */ }
+        const found = await findSession(parts[2]!)
+        if (found.kind === "missing") return json(404, { error: found.error })
+        if (found.kind === "remote") return json(501, { error: "references on a remote-owned session are not proxied yet" })
+        const parsed = await readJsonOr400<{ text?: string }>(req)
+        if (parsed instanceof Response) return parsed
+        if ("error" in parsed) return json(400, parsed)
+        if (!parsed.text?.trim()) return json(400, { error: "text is required" })
+        let expanded = parsed.text
+        const resolved: Array<{ kind: "agent" | "skill" | "mcp"; label: string; content: string }> = []
+        const caps = pluginsDir ? await discoverPlugin(pluginsDir) : []
+        const agents = caps.filter((c) => c.kind === "agent")
+        const skills = pluginsDir ? await discoverSkills(pluginsDir) : []
+        // Resolve each reference to real content, then inline it. Each ref either
+        // resolves to injected material (declared) or stays a literal token.
+        expanded = await expandReferences(expanded, { agents, skills, mcpResources: mcpResources ?? null }, resolved)
+        return json(200, { expanded, resolved })
       }
 
       // GET /v1/settings — effective settings, secrets redacted.
@@ -1305,6 +1659,7 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
       if (method === "PUT" && parts.length === 2 && parts[1] === "settings") {
         if (!settings) return json(404, { error: "no settings controller configured" })
         const parsed = await readJsonOr400<AgentHomeConfig>(req)
+        if (parsed instanceof Response) return parsed
         if ("error" in parsed) return json(400, parsed)
         const next = await settings.write(parsed)
         return json(200, redactSettings(next))
@@ -1329,6 +1684,7 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
       if (method === "POST" && parts.length === 3 && parts[1] === "approvals") {
         if (!approvals) return json(404, { error: "no approval hub configured" })
         const parsed = await readJsonOr400<{ allow?: boolean; reply?: string }>(req)
+        if (parsed instanceof Response) return parsed
         if ("error" in parsed) return json(400, parsed)
         const settled = approvals.resolve(parts[2]!, parsed.allow === true, typeof parsed.reply === "string" ? parsed.reply : undefined)
         return json(settled ? 200 : 404, settled ? { settled: true } : { error: "unknown or already-settled approval id" })
@@ -1356,6 +1712,7 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
       if (method === "POST" && parts.length === 2 && parts[1] === "schedules") {
         if (!schedules) return json(404, { error: "no scheduler configured" })
         const parsed = await readJsonOr400<ScheduleInput>(req)
+        if (parsed instanceof Response) return parsed
         if ("error" in parsed) return json(400, parsed)
         try {
           const created: Schedule = await schedules.add(parsed)
@@ -1369,6 +1726,7 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
       if (method === "PATCH" && parts.length === 3 && parts[1] === "schedules") {
         if (!schedules) return json(404, { error: "no scheduler configured" })
         const parsed = await readJsonOr400<Partial<ScheduleInput>>(req)
+        if (parsed instanceof Response) return parsed
         if ("error" in parsed) return json(400, parsed)
         try {
           const updated = await schedules.update(parts[2]!, parsed)

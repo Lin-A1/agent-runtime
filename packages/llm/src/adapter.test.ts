@@ -44,6 +44,28 @@ describe("openai protocol", () => {
     expect(r2.events.some((e) => e.type === "step-finish")).toBe(true)
   })
 
+  it("splits MiniMax-style <think> wrappers inside content into reasoning deltas (cross-frame)", () => {
+    let state = openaiProtocol.init() as unknown
+    // Frame 1: opens the think tag mid-content
+    let r = openaiProtocol.step(state, { choices: [{ delta: { content: "看看<think>思考中" }, finish_reason: null }] })
+    expect(r.events).toEqual([
+      { type: "text.delta", text: "看看" },
+      { type: "reasoning.delta", text: "思考中" },
+    ])
+    state = r.state
+    // Frame 2: closes the tag then continues with answer text
+    r = openaiProtocol.step(state, { choices: [{ delta: { content: "。。</think>\n\n答案是 2" }, finish_reason: "stop" }] })
+    expect(r.events).toEqual([
+      { type: "reasoning.delta", text: "。。" },
+      { type: "text.delta", text: "\n\n答案是 2" },
+      { type: "step-finish", finish: "stop" },
+    ])
+    // No tag ever leaks into plain text.
+    const serialized = JSON.stringify(r.events)
+    expect(serialized.includes("<think>")).toBe(false)
+    expect(serialized.includes("</think>")).toBe(false)
+  })
+
   it("accumulates a fragmented tool_call across chunks into one assembled call", () => {
     let state = openaiProtocol.init() as unknown
     const chunk1 = { choices: [{ delta: { tool_calls: [{ index: 0, id: "call_1", function: { name: "search", arguments: '{"q":' } }] }, finish_reason: null }] }
@@ -63,6 +85,27 @@ describe("openai protocol", () => {
     const state = openaiProtocol.init() as unknown
     const r = openaiProtocol.step(state, { usage: { prompt_tokens: 10, completion_tokens: 4 } })
     expect(r.events).toEqual([{ type: "step-finish", finish: "stop", usage: { inputTokens: 10, outputTokens: 4 } }])
+  })
+
+  it("MiniMax-style late usage frame overwrites the finish-frame usage (final figure wins)", () => {
+    // Sequence: text delta -> finish_reason frame (no usage yet) -> usage:null
+    // frame -> REAL usage frame (choices: []) -> the protocol must emit a
+    // second step-finish carrying the real usage so the turn loop overwrites
+    // the stale figure, and map reasoning_tokens -> reasoningTokens.
+    let state = openaiProtocol.init() as unknown
+    state = openaiProtocol.step(state, { choices: [{ delta: { content: "hi" }, finish_reason: null }] }).state
+    state = openaiProtocol.step(state, { choices: [{ delta: { content: "" }, finish_reason: "stop" }] }).state
+    // usage: null frame — must not emit anything
+    const nullFrame = openaiProtocol.step(state, { choices: [], usage: null })
+    expect(nullFrame.events).toEqual([])
+    // real usage frame with no delta
+    const real = openaiProtocol.step(nullFrame.state, {
+      choices: [],
+      usage: { prompt_tokens: 177, completion_tokens: 32, completion_tokens_details: { reasoning_tokens: 26 }, prompt_tokens_details: { cached_tokens: 128 } },
+    })
+    expect(real.events).toEqual([
+      { type: "step-finish", finish: "stop", usage: { inputTokens: 177, outputTokens: 32, cacheReadTokens: 128, reasoningTokens: 26 } },
+    ])
   })
 
   it("folds multiple tool-results in one message into separate tool messages (no data loss)", () => {
