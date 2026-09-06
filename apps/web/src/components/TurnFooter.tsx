@@ -56,7 +56,7 @@ export function TurnFooter({
             type="button"
             onClick={onRetry}
             className="hover:text-dim transition-colors p-1.5 -m-1"
-            title="引用到输入框"
+            title="重试（删除本次回答并重新生成）"
           >
             <RotateCcw size={13} />
           </button>

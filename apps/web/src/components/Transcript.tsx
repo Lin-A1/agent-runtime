@@ -619,7 +619,7 @@ export function Transcript({
   onNewTask?: () => void
 }): ReactElement {
   const { sessions, workspace } = useApp()
-  const { live, dismiss, stop } = useStream()
+  const { live, dismiss, stop, send } = useStream()
 
   const [events, setEvents] = useState<StoredEventRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -775,6 +775,20 @@ export function Transcript({
       })
   }
 
+  // 重试（重新回答）：删除该用户消息之后的回答（truncate 到用户消息 seq，
+  // 保留用户消息本身），然后立刻重发原文重新生成。与"回退"（删整条）区分。
+  const retryTo = async (turn: { kind: "user"; seq: number; text: string }): Promise<void> => {
+    if (!turn.text.trim()) return
+    try {
+      await api.truncateSession(sessionId, turn.seq)
+    } catch (err) {
+      window.dispatchEvent(new CustomEvent("nh-toast", { detail: err instanceof Error ? `重试失败 ${err.message}` : "重试失败" }))
+      return
+    }
+    await send(sessionId, turn.text)
+    void load()
+  }
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/* Sleek Header Bar — aligned with ZCode remote v4 */}
@@ -870,7 +884,7 @@ export function Transcript({
                     />
                     <AssistantTurnView
                       turn={it}
-                      onRetry={() => it.text && onSelectPrompt(it.text)}
+                      onRetry={() => retryTo(it)}
                     />
                   </div>
                 ) : (
