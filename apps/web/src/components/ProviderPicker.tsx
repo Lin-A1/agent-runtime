@@ -32,8 +32,8 @@ interface DraftProfile {
 // stored kind alias for existing profiles.
 const PROVIDER_KINDS = ["openai", "openai-responses", "anthropic"] as const
 
-/** 豆包式预设：用户只选服务商 + 填 API Key + 选模型；kind/baseUrl/协议全部内置，
- *  不暴露给用户。新增一个服务商只需在这张表加一行。 */
+/** 豆包式预设：三个官方协议模板，用户只选 + 填 API Key + 选模型；kind/baseUrl
+ *  内置。其他服务商走「手动创建」——用户自己填协议/地址/模型（高级入口）。 */
 const PRESET_PROVIDERS: ReadonlyArray<{
   id: string
   name: string
@@ -42,11 +42,9 @@ const PRESET_PROVIDERS: ReadonlyArray<{
   models: readonly string[]
   hint: string
 }> = [
-  { id: "minimax", name: "MiniMax", kind: "openai", baseUrl: "https://api.minimaxi.com", models: ["MiniMax-M3", "MiniMax-M2.7-highspeed"], hint: "国产多模态模型，M3 支持图片理解" },
-  { id: "openai", name: "OpenAI", kind: "openai", baseUrl: "https://api.openai.com", models: ["gpt-4o", "gpt-4o-mini", "o3-mini"], hint: "GPT 系列" },
+  { id: "openai", name: "OpenAI Chat", kind: "openai", baseUrl: "https://api.openai.com", models: ["gpt-4o", "gpt-4o-mini", "o3-mini"], hint: "Chat Completions 协议" },
+  { id: "openai-responses", name: "OpenAI Responses", kind: "openai-responses", baseUrl: "https://api.openai.com", models: ["gpt-4o", "gpt-4o-mini"], hint: "Responses 协议" },
   { id: "anthropic", name: "Anthropic", kind: "anthropic", baseUrl: "https://api.anthropic.com", models: ["claude-sonnet-4", "claude-haiku-4"], hint: "Claude 系列" },
-  { id: "deepseek", name: "DeepSeek", kind: "openai", baseUrl: "https://api.deepseek.com", models: ["deepseek-chat", "deepseek-reasoner"], hint: "性价比高，推理强" },
-  { id: "ollama", name: "Ollama（本地）", kind: "openai", baseUrl: "http://localhost:11434", models: ["llama3.2", "qwen2.5"], hint: "本地模型，无需 API Key" },
 ]
 
 function emptyDraft(): DraftProfile {
@@ -63,6 +61,8 @@ export function ProviderPicker(): ReactElement {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draft, setDraft] = useState<DraftProfile>(emptyDraft())
   const [adding, setAdding] = useState(false)
+  // 手动创建模式：预设模板之外的任意服务商（填协议/地址/模型/Key）
+  const [manual, setManual] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
 
   const reloadSurfaces = useCallback(async (): Promise<void> => {
@@ -148,6 +148,7 @@ export function ProviderPicker(): ReactElement {
       await reloadSurfaces()
       setEditingId(null)
       setAdding(false)
+      setManual(false)
       setDraft(emptyDraft())
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -194,10 +195,10 @@ export function ProviderPicker(): ReactElement {
 
   const renderDraftForm = (): ReactElement => (
     <div className="model-config-form">
-      <div className="model-config-form-title">{adding ? "添加模型服务商" : `配置 ${draft.id}`}</div>
-      {adding && (
+      <div className="model-config-form-title">{adding ? (manual ? "手动创建服务商" : "添加模型服务商") : `配置 ${draft.id}`}</div>
+      {adding && !manual && (
         <>
-          <div className="grid grid-cols-2 gap-1.5">
+          <div className="grid grid-cols-3 gap-1.5">
             {PRESET_PROVIDERS.map((p) => (
               <button
                 key={p.id}
@@ -210,13 +211,31 @@ export function ProviderPicker(): ReactElement {
               </button>
             ))}
           </div>
-          <p className="text-2xs text-faint">选择服务商，再填 API Key（Ollama 本地无需 Key）。协议与接口地址已按服务商自动配置。</p>
+          <button
+            type="button"
+            className="mt-1.5 w-full rounded-md border border-dashed border-line px-2 py-1.5 text-left text-2xs text-faint transition-colors hover:border-line-strong hover:text-dim"
+            onClick={() => { setManual(true); setDraft(emptyDraft()) }}
+          >
+            + 手动创建（其他服务商：协议 / 接口地址 / 模型）
+          </button>
+          <p className="text-2xs text-faint">选择服务商，再填 API Key。协议与接口地址已按服务商自动配置。</p>
+        </>
+      )}
+      {adding && manual && (
+        <>
+          <label className="model-config-field"><span>id</span><input value={draft.id} onChange={(e) => setDraft({ ...draft, id: e.target.value })} placeholder="my-gateway" spellCheck={false} /></label>
+          <label className="model-config-field"><span>名称</span><input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="显示名称" spellCheck={false} /></label>
+          <label className="model-config-field"><span>协议</span><select value={draft.kind} onChange={(e) => setDraft({ ...draft, kind: e.target.value })}>{PROVIDER_KINDS.map((k) => <option key={k} value={k}>{k}</option>)}</select></label>
+          <label className="model-config-field"><span>Base URL</span><input value={draft.baseUrl} onChange={(e) => setDraft({ ...draft, baseUrl: e.target.value })} placeholder="https://api.example.com/v1" spellCheck={false} /></label>
+          <label className="model-config-field"><span>模型</span><input value={draft.model} onChange={(e) => setDraft({ ...draft, model: e.target.value })} placeholder="model-id" spellCheck={false} /></label>
         </>
       )}
       <label className="model-config-field"><span>API Key</span><input type="password" value={draft.apiKey} onChange={(e) => setDraft({ ...draft, apiKey: e.target.value })} placeholder={providerRows.find((p) => p.id === draft.id)?.hasApiKey ? "已配置（留空保留）" : draft.id === "ollama" ? "本地不需要" : "sk-…"} spellCheck={false} autoComplete="off" /></label>
-      <label className="model-config-field"><span>默认模型</span><input value={draft.model} onChange={(e) => setDraft({ ...draft, model: e.target.value })} placeholder="model-id" spellCheck={false} /></label>
+      {!adding || !manual ? (
+        <label className="model-config-field"><span>模型</span><input value={draft.model} onChange={(e) => setDraft({ ...draft, model: e.target.value })} placeholder="model-id" spellCheck={false} /></label>
+      ) : null}
       <div className="model-config-actions">
-        <button type="button" className="model-config-btn" disabled={saving} onClick={() => { setEditingId(null); setAdding(false); setDraft(emptyDraft()) }}>取消</button>
+        <button type="button" className="model-config-btn" disabled={saving} onClick={() => { setEditingId(null); setAdding(false); setManual(false); setDraft(emptyDraft()) }}>取消</button>
         <button type="button" className="model-config-btn is-primary" disabled={saving || !draft.id.trim() || !draft.model.trim()} onClick={() => void saveDraft()}>{saving ? <Loader2 size={11} className="spin" /> : "保存"}</button>
       </div>
     </div>
@@ -291,7 +310,7 @@ export function ProviderPicker(): ReactElement {
           </div>
           {!adding && editingId === null && (
             <div className="border-t border-line p-1.5">
-              <button type="button" className="flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-2xs text-dim transition-colors select-none hover:bg-hover-2 hover:text-ink" disabled={saving} onClick={() => { setAdding(true); setEditingId(null); setDraft(emptyDraft()) }}><Plus size={12} />新增提供方</button>
+              <button type="button" className="flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-2xs text-dim transition-colors select-none hover:bg-hover-2 hover:text-ink" disabled={saving} onClick={() => { setAdding(true); setManual(false); setEditingId(null); setDraft(emptyDraft()) }}><Plus size={12} />新增提供方</button>
             </div>
           )}
           {error && <div className="flex items-center justify-between border-t border-line px-3 py-2 text-2xs text-warn"><span className="min-w-0 truncate">{error}</span><button type="button" aria-label="关闭错误" onClick={() => setError(null)}><X size={11} /></button></div>}
