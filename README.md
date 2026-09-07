@@ -33,7 +33,7 @@ bun run dev                                        # http://127.0.0.1:4173
 bun run agent-runtime/scripts/package.ts --with-ui   # → dist/newhorse-server.exe + dist/ui
 ```
 
-Installer = `newhorse-server.exe` + `ui/` + `~/.newhorse/config.json` (your apiKey/model/MCP live here, never in the binary). See agent-runtime [releases](https://github.com/Lin-A1/agent-runtime/releases).
+Installer = `newhorse-server.exe` + `ui/` + `~/.newhorse/config.json` (your apiKey/model/MCP live here, never in the binary). See [releases](https://github.com/Lin-A1/newhorse/releases).
 
 ## Layout
 
