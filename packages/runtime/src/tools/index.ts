@@ -11,6 +11,7 @@ import { createEnterPlanModeTool } from "./plan-mode"
 import { createLspTool } from "./lsp"
 import { createListTool } from "./list"
 import { createSearchTool } from "./search"
+import { createWeatherTool } from "./weather"
 import { createBashTools } from "./bash"
 import { createMemorySearchTool, createMemoryWriteTool } from "./memory"
 import { createSkillTool } from "./skill"
@@ -66,6 +67,7 @@ export function createBuiltinTools(opts: BuiltinToolsOptions): Tool[] {
     createViewImageTool(opts.workspace),
     createListTool(opts.workspace),
     createSearchTool(opts.workspace),
+    createWeatherTool(),
     createAskUserTool(),
     createEnterPlanModeTool(),
     createLspTool(opts.workspace),
