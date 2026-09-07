@@ -6,6 +6,17 @@ import { Database } from "bun:sqlite"
 import type { MemoryStore, MemoryRecord } from "@newhorse/memory"
 import { listModels } from "@newhorse/llm"
 import type { AdapterConfig, Fetcher } from "@newhorse/llm"
+import { networkInterfaces } from "node:os"
+
+/** First non-loopback IPv4 address — the LAN URL host for the phone. */
+function firstLanIpv4(): string | undefined {
+  for (const list of Object.values(networkInterfaces())) {
+    for (const ni of list ?? []) {
+      if (ni.family === "IPv4" && !ni.internal) return ni.address
+    }
+  }
+  return undefined
+}
 import type { StoredEvent, ApprovalRequest } from "@newhorse/schema"
 import { join, resolve, sep } from "node:path"
 import { readdir, realpath, mkdir, writeFile, rename, rm } from "node:fs/promises"
@@ -1667,6 +1678,15 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
       if (method === "GET" && parts.length === 2 && parts[1] === "token") {
         if (!fromLoopback) return json(404, { error: "token is only revealed to loopback callers" })
         return json(200, { token: settings?.get().token ?? null })
+      }
+
+      // GET /v1/network — LAN IP the phone should reach (loopback callers
+      // only: the local shell builds the phone URL from it; a remote device
+      // already knows its own target). Windows picks the first non-loopback
+      // IPv4; multi-homed machines may need `host` in config.
+      if (method === "GET" && parts.length === 2 && parts[1] === "network") {
+        const lan = firstLanIpv4()
+        return json(200, { lanIp: lan ?? null, port: settings?.get().port ?? 3927 })
       }
 
       // PUT /v1/settings — merge a patch into the agent-home config file.
