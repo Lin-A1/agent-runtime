@@ -753,7 +753,7 @@ export function Sidebar({
         role={drawerOpen ? "dialog" : undefined}
         aria-modal={drawerOpen || undefined}
         aria-label="会话导航"
-        className={drawerOpen ? "fixed inset-y-0 left-0 z-[60] flex w-[92vw] max-w-[430px] flex-col border-r border-line bg-side shadow-overlay touch-pan-y" : `hidden flex-none flex-col border-r border-line bg-side md:flex ${collapsed ? "w-14" : "w-[268px]"}`}
+        className={drawerOpen ? "fixed inset-y-0 left-0 z-[60] flex w-[85vw] max-w-[370px] flex-col border-r border-line bg-side shadow-overlay touch-pan-y" : `hidden flex-none flex-col border-r border-line bg-side md:flex ${collapsed ? "w-14" : "w-[268px]"}`}
         onTouchStart={(e) => {
           if (!drawerOpen) return
           const t = e.touches[0]
