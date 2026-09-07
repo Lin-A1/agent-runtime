@@ -35,6 +35,19 @@ import { ProviderPicker } from "./ProviderPicker"
 import { EmotionBall } from "./EmotionBall"
 import { BrandWordmark } from "./BrandWordmark"
 
+/** The "任务" project — a real, always-present project group (default
+ *  workspace ~/.newhorse/workspace). All default task sessions land here;
+ *  other projects are separate groups. */
+const DEFAULT_TASK_WS = ".newhorse/workspace"
+function isTaskWs(ws: string): boolean {
+  const n = normWorkspace(ws)
+  return n.includes(".newhorse/workspace") || n === ".newhorse/workspace"
+}
+function groupLabel(ws: string): string {
+  if (isTaskWs(ws)) return "任务"
+  return normWorkspace(ws).split(/[/\\]/).filter(Boolean).pop() ?? ws
+}
+
 function StatusDot({ row, busy }: { row: SessionRow; busy: boolean }): ReactElement {
   return (
     <span
@@ -319,7 +332,10 @@ export function Sidebar({
   // workspace. Without this, "项目" view always created into the global
   // workspace — a session "in" another project could never be started.
   const [activeWs, setActiveWs] = useState<string | null>(null)
-  const effectiveNewTaskWs = activeWs ?? workspace
+  // Default new-task target: the "任务" project (if it has ever been used) or
+  // the global workspace. When the user clicks a specific project group,
+  // activeWs overrides it — but the untouched default is 任务.
+  const effectiveNewTaskWs = activeWs ?? (isTaskWs(workspace) ? workspace : DEFAULT_TASK_WS)
   useEffect(() => { localStorage.setItem("newhorse:sidebar:collapsed", String(collapsed)) }, [collapsed])
   // Remember every workspace the user has ever seen (including cleared ones)
   // so a "项目" group survives its last session being deleted — a project is
@@ -330,7 +346,7 @@ export function Sidebar({
   useEffect(() => {
     const wsNames = sessions.map((r) => normWorkspace(r.workspace)).filter(Boolean)
     setKnownWorkspaces((prev) => {
-      const next = [...new Set([...prev, ...wsNames])]
+      const next = [...new Set([...prev, ...wsNames, DEFAULT_TASK_WS])]
       if (next.length === prev.length) return prev
       localStorage.setItem("newhorse:sidebar:workspaces", JSON.stringify(next))
       return next
@@ -653,7 +669,7 @@ export function Sidebar({
             {g.ws ? (
               <div className="group/ws flex h-7 w-full items-center gap-1.5 rounded-md px-2 text-left text-2xs font-medium text-faint select-none hover:text-fg">
                 <button type="button" aria-expanded={!collapsedGroups[g.ws]} className="flex h-full min-w-0 flex-1 items-center gap-1.5" onClick={() => { setActiveWs(g.ws); setCollapsedGroups((current) => ({ ...current, [g.ws]: !current[g.ws] })) }}>
-                  {collapsedGroups[g.ws] ? <ChevronRight size={11} /> : <ChevronDown size={11} />}<FolderOpen size={11} className="opacity-70" /><span className="min-w-0 truncate">{g.ws.split(/[/\\]/).filter(Boolean).pop()}</span><span className="ml-auto font-mono text-2xs text-ghost">{g.rows.length}</span>
+                  {collapsedGroups[g.ws] ? <ChevronRight size={11} /> : <ChevronDown size={11} />}<FolderOpen size={11} className="opacity-70" /><span className="min-w-0 truncate">{groupLabel(g.ws)}</span><span className="ml-auto font-mono text-2xs text-ghost">{g.rows.length}</span>
                 </button>
                 <button type="button" title="删除项目" aria-label="删除项目" className="hidden h-5 w-5 flex-none items-center justify-center rounded text-ghost transition-colors hover:text-bad group-hover/ws:flex" onClick={() => deleteProject(g.ws)}><X size={11} /></button>
               </div>
