@@ -6,6 +6,7 @@ import { Database } from "bun:sqlite"
 import type { MemoryStore, MemoryRecord } from "@newhorse/memory"
 import { listModels } from "@newhorse/llm"
 import type { AdapterConfig, Fetcher } from "@newhorse/llm"
+import type { Tool } from "@newhorse/core"
 import { networkInterfaces } from "node:os"
 
 /** First non-loopback IPv4 address — the LAN URL host for the phone.
@@ -95,6 +96,17 @@ export interface ServerConfig {
   readonly uiDir?: string
   /** Settings surface for the client's settings page (read effective / write patch). */
   readonly settings?: SettingsController
+  /** Called after a client PUT /v1/settings persisted a patch (host may
+   *  hot-reload MCP tools and push refreshTools to live sessions). */
+  readonly onSettingsChanged?: (patch: AgentHomeConfig) => void
+  /** Re-resolve the explicit (MCP/transport) tool slice on demand. When set
+   *  and onSettingsChanged fires with a mcpServers patch, the server reloads
+   *  these tools and pushes them to EVERY live app via app.refreshTools —
+   *  hot MCP switching without a restart. Absent → no hot reload. */
+  readonly loadTools?: () => Promise<readonly Tool[]>
+  /** Expose the live app registry to the host (main.ts) so tool-level
+   *  configuration (mcp_manage) can push refreshTools after a write. */
+  readonly onApps?: (apps: Map<string, App>) => void
   /** Interactive approval hub: the engine's gate parks requests here and the
    *  client settles them via /v1/approvals. When present it is the DEFAULT
    *  gate for created sessions (an explicit onApprove still wins). */
@@ -372,6 +384,7 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
   const serverTools = config.tools
   const mcpResources = config.mcpResources
   const apps = new Map<string, App>()
+  config.onApps?.(apps)
   /** Sessions this process created (directory-owned; unregistered on stop). */
   const owned = new Set<string>()
 
@@ -1712,6 +1725,19 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
         if (parsed instanceof Response) return parsed
         if ("error" in parsed) return json(400, parsed)
         const next = await settings.write(parsed)
+        // Hot-reload seam: when the patch touched mcpServers and the host gave
+        // us a loadTools resolver, reload the explicit slice and push it to
+        // every live app in place (next turn sees new MCP tools, no restart).
+        if (parsed.mcpServers !== undefined && config.loadTools) {
+          try {
+            const reloaded = await config.loadTools()
+            for (const app of apps.values()) app.refreshTools(reloaded)
+            console.log(`[mcp] hot-reload: ${reloaded.filter((t) => t.name.startsWith("mcp__")).length} mcp tool(s) pushed to ${apps.size} live session(s)`)
+          } catch (e) {
+            console.error(`[mcp] hot-reload failed:`, e instanceof Error ? e.message : e)
+          }
+        }
+        void config.onSettingsChanged?.(parsed)
         return json(200, redactSettings(next))
       }
 

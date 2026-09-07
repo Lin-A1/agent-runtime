@@ -171,6 +171,11 @@ export interface App {
    *  LLM call would race the turn's compaction). */
   readonly compact: () => Promise<{ boundarySeq: number; summary: string }>
 
+  /** Hot-reload the live tool surface (MCP tools added/removed after a
+   *  config change). In-place mutation keeps the per-prompt `liveSurface`
+   *  refill picking up the new set from the next turn — no restart needed. */
+  readonly refreshTools: (tools: readonly Tool[]) => void
+
   /** Subscribe to live session events; returns an unsubscribe function. */
   readonly onEvent: (listener: (event: AppEvent) => void) => () => void
   /**
@@ -459,7 +464,10 @@ export async function createApp(config: AppConfig): Promise<App> {
   // The model must not see duplicate function names (conflicting schemas across
   // the explicit/plugin/builtin copies). Resolve the agent's tool list from the
   // deduped map so execution precedence and the protocol surface agree.
-  const agentTools = [...toolMap.values()]
+  // MUTABLE in place: refreshTools replaces the contents (length=0 + push) so
+  // the per-prompt liveSurface refill (815-816) picks up hot-loaded MCP tools
+  // from the next turn without a server restart.
+  const agentTools: Tool[] = [...toolMap.values()]
   // Approval policy (permission level): readonly filters the model's tool
   // surface to sideEffects:false tools (declarative — no name blacklists);
   // trusted leaves the surface whole and short-circuits the floor below.
@@ -907,6 +915,22 @@ export async function createApp(config: AppConfig): Promise<App> {
     events,
     ...(attachmentStore ? { attachments: attachmentStore } : {}),
     onEvent,
+    refreshTools: (tools: readonly Tool[]) => {
+      // Swap the EXPLICIT slice (MCP/transport tools) in place; builtins and
+      // plugin tools stay as originally assembled (they changed only when the
+      // host re-registers plugins). The per-prompt liveSurface refill spreads
+      // agentTools at the top of each drain, so the next prompt sees the new
+      // MCP tools with no restart.
+      const fresh: Tool[] = [...tools, ...pluginTools, ...builtin]
+      const seen = new Set<string>()
+      agentTools.length = 0
+      for (const t of fresh) {
+        if (!seen.has(t.name)) {
+          seen.add(t.name)
+          agentTools.push(t)
+        }
+      }
+    },
     async prompt(text: string, principal?: "user" | "butler" | "parent", images?: readonly PromptImage[], opts?: { replace?: boolean; promptId?: string }): Promise<PromptResult> {
       // Task replacement (codex TurnAbortReason::Replaced semantics): with
       // replace:true a live run is aborted and DRAINED before the new prompt

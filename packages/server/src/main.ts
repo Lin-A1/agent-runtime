@@ -1,6 +1,7 @@
 import { createServer } from "./server"
 import type { SessionCreateRequest } from "./server"
-import { createApp, loadRuntimeSettings, createSqliteSessionDirectory, createApprovalHub, createScheduler, createDagRunner, writeAgentHomeConfig, createMcpManageTool, type Schedule } from "@newhorse/runtime"
+import { createApp, loadRuntimeSettings, createSqliteSessionDirectory, createApprovalHub, createScheduler, createDagRunner, writeAgentHomeConfig, createMcpManageTool, type Schedule, type App } from "@newhorse/runtime"
+import type { Tool } from "@newhorse/core"
 import { createMcpTools } from "@newhorse/mcp"
 import { MemoryMemoryStore, SqliteMemoryStore, createEmbeddingProvider } from "@newhorse/memory"
 import { existsSync } from "node:fs"
@@ -91,8 +92,40 @@ const dagRunner = createDagRunner({
 // MCP client seam (docs/agent-runtime-integrations.md §1): configured servers
 // mount once at startup and their tools ride EVERY session via AppConfig.tools
 // (additive to builtins/plugins; first same-name wins). Fail-soft per server.
-const mcp = settings.mcpServers && Object.keys(settings.mcpServers).length > 0 ? await createMcpTools(settings.mcpServers) : undefined
-if (mcp) console.log(`  mcp       : ${mcp.tools.length} tool(s) from ${Object.keys(settings.mcpServers ?? {}).length} server(s)`)
+// Reloadable: loadMcpTools() re-resolves from the LIVE config so a PUT settings
+// or mcp_manage can swap servers in place (app.refreshTools → next turn).
+let mcpResources: { byServer: Record<string, { resources: Array<{ uri: string; name?: string; description?: string; mimeType?: string }>; error?: string }>; readResource: (server: string, uri: string) => Promise<{ text: string; mimeType?: string }> } | undefined
+let mcpDispose: (() => Promise<void>) | undefined
+const loadMcpTools = async (): Promise<Tool[]> => {
+  const fresh = loadRuntimeSettings({ env: process.env })
+  if (!fresh.mcpServers || Object.keys(fresh.mcpServers).length === 0) return []
+  const { createMcpTools: cmt } = await import("@newhorse/mcp")
+  const loaded = await cmt(fresh.mcpServers)
+  mcpDispose = () => loaded.dispose()
+  if (loaded.resourcesByServer && Object.keys(loaded.resourcesByServer).length > 0) {
+    mcpResources = { byServer: loaded.resourcesByServer as never, readResource: loaded.readResource }
+  }
+  return loaded.tools
+}
+let appsRegistry: Map<string, App> | undefined
+const hotReloadMcp = async (): Promise<void> => {
+  try {
+    const explicit = await loadMcpTools()
+    if (appsRegistry) for (const app of appsRegistry.values()) app.refreshTools([...explicit, mcpManageTool()])
+    console.log(`[mcp] hot-reload: ${explicit.length} mcp tool(s) pushed to ${appsRegistry?.size ?? 0} live session(s)`)
+  } catch (e) {
+    console.error(`[mcp] hot-reload failed:`, e instanceof Error ? e.message : e)
+  }
+}
+const mcpManageTool = () => createMcpManageTool({
+  read: async () => (loadRuntimeSettings({ env: process.env }).mcpServers ?? {}) as Record<string, unknown>,
+  write: async (mcpServers) => {
+    await writeAgentHomeConfig(settings.agentHome, { mcpServers: mcpServers as never })
+    await hotReloadMcp()
+  },
+})
+const mcp = settings.mcpServers && Object.keys(settings.mcpServers).length > 0 ? await loadMcpTools() : undefined
+if (mcp?.length) console.log(`  mcp       : ${mcp.length} tool(s)`)
 
 // Packaged binary fallback: a `ui/` next to the exe serves the web client
 // without an env var (dev runs via bun never guess — execPath is bun).
@@ -113,20 +146,14 @@ const handle = await createServer({
   // any configured MCP server on/off (or change its command/url) without
   // touching the filesystem (the exec policy may chroot the session's fs/bash
   // to the workspace, which would block direct config.json access).
-  ...(mcp?.tools.length || true
-    ? {
-        tools: [
-          ...(mcp?.tools ?? []),
-          createMcpManageTool({
-            read: async () => (loadRuntimeSettings({ env: process.env }).mcpServers ?? {}) as Record<string, unknown>,
-            write: async (mcpServers) => {
-              await writeAgentHomeConfig(settings.agentHome, { mcpServers: mcpServers as never })
-            },
-          }),
-        ],
-      }
-    : {}),
-  ...(mcp && Object.keys(mcp.resourcesByServer).length > 0 ? { mcpResources: { byServer: mcp.resourcesByServer, readResource: mcp.readResource } } : {}),
+  tools: [...(mcp ?? []), mcpManageTool()],
+  // Hot MCP switching: reload the explicit slice from live config and push it
+  // to every live app (next prompt sees it — no restart; mcp_manage too).
+  loadTools: async () => [...(await loadMcpTools()), mcpManageTool()],
+  onApps: (apps) => {
+    appsRegistry = apps
+  },
+  ...(mcpResources && Object.keys(mcpResources.byServer).length > 0 ? { mcpResources } : {}),
   memory: settings.memory.on ? memStore : undefined,
   ...(settings.registry ? { directory, advertiseUrl: settings.advertiseUrl } : {}),
   ...(uiDir ? { uiDir } : {}),
@@ -199,7 +226,7 @@ console.log(`  token     : ${settings.token ? "required" : "loopback-only"}`)
 // MCP transports own child processes/sockets — close them on shutdown.
 for (const sig of ["SIGINT", "SIGTERM"] as const) {
   process.on(sig, () => {
-    void (mcp?.dispose() ?? Promise.resolve()).finally(() => process.exit(0))
+    void (mcpDispose ? mcpDispose() : Promise.resolve()).finally(() => process.exit(0))
   })
 }
 void createApp
