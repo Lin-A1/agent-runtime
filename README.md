@@ -9,7 +9,8 @@
 ## The shell
 
 - **Minimal chat** — session list, streaming turns, tool/thinking traces, markdown (incl. mermaid), image attachments, model switch, rewind / rewrite / retry.
-- **Slim by design** — no workbench pane, no approval panel UI (the runtime keeps the approval API; this shell stays chat-focused), no workspace configuration surface.
+- **任务 / 项目分组** — 无项目状态的会话归「任务」组（常驻），新建项目创建带 projectId 的会话归各自项目组；「删除项目」只删项目会话，不伤常驻 newhorse 与任务。
+- **Slim by design** — no workbench pane, no approval panel UI (the runtime keeps the approval API; this shell stays chat-focused).
 - **Consumes, never imports** — `apps/web/src/api/client.ts` is the single typed boundary over `/v1`; no runtime internals are touched.
 
 ## Run
@@ -25,6 +26,14 @@ NEWHORSE_UI_DIR="$(pwd)/apps/web/dist" bun run agent-runtime/packages/server/src
 # Dev mode (hot reload, /v1 proxied to the runtime server on 3927)
 bun run dev                                        # http://127.0.0.1:4173
 ```
+
+## One-file package (Windows)
+
+```bash
+bun run agent-runtime/scripts/package.ts --with-ui   # → dist/newhorse-server.exe + dist/ui
+```
+
+Installer = `newhorse-server.exe` + `ui/` + `~/.newhorse/config.json` (your apiKey/model/MCP live here, never in the binary). See agent-runtime [releases](https://github.com/Lin-A1/agent-runtime/releases).
 
 ## Layout
 
