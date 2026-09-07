@@ -168,7 +168,7 @@ const DEFAULT_HOME = () => join(process.env.HOME ?? process.env.USERPROFILE ?? "
  * subset; unknown keys are preserved on write (merge, never clobber), a
  * corrupt/missing file is an empty layer (never fails startup).
  */
-export type AgentHomeConfig = Partial<Pick<RuntimeSettings, "provider" | "model" | "contextWindowTokens" | "maxOutputTokens" | "charsPerToken" | "host" | "port" | "workspace" | "approvalPolicy" | "activeProviderId" | "channels" | "mcpServers">> & {
+export type AgentHomeConfig = Partial<Pick<RuntimeSettings, "provider" | "model" | "contextWindowTokens" | "maxOutputTokens" | "charsPerToken" | "host" | "port" | "token" | "workspace" | "approvalPolicy" | "activeProviderId" | "channels" | "mcpServers">> & {
   readonly memory?: {
     readonly on?: boolean
     readonly extraction?: boolean
@@ -498,9 +498,12 @@ export function loadRuntimeSettings(layers: ConfigLayers): RuntimeSettings {
     ...(contextWindowTokens && Number.isFinite(contextWindowTokens) && contextWindowTokens > 0 ? { contextWindowTokens } : {}),
     ...(charsPerTokenValid !== undefined ? { charsPerToken: charsPerTokenValid } : {}),
     ...(maxOutputTokens && Number.isFinite(maxOutputTokens) && maxOutputTokens > 0 ? { maxOutputTokens } : {}),
-    host: layers.cli?.host ?? str(env, ENV.host) ?? file.host ?? "127.0.0.1",
+    // LAN-first: bind all interfaces so a phone on the same network reaches
+    // the shell when a token is configured (main.ts auto-mints one on first
+    // boot when none exists — no-token 0.0.0.0 would be an open API).
+    host: layers.cli?.host ?? str(env, ENV.host) ?? file.host ?? "0.0.0.0",
     port: layers.cli?.port ?? Number(str(env, ENV.port) ?? file.port ?? 3927),
-    ...(layers.cli?.token ?? str(env, ENV.token) ? { token: layers.cli?.token ?? str(env, ENV.token) } : {}),
+    ...(layers.cli?.token ?? str(env, ENV.token) ?? file.token ? { token: layers.cli?.token ?? str(env, ENV.token) ?? file.token } : {}),
     // Default workspace = the "任务" project: agentHome/workspace (~/.newhorse
     // under packaging), NOT process.cwd() — default sessions live in the
     // packaged data zone, and the web shell groups this as the "任务" project.

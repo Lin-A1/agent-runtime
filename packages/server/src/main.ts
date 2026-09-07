@@ -32,7 +32,19 @@ function lookupPackagedUi(): string | undefined {
  * hub parks engine gates for the client to settle; the scheduler drives
  * scheduled prompts (定时任务).
  */
-const settings = loadRuntimeSettings({ env: process.env })
+let settings = loadRuntimeSettings({ env: process.env })
+
+// LAN-first + secure-by-default: bind 0.0.0.0 (phone access) but mint a token
+// on first boot when none is configured — an open 0.0.0.0 API is never fine.
+// The token persists into the agent-home config so the next boot keeps it and
+// the phone/desktop client can read it (settings page shows it for the LAN).
+if (settings.host !== "127.0.0.1" && settings.host !== "::1" && !settings.token) {
+  const minted = `nh-${crypto.randomUUID().replaceAll("-", "").slice(0, 32)}`
+  await writeAgentHomeConfig(settings.agentHome, { token: minted })
+  // Re-read so this boot ALREADY enforces the token (never a silent open window).
+  settings = loadRuntimeSettings({ env: process.env })
+  console.log(`  token     : auto-minted ${minted.slice(0, 8)}… (LAN access — see ~/.newhorse/config.json)`)
+}
 
 // Memory: a durable SQLite store per dataDir when memory is on; in-memory otherwise.
 const memStore = settings.memory.on ? new SqliteMemoryStore(join(settings.dataDir, "memory.db")) : new MemoryMemoryStore()

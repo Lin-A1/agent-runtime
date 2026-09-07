@@ -639,9 +639,15 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
       // page and enter its token there (the token then rides every /v1 call
       // as Bearer). Without a token, only loopback binds at all.
       const isApi = parts[0] === "v1"
+      // Loopback is trusted by default: the desktop shell and the browser on
+      // the same machine never need to enter the LAN token (a 401 on localhost
+      // after a host=tokened upgrade would break every existing client). The
+      // token guards REMOTE (LAN/phone) callers only.
+      const hostHeader = req.headers.get("host") ?? ""
+      const fromLoopback = hostHeader.startsWith("127.0.0.1") || hostHeader.startsWith("localhost") || hostHeader.startsWith("[::1]")
       if (token) {
-        if (isApi && !constantTimeEqual(bearer(req) ?? "", token)) return json(401, { error: "unauthorized" })
-      } else if (host !== "127.0.0.1" && host !== "::1") {
+        if (isApi && !fromLoopback && !constantTimeEqual(bearer(req) ?? "", token)) return json(401, { error: "unauthorized" })
+      } else if (host !== "127.0.0.1" && host !== "::1" && !fromLoopback) {
         return json(403, { error: "loopback-only (no token; bind 127.0.0.1 or provide token)" })
       }
 
