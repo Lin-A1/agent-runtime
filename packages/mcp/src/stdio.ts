@@ -1,4 +1,25 @@
 import { RpcClient, parseMessage } from "./rpc"
+import { existsSync } from "node:fs"
+import { delimiter, join } from "node:path"
+
+/** Resolve a command name against PATH (Windows honors PATHEXT: npx → npx.cmd). */
+function commandExists(name: string): boolean {
+  if (name.includes("/") || name.includes("\\") || name.endsWith(".exe") || name.endsWith(".cmd")) {
+    return existsSync(name) || existsSync(join(process.cwd(), name))
+  }
+  const pathVar = process.env.PATH ?? ""
+  const exts = process.platform === "win32"
+    ? (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean)
+    : [""]
+  for (const dir of pathVar.split(delimiter)) {
+    if (!dir) continue
+    for (const ext of exts) {
+      const candidate = join(dir, name + ext)
+      if (existsSync(candidate)) return true
+    }
+  }
+  return false
+}
 
 /**
  * MCP stdio transport: spawn the server process, speak newline-delimited
@@ -20,6 +41,12 @@ export class StdioTransport {
   }
 
   async start(): Promise<void> {
+    // Fail-fast when the command is not on PATH (e.g. npx on a machine without
+    // Node): instead of spawning a phantom process and waiting the full RPC
+    // timeout for silence, reject immediately so the caller skips this server.
+    if (!commandExists(this.command)) {
+      throw new Error(`command "${this.command}" not found on PATH — install it or remove this MCP server`)
+    }
     this.proc = Bun.spawn([this.command, ...this.args], {
       env: { ...process.env, ...(this.env ?? {}) },
       stdin: "pipe",
