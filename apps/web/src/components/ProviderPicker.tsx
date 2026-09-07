@@ -32,6 +32,23 @@ interface DraftProfile {
 // stored kind alias for existing profiles.
 const PROVIDER_KINDS = ["openai", "openai-responses", "anthropic"] as const
 
+/** 豆包式预设：用户只选服务商 + 填 API Key + 选模型；kind/baseUrl/协议全部内置，
+ *  不暴露给用户。新增一个服务商只需在这张表加一行。 */
+const PRESET_PROVIDERS: ReadonlyArray<{
+  id: string
+  name: string
+  kind: string
+  baseUrl: string
+  models: readonly string[]
+  hint: string
+}> = [
+  { id: "minimax", name: "MiniMax", kind: "openai", baseUrl: "https://api.minimaxi.com", models: ["MiniMax-M3", "MiniMax-M2.7-highspeed"], hint: "国产多模态模型，M3 支持图片理解" },
+  { id: "openai", name: "OpenAI", kind: "openai", baseUrl: "https://api.openai.com", models: ["gpt-4o", "gpt-4o-mini", "o3-mini"], hint: "GPT 系列" },
+  { id: "anthropic", name: "Anthropic", kind: "anthropic", baseUrl: "https://api.anthropic.com", models: ["claude-sonnet-4", "claude-haiku-4"], hint: "Claude 系列" },
+  { id: "deepseek", name: "DeepSeek", kind: "openai", baseUrl: "https://api.deepseek.com", models: ["deepseek-chat", "deepseek-reasoner"], hint: "性价比高，推理强" },
+  { id: "ollama", name: "Ollama（本地）", kind: "openai", baseUrl: "http://localhost:11434", models: ["llama3.2", "qwen2.5"], hint: "本地模型，无需 API Key" },
+]
+
 function emptyDraft(): DraftProfile {
   return { id: "", name: "", kind: "openai", baseUrl: "", apiKey: "", model: "", contextWindowTokens: "", maxOutputTokens: "" }
 }
@@ -177,20 +194,30 @@ export function ProviderPicker(): ReactElement {
 
   const renderDraftForm = (): ReactElement => (
     <div className="model-config-form">
-      <div className="model-config-form-title">{adding ? "新增提供方" : `配置 ${draft.id}`}</div>
-      {adding && <label className="model-config-field"><span>id</span><input value={draft.id} onChange={(e) => setDraft({ ...draft, id: e.target.value })} placeholder="my-gateway" spellCheck={false} /></label>}
-      <label className="model-config-field"><span>名称</span><input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="显示名称" spellCheck={false} /></label>
-      <label className="model-config-field"><span>协议</span><select value={draft.kind} onChange={(e) => setDraft({ ...draft, kind: e.target.value })}>{PROVIDER_KINDS.map((k) => <option key={k} value={k}>{k}</option>)}</select></label>
-      <label className="model-config-field"><span>Base URL</span><input value={draft.baseUrl} onChange={(e) => setDraft({ ...draft, baseUrl: e.target.value })} placeholder="https://api.example.com/v1" spellCheck={false} /></label>
-      <label className="model-config-field"><span>API Key</span><input type="password" value={draft.apiKey} onChange={(e) => setDraft({ ...draft, apiKey: e.target.value })} placeholder={providerRows.find((p) => p.id === draft.id)?.hasApiKey ? "已配置（留空保留）" : "sk-…"} spellCheck={false} autoComplete="off" /></label>
+      <div className="model-config-form-title">{adding ? "添加模型服务商" : `配置 ${draft.id}`}</div>
+      {adding && (
+        <>
+          <div className="grid grid-cols-2 gap-1.5">
+            {PRESET_PROVIDERS.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                className={`rounded-md border px-2 py-1.5 text-left text-2xs transition-colors ${draft.id === p.id ? "border-accent bg-accent/10 text-fg" : "border-line hover:border-line-strong hover:bg-hover"}`}
+                onClick={() => setDraft({ ...emptyDraft(), id: p.id, name: p.name, kind: p.kind, baseUrl: p.baseUrl, model: p.models[0] ?? "" })}
+              >
+                <span className="block font-medium">{p.name}</span>
+                <span className="block text-2xs text-faint">{p.hint}</span>
+              </button>
+            ))}
+          </div>
+          <p className="text-2xs text-faint">选择服务商，再填 API Key（Ollama 本地无需 Key）。协议与接口地址已按服务商自动配置。</p>
+        </>
+      )}
+      <label className="model-config-field"><span>API Key</span><input type="password" value={draft.apiKey} onChange={(e) => setDraft({ ...draft, apiKey: e.target.value })} placeholder={providerRows.find((p) => p.id === draft.id)?.hasApiKey ? "已配置（留空保留）" : draft.id === "ollama" ? "本地不需要" : "sk-…"} spellCheck={false} autoComplete="off" /></label>
       <label className="model-config-field"><span>默认模型</span><input value={draft.model} onChange={(e) => setDraft({ ...draft, model: e.target.value })} placeholder="model-id" spellCheck={false} /></label>
-      <div className="model-config-field-row">
-        <label className="model-config-field"><span>窗口 tokens</span><input value={draft.contextWindowTokens} onChange={(e) => setDraft({ ...draft, contextWindowTokens: e.target.value })} placeholder="1000000" inputMode="numeric" /></label>
-        <label className="model-config-field"><span>输出上限</span><input value={draft.maxOutputTokens} onChange={(e) => setDraft({ ...draft, maxOutputTokens: e.target.value })} placeholder="8192" inputMode="numeric" /></label>
-      </div>
       <div className="model-config-actions">
         <button type="button" className="model-config-btn" disabled={saving} onClick={() => { setEditingId(null); setAdding(false); setDraft(emptyDraft()) }}>取消</button>
-        <button type="button" className="model-config-btn is-primary" disabled={saving || !draft.id.trim()} onClick={() => void saveDraft()}>{saving ? <Loader2 size={11} className="spin" /> : "保存"}</button>
+        <button type="button" className="model-config-btn is-primary" disabled={saving || !draft.id.trim() || !draft.model.trim()} onClick={() => void saveDraft()}>{saving ? <Loader2 size={11} className="spin" /> : "保存"}</button>
       </div>
     </div>
   )
