@@ -20,16 +20,20 @@ export function LanAccess(): ReactElement {
   const [loaded, setLoaded] = useState(false)
 
   const load = useCallback((): void => {
-    void api
-      .lanToken()
-      .then((r) => {
-        const t = r.token ?? null
+    void Promise.all([api.lanToken(), api.network().catch(() => null)])
+      .then(([tr, nr]) => {
+        const t = tr.token ?? null
         setToken(t)
-        const loc = window.location
-        setLanUrl(`http://${loc.hostname}:${loc.port || 3927}`)
+        // The phone URL uses the machine's LAN IP (not the page host, which is
+        // 127.0.0.1 when browsing locally) + the server port. QR + share link
+        // must carry the LAN host too — a 127.0.0.1 link would point at the
+        // phone itself.
+        const host = String(nr?.lanIp ?? window.location.hostname)
+        const port = String(nr?.port ?? window.location.port ?? 3927)
+        setLanUrl(`http://${host}:${port}`)
         setLoaded(true)
         if (t) {
-          const link = `${window.location.origin}/?token=${t}`
+          const link = `http://${host}:${port}/?token=${t}`
           void QRCode.toDataURL(link, { width: 220, margin: 1 }).then(setQr).catch(() => setQr(null))
         }
       })
@@ -61,7 +65,7 @@ export function LanAccess(): ReactElement {
     setTimeout(() => setCopied(false), 1500)
   }
 
-  const shareLink = token ? `${window.location.origin}/?token=${token}` : null
+  const shareLink = token && lanUrl ? `${lanUrl}/?token=${token}` : null
 
   return (
     <>
@@ -108,29 +112,23 @@ export function LanAccess(): ReactElement {
                   <div className="h-44 w-44 animate-pulse rounded-lg bg-field" />
                 )}
                 <div className="w-full text-center">
-                  <div className="text-2xs text-faint">手机连同一 Wi-Fi，扫码或输入令牌</div>
-                  <code className="mt-1 block truncate rounded bg-bg2 px-2 py-1 font-mono text-[11px] text-fg">{lanUrl}</code>
-                  <div className="mt-2 flex items-center gap-1.5 rounded bg-bg2 px-2 py-1.5">
-                    <code className="min-w-0 flex-1 truncate font-mono text-[11px] text-fg">{token}</code>
+                  <div className="text-2xs text-faint">手机连同一 Wi-Fi，扫码打开（令牌自动填入）</div>
+                  {/* 链接 + 令牌合并：一处复制即可 */}
+                  <div className="mt-2 flex items-center gap-1.5 rounded-lg bg-bg2 px-2 py-2">
+                    <code className="min-w-0 flex-1 truncate text-left font-mono text-[11px] leading-snug text-fg">
+                      {shareLink}
+                    </code>
                     <button
                       type="button"
-                      className="icon-btn !h-6 !w-6"
-                      aria-label="复制令牌"
-                      title="复制令牌"
-                      onClick={() => copy(token)}
+                      className="icon-btn !h-7 !w-7 flex-none"
+                      aria-label="复制连接信息"
+                      title="复制连接信息（链接+令牌）"
+                      onClick={() => copy(shareLink ?? "")}
                     >
-                      {copied ? <Check size={12} className="text-ok" /> : <Copy size={12} />}
+                      {copied ? <Check size={13} className="text-ok" /> : <Copy size={13} />}
                     </button>
                   </div>
-                  {shareLink && (
-                    <button
-                      type="button"
-                      className="mt-2 w-full rounded-md border border-line px-2 py-1.5 text-2xs text-dim transition-colors hover:bg-hover-2 hover:text-fg"
-                      onClick={() => copy(shareLink)}
-                    >
-                      {copied ? "已复制带令牌的链接" : "复制带令牌的链接（扫码即自动填入）"}
-                    </button>
-                  )}
+                  <div className="mt-2 text-2xs text-faint">未自动连接时：地址 <code className="font-mono">{lanUrl}</code>，令牌见上方</div>
                 </div>
               </div>
             ) : (

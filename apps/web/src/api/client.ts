@@ -277,6 +277,8 @@ export const api = {
   /** LAN token — loopback-only endpoint; the desktop shell reveals it so the
    *  user can type it on the phone (never gets it from a remote device). */
   lanToken: () => request<{ token: string | null }>("/v1/token"),
+  /** LAN address info: the machine's first non-loopback IPv4 + server port. */
+  network: () => request<{ lanIp: string | null; port: number }>("/v1/network"),
   models: () => request<{ models: string[] }>("/v1/models").then((r) => r.models),
   catalog: () => request<{ catalog: ModelCatalog | null }>("/v1/models/catalog").then((r) => r.catalog),
   providers: () => request<ProvidersView>("/v1/providers"),
