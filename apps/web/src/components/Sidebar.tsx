@@ -34,6 +34,7 @@ import { useTheme } from "../lib/theme"
 import { Spinner } from "./ui"
 import { ProviderPicker } from "./ProviderPicker"
 import { LanAccess } from "./LanAccess"
+import { McpSettings } from "./McpSettings"
 import { EmotionBall } from "./EmotionBall"
 import { BrandWordmark } from "./BrandWordmark"
 
@@ -741,6 +742,7 @@ export function Sidebar({
       {/* Bottom bar: provider/model switcher (user identity row removed) */}
       <div className="flex flex-none flex-col gap-1 border-t border-line px-2 py-2 text-xs select-none">
         <LanAccess />
+        <McpSettings />
         <ProviderPicker />
       </div>
     </div>
