@@ -75,7 +75,6 @@ for (const [name, cfg] of Object.entries(servers)) {
   const size = existsSync(exe) ? statSync(exe).size : 0
   cfg.command = exe
   cfg.args = []
-  ;(servers[name] as { command: string; args: string[] }) = cfg
   results.push({ name, ok: true, detail: `→ ${exe} (${Math.round(size / 1024 / 1024)}MB)` })
 }
 
