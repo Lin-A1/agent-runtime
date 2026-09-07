@@ -1,6 +1,6 @@
 import { createServer } from "./server"
 import type { SessionCreateRequest } from "./server"
-import { createApp, loadRuntimeSettings, createSqliteSessionDirectory, createApprovalHub, createScheduler, createDagRunner, writeAgentHomeConfig, type Schedule } from "@newhorse/runtime"
+import { createApp, loadRuntimeSettings, createSqliteSessionDirectory, createApprovalHub, createScheduler, createDagRunner, writeAgentHomeConfig, createMcpManageTool, type Schedule } from "@newhorse/runtime"
 import { createMcpTools } from "@newhorse/mcp"
 import { MemoryMemoryStore, SqliteMemoryStore, createEmbeddingProvider } from "@newhorse/memory"
 import { existsSync } from "node:fs"
@@ -109,7 +109,23 @@ const handle = await createServer({
   ...(settings.pluginsDir ? { pluginsDir: settings.pluginsDir } : {}),
   agentHome: settings.agentHome,
   ...(settings.channels?.length ? { channels: settings.channels } : {}),
-  ...(mcp?.tools.length ? { tools: mcp.tools } : {}),
+  // MCP tools + an agent-drivable config tool: mcp_manage lets the agent turn
+  // any configured MCP server on/off (or change its command/url) without
+  // touching the filesystem (the exec policy may chroot the session's fs/bash
+  // to the workspace, which would block direct config.json access).
+  ...(mcp?.tools.length || true
+    ? {
+        tools: [
+          ...(mcp?.tools ?? []),
+          createMcpManageTool({
+            read: async () => (loadRuntimeSettings({ env: process.env }).mcpServers ?? {}) as Record<string, unknown>,
+            write: async (mcpServers) => {
+              await writeAgentHomeConfig(settings.agentHome, { mcpServers: mcpServers as never })
+            },
+          }),
+        ],
+      }
+    : {}),
   ...(mcp && Object.keys(mcp.resourcesByServer).length > 0 ? { mcpResources: { byServer: mcp.resourcesByServer, readResource: mcp.readResource } } : {}),
   memory: settings.memory.on ? memStore : undefined,
   ...(settings.registry ? { directory, advertiseUrl: settings.advertiseUrl } : {}),
