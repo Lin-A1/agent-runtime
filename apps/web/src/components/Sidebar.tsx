@@ -465,10 +465,12 @@ export function Sidebar({
   }
 
   const deleteProject = (ws: string): void => {
-    // 删除项目 = 移除该 workspace 的全部会话（含空组），并从已知列表抹掉。
-    // 服务器不删目录（workspace 是会话的存储路径，可能还有别的文件）；
-    // 这里只清理侧边栏视图。有会话时先确认。
-    const rows = sessions.filter((r) => normWorkspace(r.workspace) === normWorkspace(ws))
+    // 删除项目 = 移除该 workspace 的【项目会话】（有 projectId 且 workspace
+    // 匹配）。常驻 butler 和无 projectId 的任务会话不计入项目——它们是
+    // 「任务」组/life 的一部分，绝不能随项目一起删掉。
+    const rows = sessions.filter(
+      (r) => r.projectId && normWorkspace(r.workspace) === normWorkspace(ws),
+    )
     const doDelete = (): void => {
       void (async () => {
         const ids = rows.map((r) => r.sessionId)
