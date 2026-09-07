@@ -330,6 +330,8 @@ export function Sidebar({
   const [query, setQuery] = useState("")
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem("newhorse:sidebar:collapsed") === "true")
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({})
+  // Mobile swipe-to-close: remember the touch starting point and release.
+  const touchRef = useRef<{ x: number; y: number; t: number } | null>(null)
   // The workspace the "新建任务" targets: the latest project group the user
   // clicked (or the selected session's workspace); falls back to the global
   // 「新建任务」恒为无项目会话（归「任务」组），无需 activeWs 定向。
@@ -745,7 +747,33 @@ export function Sidebar({
   return (
     <>
       {drawerOpen && <div className="fixed inset-0 z-50 bg-black/60" onClick={onCloseMobile} aria-hidden="true" />}
-      <aside role={drawerOpen ? "dialog" : undefined} aria-modal={drawerOpen || undefined} aria-label="会话导航" className={drawerOpen ? "fixed inset-y-0 left-0 z-[60] flex w-72 max-w-[82vw] flex-col border-r border-line bg-side shadow-overlay" : `hidden flex-none flex-col border-r border-line bg-side md:flex ${collapsed ? "w-14" : "w-[268px]"}`}>
+      <aside
+        role={drawerOpen ? "dialog" : undefined}
+        aria-modal={drawerOpen || undefined}
+        aria-label="会话导航"
+        className={drawerOpen ? "fixed inset-y-0 left-0 z-[60] flex w-[86vw] max-w-[340px] flex-col border-r border-line bg-side shadow-overlay touch-pan-y" : `hidden flex-none flex-col border-r border-line bg-side md:flex ${collapsed ? "w-14" : "w-[268px]"}`}
+        onTouchStart={(e) => {
+          if (!drawerOpen) return
+          const t = e.touches[0]
+          if (t) touchRef.current = { x: t.clientX, y: t.clientY, t: Date.now() }
+        }}
+        onTouchMove={(e) => {
+          if (!drawerOpen || !touchRef.current) return
+          const t = e.touches[0]
+          if (!t) return
+          const dx = t.clientX - touchRef.current.x
+          const dt = Date.now() - touchRef.current.t
+          // Swipe LEFT (dx negative) past ~70px closes the drawer; a fast
+          // left flick counts even with a shorter distance.
+          if ((dx < -70 || (dx < -25 && dt < 220)) && Math.abs(t.clientY - touchRef.current.y) < 90) {
+            touchRef.current = null
+            onCloseMobile?.()
+          }
+        }}
+        onTouchEnd={() => {
+          touchRef.current = null
+        }}
+      >
         {sidebarContent}
       </aside>
     </>
