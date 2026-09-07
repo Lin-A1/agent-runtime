@@ -31,14 +31,6 @@ import { useApp, useStream } from "../state/store"
 import { normWorkspace } from "../lib/workspace"
 import { useTheme } from "../lib/theme"
 import { Spinner } from "./ui"
-
-/** 项目组显示名：默认 workspace（~/.newhorse/workspace，打包后的配置/数据区）
- *  统一叫"任务"，其他项目用目录名。 */
-function groupLabel(ws: string): string {
-  const n = normWorkspace(ws)
-  if (n.includes(".newhorse/workspace") || n.includes(".newhorse\\workspace") || n === ".newhorse/workspace") return "任务"
-  return n.split(/[/\\]/).filter(Boolean).pop() ?? n
-}
 import { ProviderPicker } from "./ProviderPicker"
 import { EmotionBall } from "./EmotionBall"
 import { BrandWordmark } from "./BrandWordmark"
@@ -228,7 +220,7 @@ function Row({
               <StatusDot row={row} busy={busy} />
             )}
             <span className="min-w-0 truncate font-sans text-xs">
-              {isButler ? "任务" : prettyTitle(row.title, "未命名会话")}
+              {isButler ? "newhorse" : prettyTitle(row.title, "未命名会话")}
             </span>
             {isButler && <span className="flex-none rounded bg-field px-1 py-px text-2xs text-faint select-none">常驻</span>}
             {hasChildren && (
@@ -391,7 +383,7 @@ export function Sidebar({
     const normalized = query.trim().toLowerCase()
     if (!normalized) return { butler: butlerRow, groups: groupsOut }
     return {
-      butler: butlerRow && ("任务".includes(normalized) ? butlerRow : undefined),
+      butler: butlerRow && ("newhorse".includes(normalized) ? butlerRow : undefined),
       groups: groupsOut.map((group) => ({ ...group, rows: group.rows.filter((row) => prettyTitle(row.title, "未命名会话").toLowerCase().includes(normalized)) })).filter((group) => group.rows.length > 0),
     }
   }, [sessions, workspace, scope, query, knownWorkspaces])
@@ -518,7 +510,7 @@ export function Sidebar({
     }
   }, [drawerOpen])
 
-  const wsName = workspace ? workspace.split(/[/\\]/).filter(Boolean).pop() ?? "任务" : "任务"
+  const wsName = workspace ? workspace.split(/[/\\]/).filter(Boolean).pop() ?? "newhorse" : "newhorse"
 
   const sidebarContent = (
     <div className={`flex h-full w-full flex-col bg-side pt-safe-top ${collapsed && !isMobile ? "sidebar-collapsed" : ""}`}>
@@ -661,7 +653,7 @@ export function Sidebar({
             {g.ws ? (
               <div className="group/ws flex h-7 w-full items-center gap-1.5 rounded-md px-2 text-left text-2xs font-medium text-faint select-none hover:text-fg">
                 <button type="button" aria-expanded={!collapsedGroups[g.ws]} className="flex h-full min-w-0 flex-1 items-center gap-1.5" onClick={() => { setActiveWs(g.ws); setCollapsedGroups((current) => ({ ...current, [g.ws]: !current[g.ws] })) }}>
-                  {collapsedGroups[g.ws] ? <ChevronRight size={11} /> : <ChevronDown size={11} />}<FolderOpen size={11} className="opacity-70" /><span className="min-w-0 truncate">{groupLabel(g.ws)}</span><span className="ml-auto font-mono text-2xs text-ghost">{g.rows.length}</span>
+                  {collapsedGroups[g.ws] ? <ChevronRight size={11} /> : <ChevronDown size={11} />}<FolderOpen size={11} className="opacity-70" /><span className="min-w-0 truncate">{g.ws.split(/[/\\]/).filter(Boolean).pop()}</span><span className="ml-auto font-mono text-2xs text-ghost">{g.rows.length}</span>
                 </button>
                 <button type="button" title="删除项目" aria-label="删除项目" className="hidden h-5 w-5 flex-none items-center justify-center rounded text-ghost transition-colors hover:text-bad group-hover/ws:flex" onClick={() => deleteProject(g.ws)}><X size={11} /></button>
               </div>
@@ -697,7 +689,7 @@ export function Sidebar({
         <div className="flex items-center justify-between px-1.5">
           <div className="flex min-w-0 items-center gap-2">
             <span className="flex h-5 w-5 items-center justify-center rounded-md bg-field font-mono text-[10px] font-bold text-ink">N</span>
-            <span className="truncate text-xs font-medium text-ink-2">任务</span>
+            <span className="truncate text-xs font-medium text-ink-2">newhorse</span>
           </div>
         </div>
         <ProviderPicker />
