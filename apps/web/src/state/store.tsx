@@ -13,6 +13,7 @@ import { api, ClientError, streamPrompt } from "../api/client"
 import type { ChatImage, PanelInfo, SessionRow, SettingsView } from "../api/types"
 import { useBus } from "../api/bus"
 import { normWorkspace } from "../lib/workspace"
+import { uuid } from "../lib/uuid"
 import { deriveAutoTitle, type FileChange } from "../api/fold"
 
 // ---------- app store ----------
@@ -210,7 +211,7 @@ export function StreamProvider({ children }: { children: ReactNode }): React.Rea
       // create (updateTurn only patches an existing entry)
       const ctrl = new AbortController()
       const startedAt = Date.now()
-      const promptId = opts?.promptId ?? crypto.randomUUID()
+      const promptId = opts?.promptId ?? uuid()
       aborts.current.set(sessionId, ctrl)
       setLive((prev) => {
         const next = new Map(prev)
