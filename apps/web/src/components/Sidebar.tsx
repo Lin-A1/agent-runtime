@@ -314,6 +314,12 @@ export function Sidebar({
   const [query, setQuery] = useState("")
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem("newhorse:sidebar:collapsed") === "true")
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({})
+  // The workspace the "新建任务" targets: the latest project group the user
+  // clicked (or the selected session's workspace); falls back to the global
+  // workspace. Without this, "项目" view always created into the global
+  // workspace — a session "in" another project could never be started.
+  const [activeWs, setActiveWs] = useState<string | null>(null)
+  const effectiveNewTaskWs = activeWs ?? workspace
   useEffect(() => { localStorage.setItem("newhorse:sidebar:collapsed", String(collapsed)) }, [collapsed])
   // Remember every workspace the user has ever seen (including cleared ones)
   // so a "项目" group survives its last session being deleted — a project is
@@ -354,13 +360,23 @@ export function Sidebar({
       .sort((a, b) => b.rows[0]!.updatedAt - a.rows[0]!.updatedAt)
     // Merge remembered (possibly now-empty) workspaces into the project view so
     // a cleared project stays visible under its own header with an empty state.
+    // Groups key on the path's BASENAME: "agent-runtime" and
+    // "G:/Code/.../agent-runtime" are the same project, never two groups.
     if (scope === "project") {
-      const seen = new Set(wsGroups.map((g) => g.ws))
-      for (const ws of knownWorkspaces) {
-        if (!seen.has(ws)) wsGroups.push({ ws, rows: [] })
-        seen.add(ws)
+      const keyOf = (w: string): string => normWorkspace(w).split(/[/\\]/).filter(Boolean).pop() ?? w
+      const byKey = new Map<string, { ws: string; rows: SessionRow[] }>()
+      for (const g of wsGroups) {
+        const k = keyOf(g.ws)
+        byKey.set(k, byKey.has(k) ? { ws: g.ws, rows: [...byKey.get(k)!.rows, ...g.rows] } : g)
       }
-      wsGroups.sort((a, b) => (b.rows[0]?.updatedAt ?? 0) - (a.rows[0]?.updatedAt ?? 0))
+      for (const raw of knownWorkspaces) {
+        const ws = normWorkspace(raw)
+        const key = keyOf(ws)
+        if (!ws || !key || byKey.has(key)) continue
+        byKey.set(key, { ws, rows: [] })
+      }
+      wsGroups.length = 0
+      wsGroups.push(...[...byKey.entries()].map(([k, g]) => (g.ws === k ? g : { ws: g.ws, rows: g.rows })).sort((a, b) => (b.rows[0]?.updatedAt ?? 0) - (a.rows[0]?.updatedAt ?? 0)))
     }
 
     const groupsOut = scope === "project" ? wsGroups : [{ ws: "", rows: topLevel }]
@@ -378,7 +394,7 @@ export function Sidebar({
 
   const newTask = (): void => {
     void api
-      .createSession(undefined, workspace || undefined)
+      .createSession(undefined, effectiveNewTaskWs || undefined)
       .then((r) => {
         void refreshSessions()
         navigate(`/s/${r.sessionId}`)
@@ -419,6 +435,31 @@ export function Sidebar({
         })
         .catch(() => {})
     })()
+  }
+
+  const deleteProject = (ws: string): void => {
+    // 删除项目 = 移除该 workspace 的全部会话（含空组），并从已知列表抹掉。
+    // 服务器不删目录（workspace 是会话的存储路径，可能还有别的文件）；
+    // 这里只清理侧边栏视图。有会话时先确认。
+    const rows = sessions.filter((r) => normWorkspace(r.workspace) === normWorkspace(ws))
+    const doDelete = (): void => {
+      void (async () => {
+        const ids = rows.map((r) => r.sessionId)
+        for (const id of ids) {
+          try { await api.deleteSession(id) } catch { /* 逐个尝试 */ }
+        }
+        setKnownWorkspaces((prev) => prev.filter((w) => normWorkspace(w) !== normWorkspace(ws)))
+        localStorage.setItem("newhorse:sidebar:workspaces", JSON.stringify(knownWorkspaces.filter((w) => normWorkspace(w) !== normWorkspace(ws))))
+        setActiveWs(null)
+        void refreshSessions()
+        if (selectedId && ids.includes(selectedId)) navigate("/")
+      })()
+    }
+    if (rows.length === 0) {
+      doDelete()
+    } else if (window.confirm(`删除项目「${ws.split(/[/\\]/).filter(Boolean).pop()}」将删除其中 ${rows.length} 个会话（工作区目录不受影响），确定？`)) {
+      doDelete()
+    }
   }
 
   useEffect(() => {
@@ -610,9 +651,12 @@ export function Sidebar({
         {groups.map((g) => (
           <div key={g.ws || "all"} className="mb-1">
             {g.ws ? (
-              <button type="button" aria-expanded={!collapsedGroups[g.ws]} className="flex h-7 w-full items-center gap-1.5 px-2 text-left text-2xs font-medium text-faint select-none hover:text-fg" onClick={() => setCollapsedGroups((current) => ({ ...current, [g.ws]: !current[g.ws] }))}>
-                {collapsedGroups[g.ws] ? <ChevronRight size={11} /> : <ChevronDown size={11} />}<FolderOpen size={11} className="opacity-70" /><span className="min-w-0 truncate">{g.ws.split(/[/\\]/).filter(Boolean).pop()}</span><span className="ml-auto font-mono text-2xs text-ghost">{g.rows.length}</span>
-              </button>
+              <div className="group/ws flex h-7 w-full items-center gap-1.5 rounded-md px-2 text-left text-2xs font-medium text-faint select-none hover:text-fg">
+                <button type="button" aria-expanded={!collapsedGroups[g.ws]} className="flex h-full min-w-0 flex-1 items-center gap-1.5" onClick={() => { setActiveWs(g.ws); setCollapsedGroups((current) => ({ ...current, [g.ws]: !current[g.ws] })) }}>
+                  {collapsedGroups[g.ws] ? <ChevronRight size={11} /> : <ChevronDown size={11} />}<FolderOpen size={11} className="opacity-70" /><span className="min-w-0 truncate">{g.ws.split(/[/\\]/).filter(Boolean).pop()}</span><span className="ml-auto font-mono text-2xs text-ghost">{g.rows.length}</span>
+                </button>
+                <button type="button" title="删除项目" aria-label="删除项目" className="hidden h-5 w-5 flex-none items-center justify-center rounded text-ghost transition-colors hover:text-bad group-hover/ws:flex" onClick={() => deleteProject(g.ws)}><X size={11} /></button>
+              </div>
             ) : null}
             {(!g.ws || !collapsedGroups[g.ws]) && <div className="flex flex-col gap-0.5">
               {g.rows.length === 0 ? (
