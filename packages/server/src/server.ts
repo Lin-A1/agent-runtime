@@ -8,14 +8,27 @@ import { listModels } from "@newhorse/llm"
 import type { AdapterConfig, Fetcher } from "@newhorse/llm"
 import { networkInterfaces } from "node:os"
 
-/** First non-loopback IPv4 address — the LAN URL host for the phone. */
+/** First non-loopback IPv4 address — the LAN URL host for the phone.
+ *  Preference: real private LAN ranges (192.168/10/172.16-31) first, then any
+ *  non-loopback. APIPA (169.254 — unconnected adapters) and the benchmarking
+ *  range (198.18/19 — common virtual adapter net) are skipped as they are not
+ *  host routes a phone can reach. */
 function firstLanIpv4(): string | undefined {
+  const candidates: string[] = []
+  const prefer: string[] = []
   for (const list of Object.values(networkInterfaces())) {
     for (const ni of list ?? []) {
-      if (ni.family === "IPv4" && !ni.internal) return ni.address
+      if (ni.family !== "IPv4" || ni.internal) continue
+      const a = ni.address
+      if (a.startsWith("169.254.") || a.startsWith("198.18.") || a.startsWith("198.19.")) continue
+      if (a.startsWith("192.168.") || a.startsWith("10.") || (a.startsWith("172.") && Number(a.split(".")[1]) >= 16 && Number(a.split(".")[1]) <= 31)) {
+        prefer.push(a)
+      } else {
+        candidates.push(a)
+      }
     }
   }
-  return undefined
+  return prefer[0] ?? candidates[0]
 }
 import type { StoredEvent, ApprovalRequest } from "@newhorse/schema"
 import { join, resolve, sep } from "node:path"
