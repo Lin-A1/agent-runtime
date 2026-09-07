@@ -501,7 +501,10 @@ export function loadRuntimeSettings(layers: ConfigLayers): RuntimeSettings {
     host: layers.cli?.host ?? str(env, ENV.host) ?? file.host ?? "127.0.0.1",
     port: layers.cli?.port ?? Number(str(env, ENV.port) ?? file.port ?? 3927),
     ...(layers.cli?.token ?? str(env, ENV.token) ? { token: layers.cli?.token ?? str(env, ENV.token) } : {}),
-    workspace: layers.cli?.workspace ?? str(env, ENV.workspace) ?? file.workspace ?? process.cwd(),
+    // Default workspace = the "任务" project: agentHome/workspace (~/.newhorse
+    // under packaging), NOT process.cwd() — default sessions live in the
+    // packaged data zone, and the web shell groups this as the "任务" project.
+    workspace: layers.cli?.workspace ?? str(env, ENV.workspace) ?? file.workspace ?? join(agentHome, "workspace"),
     allowBash: layers.cli?.allowBash ?? flag(env, ENV.allowBash),
     allowWeb: layers.cli?.allowWeb ?? flag(env, ENV.allowWeb),
     allowPluginCode: layers.cli?.allowPluginCode ?? flag(env, ENV.allowPluginCode),
