@@ -39,12 +39,14 @@ import { BrandWordmark } from "./BrandWordmark"
  *  workspace ~/.newhorse/workspace). All default task sessions land here;
  *  other projects are separate groups. */
 const DEFAULT_TASK_WS = ".newhorse/workspace"
+/** 「任务」组的临时 ws key（非真实路径——只有无项目会话的归类展示用）。 */
+const taskWsKey = "任务:" + DEFAULT_TASK_WS
 function isTaskWs(ws: string): boolean {
   const n = normWorkspace(ws)
   return n.includes(".newhorse/workspace") || n === ".newhorse/workspace"
 }
 function groupLabel(ws: string): string {
-  if (isTaskWs(ws)) return "任务"
+  if (isTaskWs(ws) || ws.startsWith("任务:")) return "任务"
   return normWorkspace(ws).split(/[/\\]/).filter(Boolean).pop() ?? ws
 }
 
@@ -329,13 +331,7 @@ export function Sidebar({
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({})
   // The workspace the "新建任务" targets: the latest project group the user
   // clicked (or the selected session's workspace); falls back to the global
-  // workspace. Without this, "项目" view always created into the global
-  // workspace — a session "in" another project could never be started.
-  const [activeWs, setActiveWs] = useState<string | null>(null)
-  // Default new-task target: the "任务" project (if it has ever been used) or
-  // the global workspace. When the user clicks a specific project group,
-  // activeWs overrides it — but the untouched default is 任务.
-  const effectiveNewTaskWs = activeWs ?? (isTaskWs(workspace) ? workspace : DEFAULT_TASK_WS)
+  // 「新建任务」恒为无项目会话（归「任务」组），无需 activeWs 定向。
   useEffect(() => { localStorage.setItem("newhorse:sidebar:collapsed", String(collapsed)) }, [collapsed])
   // Remember every workspace the user has ever seen (including cleared ones)
   // so a "项目" group survives its last session being deleted — a project is
@@ -366,8 +362,13 @@ export function Sidebar({
     // hidden just because it differs from the global workspace). "全部" = the
     // same top-level sessions flattened by recency, no group headers.
     const topLevel = visible.filter((r) => r.role !== "butler" && !r.parentId).sort((a, b) => b.updatedAt - a.updatedAt)
+    // 语义：会话分两类——
+    //   · 有项目归属：存在 projectId（新建项目创建）→ 各自项目组
+    //   · 无项目状态：无 projectId（新建任务）→ 「任务」组（不管 workspace 字段）
+    const taskRows: SessionRow[] = []
     const byWs = new Map<string, SessionRow[]>()
     for (const r of topLevel) {
+      if (!r.projectId) { taskRows.push(r); continue }
       const ws = normWorkspace(r.workspace) || "默认"
       byWs.set(ws, [...(byWs.get(ws) ?? []), r])
     }
@@ -387,6 +388,7 @@ export function Sidebar({
       }
       for (const raw of knownWorkspaces) {
         const ws = normWorkspace(raw)
+        if (isTaskWs(ws)) continue // 「任务」不是项目——由 taskRows 前置
         const key = keyOf(ws)
         if (!ws || !key || byKey.has(key)) continue
         byKey.set(key, { ws, rows: [] })
@@ -395,7 +397,14 @@ export function Sidebar({
       wsGroups.push(...[...byKey.entries()].map(([k, g]) => (g.ws === k ? g : { ws: g.ws, rows: g.rows })).sort((a, b) => (b.rows[0]?.updatedAt ?? 0) - (a.rows[0]?.updatedAt ?? 0)))
     }
 
-    const groupsOut = scope === "project" ? wsGroups : [{ ws: "", rows: topLevel }]
+    // 「任务」前置：归类无项目状态的会话（不是项目组），只在「项目」视图有组头；
+    // 「全部」视图扁平化展示（含无项目会话），无组头。
+    const groupsOut =
+      scope === "project"
+        ? taskRows.length > 0
+          ? [{ ws: taskWsKey, rows: taskRows }, ...wsGroups]
+          : wsGroups
+        : [{ ws: "", rows: topLevel }]
     const normalized = query.trim().toLowerCase()
     if (!normalized) return { butler: butlerRow, groups: groupsOut }
     return {
@@ -409,8 +418,10 @@ export function Sidebar({
   }
 
   const newTask = (): void => {
+    // 「任务」= 无项目状态的会话：不传 workspace/projectId → 不归属任何项目，
+    // 侧边栏归类到「任务」组。
     void api
-      .createSession(undefined, effectiveNewTaskWs || undefined)
+      .createSession(undefined)
       .then((r) => {
         void refreshSessions()
         navigate(`/s/${r.sessionId}`)
@@ -464,9 +475,11 @@ export function Sidebar({
         for (const id of ids) {
           try { await api.deleteSession(id) } catch { /* 逐个尝试 */ }
         }
-        setKnownWorkspaces((prev) => prev.filter((w) => normWorkspace(w) !== normWorkspace(ws)))
-        localStorage.setItem("newhorse:sidebar:workspaces", JSON.stringify(knownWorkspaces.filter((w) => normWorkspace(w) !== normWorkspace(ws))))
-        setActiveWs(null)
+        // 先算好过滤后的已知列表，state 与 localStorage 用同一份数据，
+        // 避免闭包里的旧 knownWorkspaces 把刚删掉的项目又写回去。
+        const remaining = knownWorkspaces.filter((w) => normWorkspace(w) !== normWorkspace(ws))
+        setKnownWorkspaces(remaining)
+        localStorage.setItem("newhorse:sidebar:workspaces", JSON.stringify(remaining))
         void refreshSessions()
         if (selectedId && ids.includes(selectedId)) navigate("/")
       })()
@@ -668,10 +681,12 @@ export function Sidebar({
           <div key={g.ws || "all"} className="mb-1">
             {g.ws ? (
               <div className="group/ws flex h-7 w-full items-center gap-1.5 rounded-md px-2 text-left text-2xs font-medium text-faint select-none hover:text-fg">
-                <button type="button" aria-expanded={!collapsedGroups[g.ws]} className="flex h-full min-w-0 flex-1 items-center gap-1.5" onClick={() => { setActiveWs(g.ws); setCollapsedGroups((current) => ({ ...current, [g.ws]: !current[g.ws] })) }}>
+                <button type="button" aria-expanded={!collapsedGroups[g.ws]} className="flex h-full min-w-0 flex-1 items-center gap-1.5" onClick={() => setCollapsedGroups((current) => ({ ...current, [g.ws]: !current[g.ws] }))}>
                   {collapsedGroups[g.ws] ? <ChevronRight size={11} /> : <ChevronDown size={11} />}<FolderOpen size={11} className="opacity-70" /><span className="min-w-0 truncate">{groupLabel(g.ws)}</span><span className="ml-auto font-mono text-2xs text-ghost">{g.rows.length}</span>
                 </button>
-                <button type="button" title="删除项目" aria-label="删除项目" className="hidden h-5 w-5 flex-none items-center justify-center rounded text-ghost transition-colors hover:text-bad group-hover/ws:flex" onClick={() => deleteProject(g.ws)}><X size={11} /></button>
+                {!g.ws.startsWith("任务:") && (
+                  <button type="button" title="删除项目" aria-label="删除项目" className="hidden h-5 w-5 flex-none items-center justify-center rounded text-ghost transition-colors hover:text-bad group-hover/ws:flex" onClick={() => deleteProject(g.ws)}><X size={11} /></button>
+                )}
               </div>
             ) : null}
             {(!g.ws || !collapsedGroups[g.ws]) && <div className="flex flex-col gap-0.5">
