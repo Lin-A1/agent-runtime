@@ -67,6 +67,15 @@ export function LanAccess(): ReactElement {
 
   const shareLink = token && lanUrl ? `${lanUrl}/?token=${token}` : null
 
+  // 手机/远程设备自己访问时不需要「手机访问」入口（二维码是给电脑端
+  // 展示、让手机扫的——手机已在这台机器上，显示它毫无意义）。
+  // 页面 host 是 loopback 才显示：127.0.0.1 / localhost / ::1。
+  const hostname = window.location.hostname
+  const isLocal =
+    hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1" || hostname === ""
+
+  if (!isLocal) return <></>
+
   return (
     <>
       {/* 左下角小手机图标按钮 */}
