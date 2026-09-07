@@ -1661,6 +1661,14 @@ export async function createServer(config: ServerConfig): Promise<ServerHandle> 
         return json(200, redactSettings(settings.get()))
       }
 
+      // GET /v1/token — the LAN token is only revealed to LOOPBACK callers:
+      // the desktop shell shows it so the user can type it on the phone; a
+      // remote device must already know it (it would not need to fetch it).
+      if (method === "GET" && parts.length === 2 && parts[1] === "token") {
+        if (!fromLoopback) return json(404, { error: "token is only revealed to loopback callers" })
+        return json(200, { token: settings?.get().token ?? null })
+      }
+
       // PUT /v1/settings — merge a patch into the agent-home config file.
       if (method === "PUT" && parts.length === 2 && parts[1] === "settings") {
         if (!settings) return json(404, { error: "no settings controller configured" })
