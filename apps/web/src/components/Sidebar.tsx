@@ -547,6 +547,9 @@ export function Sidebar({
   }, [drawerOpen])
 
   const wsName = workspace ? workspace.split(/[/\\]/).filter(Boolean).pop() ?? "newhorse" : "newhorse"
+  // 指示器只在有【项目组】（非任务组的真实项目）时显示——否则（比如删除
+  // agent-runtime 项目后）还显示该工作区名会让用户误以为项目又回来了。
+  const hasProjectGroups = scope === "project" && groups.some((g) => g.ws && !g.ws.startsWith("任务:"))
 
   const sidebarContent = (
     <div className={`flex h-full w-full flex-col bg-side pt-safe-top ${collapsed && !isMobile ? "sidebar-collapsed" : ""}`}>
@@ -630,8 +633,12 @@ export function Sidebar({
           ))}
         </div>
         <div className="ml-auto flex items-center gap-1 font-mono text-2xs text-faint">
-          <Folder size={11} className="opacity-60" />
-          <span>{wsName}</span>
+          {hasProjectGroups && (
+            <>
+              <Folder size={11} className="opacity-60" />
+              <span>{wsName}</span>
+            </>
+          )}
         </div>
       </div>
 
