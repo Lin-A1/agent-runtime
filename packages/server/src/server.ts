@@ -171,7 +171,10 @@ export interface ServerHandle {
 /** Image attachment caps: per-image base64 (≈3MB raw, inside Anthropic's
  *  ~3.75MB base64/image guidance), per-prompt count, and the whole-body read
  *  bound. Worst case one request ≈ 5×4M base64 ≈ 20MB < the 32MB API ceiling. */
-const MAX_IMAGE_BASE64 = 4_000_000
+// Per-image base64 cap sized for phone photos (8MB raw ≈ 10.7MB base64);
+// per-prompt count; worst case one request ≈ 5×12M base64 ≈ 60MB < the
+// body read bound below.
+const MAX_IMAGE_BASE64 = 12_000_000
 const MAX_IMAGES_PER_PROMPT = 5
 const MAX_PROMPT_BODY = 40_000_000
 
