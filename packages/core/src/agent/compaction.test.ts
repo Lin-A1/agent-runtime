@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import { MemoryEventStore } from "../session/store"
-import { clearStaleToolResults, compactSession, summarizeTimeoutMs } from "./compaction"
+import { cleanOrphanTools, clearStaleToolResults, compactSession, summarizeTimeoutMs } from "./compaction"
 import type { SessionMessage } from "@newhorse/schema"
 
 async function seed(events: MemoryEventStore, id: string, n: number): Promise<void> {
@@ -119,5 +119,16 @@ describe("clearStaleToolResults (microcompact projection)", () => {
     // Non-tool messages pass through untouched.
     const mixed = clearStaleToolResults([{ kind: "user", id: "u1", seq: 0, text: "hi" }, toolMsg("t1")], { keepRecent: 0, thresholdChars: 1, visibleChars: 9_000 })
     expect(mixed[0]!.kind).toBe("user")
+  })
+
+  it("cleanOrphanTools drops a tool result whose callId has no matching tool-call (poisoned rewind)", () => {
+    const orphan = { kind: "tool" as const, id: "t1", seq: 1, callId: "call_a19b030b", name: "ask_user", output: { question: "q" } }
+    const paired = { kind: "tool" as const, id: "t2", seq: 2, callId: "call_good", name: "bash", output: "out" }
+    const assistant = { kind: "assistant" as const, id: "a1", seq: 3, content: [{ type: "tool-call" as const, id: "call_good", name: "bash", input: {} }] }
+    const clean = cleanOrphanTools([orphan, paired, assistant])
+    // The orphan (no tool-call) is dropped; the paired one and assistant survive.
+    expect(clean.some((m) => m.kind === "tool" && (m as { callId?: string }).callId === "call_a19b030b")).toBe(false)
+    expect(clean.some((m) => m.kind === "tool" && (m as { callId?: string }).callId === "call_good")).toBe(true)
+    expect(clean.some((m) => m.kind === "assistant")).toBe(true)
   })
 })

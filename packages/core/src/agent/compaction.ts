@@ -147,6 +147,32 @@ function localSummary(headCount: number, head: SessionMessage[]): string {
   return `[previous context: ${headCount} messages folded; original request: ${userPrompt.slice(0, 120)}${userPrompt.length > 120 ? "…" : ""}]`
 }
 
+/**
+ * Drop orphan tool results: a `kind:"tool"` message whose callId has no
+ * matching `tool-call` part in an assistant message must NEVER reach the
+ * model — a provider (MiniMax included) rejects a tool_result whose id it
+ * cannot find ("tool result's tool id not found"), and a truncate/rewind
+ * that removed the assistant tool-call but left the result behind poisons
+ * every later prompt. Pure projection: never touches the log.
+ */
+export function cleanOrphanTools(messages: SessionMessage[]): SessionMessage[] {
+  const knownCalls = new Set<string>()
+  for (const m of messages) {
+    if (m.kind !== "assistant") continue
+    const content = (m as { content?: Array<{ type?: string; id?: string }> }).content
+    if (!Array.isArray(content)) continue
+    for (const p of content) {
+      if (p.type === "tool-call" && p.id) knownCalls.add(p.id)
+    }
+  }
+  return messages.filter((m) => {
+    if (m.kind !== "tool") return true
+    const callId = (m as { callId?: string }).callId
+    if (!callId) return true
+    return knownCalls.has(callId)
+  })
+}
+
 export function projectCompacted(stored: StoredEvent[]): { messages: SessionMessage[]; boundary: number } {
   const boundaryEvent = [...stored].reverse().find((e) => e.type === "Session.Compacted")
   const boundary = boundaryEvent ? Number((boundaryEvent.data as { boundarySeq?: number }).boundarySeq ?? -1) : -1
@@ -183,7 +209,8 @@ export function projectCompacted(stored: StoredEvent[]): { messages: SessionMess
         }
       }
     }
-    return { messages, boundary }
+    // Orphan tool results poison the next provider call (id not found).
+    return { messages: cleanOrphanTools(messages), boundary }
   }
 
   // With a boundary:
@@ -256,7 +283,7 @@ export function projectCompacted(stored: StoredEvent[]): { messages: SessionMess
 
   // 4. Assemble: system context -> compaction marker -> clean tail
   const messages: SessionMessage[] = [...systemMessages, markerMsg, ...cleanTail]
-  return { messages, boundary }
+  return { messages: cleanOrphanTools(messages), boundary }
 }
 
 /**
