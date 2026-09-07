@@ -27,7 +27,8 @@ import {
 } from "../lib/completion";
 
 const MAX_IMAGES = 5;
-const MAX_IMAGE_BYTES = 3 * 1024 * 1024;
+// 手机照片普遍 3-10MB；单图放宽到 8MB 再提示，总限 12MB（不撑爆请求）。
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 const MAX_IMAGE_TOTAL = 12 * 1024 * 1024;
 const sessionDrafts = new Map<string, { text: string; images: ChatImage[] }>();
 const POLICY_OPTIONS: Array<{
@@ -259,7 +260,11 @@ export function Composer({
         next.push({ mime, data });
         totalBytes += file.size;
       }
-      if (!next.length) return;
+      if (!next.length) {
+        // 别静默失败：选了文件但啥也没发生，用户会以为按钮坏了。
+        if (incoming.length > 0) setImageError("未能读取图片，请换一张试试");
+        return;
+      }
       setImages((value) => {
         const merged = [...value, ...next];
         // 同步 sessionDrafts：添加图片后切路由或输入文字时，
@@ -509,7 +514,12 @@ export function Composer({
                 multiple
                 hidden
                 onChange={(event) => {
-                  if (event.target.files) void addFiles(event.target.files);
+                  if (event.target.files?.length) {
+                    // Array.from() 必须在清空 input 之前同步执行：FileList 是
+                    // 一个随 input 变化的 LIVE 引用 —— 先克隆成真数组，再
+                    // reset value，否则异步 addFiles 里读到的是空列表（静默失败）。
+                    void addFiles(Array.from(event.target.files));
+                  }
                   event.target.value = "";
                 }}
               />
