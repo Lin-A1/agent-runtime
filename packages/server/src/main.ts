@@ -3,7 +3,20 @@ import type { SessionCreateRequest } from "./server"
 import { createApp, loadRuntimeSettings, createSqliteSessionDirectory, createApprovalHub, createScheduler, createDagRunner, writeAgentHomeConfig, type Schedule } from "@newhorse/runtime"
 import { createMcpTools } from "@newhorse/mcp"
 import { MemoryMemoryStore, SqliteMemoryStore, createEmbeddingProvider } from "@newhorse/memory"
+import { existsSync } from "node:fs"
 import { join } from "node:path"
+
+/**
+ * Packaged binary fallback: when NEWHORSE_UI_DIR is unset and a `ui/` folder
+ * (built web client) sits next to the executable, serve it — one origin for
+ * API + UI without the operator wiring an env var. Returns undefined when
+ * nothing is there.
+ */
+function lookupPackagedUi(): string | undefined {
+  if (process.execPath.endsWith("bun.exe") || process.execPath.endsWith("bun")) return undefined // dev: never guess
+  const dir = join(process.execPath, "..", "ui")
+  return existsSync(join(dir, "index.html")) ? dir : undefined
+}
 
 /**
  * Standalone runtime-server entrypoint: `bun run packages/server/src/main.ts`
@@ -69,11 +82,14 @@ const dagRunner = createDagRunner({
 const mcp = settings.mcpServers && Object.keys(settings.mcpServers).length > 0 ? await createMcpTools(settings.mcpServers) : undefined
 if (mcp) console.log(`  mcp       : ${mcp.tools.length} tool(s) from ${Object.keys(settings.mcpServers ?? {}).length} server(s)`)
 
+// Packaged binary fallback: a `ui/` next to the exe serves the web client
+// without an env var (dev runs via bun never guess — execPath is bun).
+const uiDir = settings.uiDir ?? lookupPackagedUi()
+
 const handle = await createServer({
   host: settings.host,
   port: settings.port,
-  token: settings.token,
-  // NO static onApprove: the approval hub parks requests for the client and
+  token: settings.token,  // NO static onApprove: the approval hub parks requests for the client and
   // auto-denies unanswered ones after its timeout — fail-closed with a window.
   approvals,
   schedules,
@@ -85,7 +101,7 @@ const handle = await createServer({
   ...(mcp && Object.keys(mcp.resourcesByServer).length > 0 ? { mcpResources: { byServer: mcp.resourcesByServer, readResource: mcp.readResource } } : {}),
   memory: settings.memory.on ? memStore : undefined,
   ...(settings.registry ? { directory, advertiseUrl: settings.advertiseUrl } : {}),
-  ...(settings.uiDir ? { uiDir: settings.uiDir } : {}),
+  ...(uiDir ? { uiDir } : {}),
   settings: {
     get: () => loadRuntimeSettings({ env: process.env }),
     write: async (patch) => {
@@ -146,7 +162,7 @@ console.log(`  home      : ${settings.agentHome}`)
 console.log(`  provider  : ${settings.provider.kind} @ ${settings.provider.baseUrl} (${settings.model})`)
 if (settings.contextWindowTokens) console.log(`  context   : ${settings.contextWindowTokens} tokens (compaction scales to the window)`)
 if (settings.maxOutputTokens) console.log(`  max out   : ${settings.maxOutputTokens} tokens per reply`)
-if (settings.uiDir) console.log(`  ui        : ${settings.uiDir} (served on this origin)`)
+if (uiDir) console.log(`  ui        : ${uiDir} (served on this origin)`)
 console.log(`  dataDir   : ${settings.dataDir}`)
 console.log(`  memory    : ${settings.memory.on ? `on${settings.memory.vector.enabled ? " + semantic" : ""}${settings.memory.extraction ? " + extraction" : ""}` : "off"}`)
 console.log(`  bash      : ${settings.allowBash ? "on" : "off"}  web: ${settings.allowWeb ? "on" : "off"}  plugin code: ${settings.allowPluginCode ? "trusted" : "off"}`)

@@ -66,4 +66,19 @@ cd packages/core && bun test        # per-package tests (483 total, all green)
 bun run typecheck                   # strict, clean in every package
 ```
 
+## Packaging (single binary)
+
+```bash
+bun run scripts/package.ts              # → dist/newhorse-server(.exe)  (94 MB)
+bun run scripts/package.ts --with-ui    # also stage dist/ui (built web client)
+```
+
+`bun build --compile` walks the server entry and embeds the whole engine into
+ONE executable — no node_modules, no bun, no src tree at the destination:
+`dist/newhorse-server.exe` + optional `dist/ui/` is the entire artifact. The
+binary serves `ui/` automatically when it sits next to the exe (dev runs via
+`bun` never guess). Runtime config (provider/model/mcpServers/memory) stays
+external in `~/.newhorse/config.json`, so installation = copy the exe + one
+config file.
+
 Design records: `docs/architecture-map.md` (drift sentinel), `docs/core-technology-notes.md` (24 sections), and the comparison/retrospective notes in the same dir. Plans: `specs/v2/`.
