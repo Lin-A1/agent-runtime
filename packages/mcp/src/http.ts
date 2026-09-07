@@ -61,7 +61,7 @@ export class HttpTransport {
           void reader.cancel().catch(() => {})
           resolve(undefined)
         }
-        void this.readSse(reader, settle)
+        void this.readSse(reader, settle).catch(() => {})
       })
       return { settle: (): void => undefined, done }
     }

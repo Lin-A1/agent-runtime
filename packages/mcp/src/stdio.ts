@@ -53,8 +53,14 @@ export class StdioTransport {
       stdout: "pipe",
       stderr: "pipe",
     })
-    void this.readLoop(this.proc.stdout)
-    void this.drainStderr(this.proc.stderr)
+    // Fire-and-forget readers MUST be exception-safe: a stream error (e.g. the
+    // child dies mid-write, or its stdout closes during a timeout) makes these
+    // promises reject, and an unhandled rejection kills the WHOLE Bun process
+    // (the server startup died on this once — mcp:amap timeout → unreferenced
+    // async rejection → exit). Swallow here; transport-level failures surface
+    // via the RPC timeout/drain, never as an unhandled rejection.
+    void this.readLoop(this.proc.stdout).catch(() => {})
+    void this.drainStderr(this.proc.stderr).catch(() => {})
     await this.initialize()
   }
 
