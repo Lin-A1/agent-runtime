@@ -728,14 +728,8 @@ export function Sidebar({
         )}
       </div>
 
-      {/* Bottom user bar + provider/model switcher */}
+      {/* Bottom bar: provider/model switcher (user identity row removed) */}
       <div className="flex flex-none flex-col gap-1 border-t border-line px-2 py-2 text-xs select-none">
-        <div className="flex items-center justify-between px-1.5">
-          <div className="flex min-w-0 items-center gap-2">
-            <span className="flex h-5 w-5 items-center justify-center rounded-md bg-field font-mono text-[10px] font-bold text-ink">N</span>
-            <span className="truncate text-xs font-medium text-ink-2">newhorse</span>
-          </div>
-        </div>
         <ProviderPicker />
       </div>
     </div>

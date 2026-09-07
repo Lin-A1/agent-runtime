@@ -213,7 +213,11 @@ export function Composer({
     cursor = taRef.current?.selectionStart ?? value.length,
   ): void => {
     setText(value);
-    sessionDrafts.set(sessionId, { text: value, images });
+    // sessionDrafts 的 images 用函数式读取最新的，避免闭包旧值把刚导入的图片覆盖掉（切路由回来丢图）
+    setImages((latest) => {
+      sessionDrafts.set(sessionId, { text: value, images: latest });
+      return latest;
+    });
     const target = cursorCompletion(value, cursor);
     setCompletion(target);
     setCompletionIndex(0);
@@ -256,7 +260,13 @@ export function Composer({
         totalBytes += file.size;
       }
       if (!next.length) return;
-      setImages((value) => [...value, ...next]);
+      setImages((value) => {
+        const merged = [...value, ...next];
+        // 同步 sessionDrafts：添加图片后切路由或输入文字时，
+        // 避免 sessionDrafts 里的旧 images 把刚导入的图片覆盖掉。
+        sessionDrafts.set(sessionId, { text: text, images: merged });
+        return merged;
+      });
       setImageError(null);
     }).catch((err) => setImageError(err instanceof Error ? err.message : "读取图片失败"));
     await fileQueue.current;
