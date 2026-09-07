@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type ReactElement } from "react"
-import { Check, Loader2, Plug, X } from "lucide-react"
+import { Check, Loader2, Pencil, Plug, X } from "lucide-react"
 import { api } from "../api/client"
 import type { McpServerSettings, SettingsView } from "../api/types"
 
@@ -15,6 +15,10 @@ export function McpSettings(): ReactElement {
   const [busy, setBusy] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [editingName, setEditingName] = useState<string | null>(null)
+  const [urlVal, setUrlVal] = useState("")
+  const [keyName, setKeyName] = useState("")
+  const [keyVal, setKeyVal] = useState("")
 
   const load = useCallback((): void => {
     void api
@@ -51,6 +55,50 @@ export function McpSettings(): ReactElement {
       .putSettings({ mcpServers: next } as never)
       .then((s) => {
         setSettings(s)
+        setSaved(true)
+        setTimeout(() => setSaved(false), 1500)
+      })
+      .catch((err) => setError(err instanceof Error ? err.message : "保存失败"))
+      .finally(() => setBusy(null))
+  }
+
+  /** Save URL/CMD + Key for one server. Submits the full mcpServers map
+   *  (backend convention: omitted = removed, so never a single-entry patch). */
+  const saveConfig = (name: string): void => {
+    setBusy(name)
+    setError(null)
+    const cfg = servers[name]
+    if (!cfg) {
+      setBusy(null)
+      return
+    }
+    // Server config patches: start from the redacted entries (enabled only —
+    // env/headers stay unchanged unless the user typed a new key).
+    const next: Record<string, Record<string, unknown>> = {}
+    const trimmedUrl = urlVal.trim()
+    const trimmedKeyName = keyName.trim()
+    const trimmedKeyVal = keyVal.trim()
+    for (const [k, v] of Object.entries(servers ?? {})) {
+      const patch: Record<string, unknown> = { enabled: v.enabled === true }
+      if (k === name) {
+        if (trimmedUrl) patch.url = trimmedUrl
+        if (trimmedKeyName && trimmedKeyVal) {
+          // A user-entered key: the server merges env key-by-key (existing
+          // env entries survive unless overwritten here).
+          patch.env = { [trimmedKeyName]: trimmedKeyVal }
+        }
+        // No key typed → no env field → mergeRedactedEntry keeps the stored env.
+      }
+      next[k] = patch
+    }
+    void api
+      .putSettings({ mcpServers: next } as never)
+      .then((s) => {
+        setSettings(s)
+        setEditingName(null)
+        setUrlVal("")
+        setKeyName("")
+        setKeyVal("")
         setSaved(true)
         setTimeout(() => setSaved(false), 1500)
       })
@@ -96,33 +144,90 @@ export function McpSettings(): ReactElement {
             ) : (
               <div className="flex max-h-[50vh] flex-col gap-1 overflow-y-auto">
                 {Object.entries(servers).map(([name, cfg]) => (
-                  <div key={name} className="flex items-center gap-2 rounded-lg bg-bg2/60 px-2.5 py-2">
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-xs font-medium text-fg">{name}</div>
-                      <div className="truncate font-mono text-[10px] text-faint">
-                        {cfg.url ?? cfg.command ?? "?"}
-                        {cfg.hasEnv && " · 有 Key"}
-                        {cfg.hasHeaders && " · 有 Header"}
+                  <div key={name} className="rounded-lg bg-bg2/60 px-2.5 py-2">
+                    <div className="flex items-center gap-2">
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-xs font-medium text-fg">{name}</div>
+                        <div className="truncate font-mono text-[10px] text-faint">
+                          {cfg.url ?? cfg.command ?? "?"}
+                          {cfg.hasEnv && " · 有 Key"}
+                          {cfg.hasHeaders && " · 有 Header"}
+                        </div>
                       </div>
-                    </div>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={cfg.enabled === true}
-                      aria-label={`${name} 开关`}
-                      className={`relative h-5 w-9 flex-none rounded-full transition-colors ${
-                        cfg.enabled === true ? "bg-accent" : "bg-hover-2"
-                      }`}
-                      disabled={busy === name}
-                      onClick={() => toggle(name, cfg.enabled !== true)}
-                    >
-                      <span
-                        className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${
-                          cfg.enabled === true ? "translate-x-4" : "translate-x-0.5"
+                      <button
+                        type="button"
+                        className="icon-btn !h-6 !w-6 flex-none"
+                        aria-label={`配置 ${name}`}
+                        title="配置（URL / Key）"
+                        onClick={() => setEditingName(editingName === name ? null : name)}
+                      >
+                        {editingName === name ? <X size={11} /> : <Pencil size={11} />}
+                      </button>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={cfg.enabled === true}
+                        aria-label={`${name} 开关`}
+                        className={`relative h-5 w-9 flex-none rounded-full transition-colors ${
+                          cfg.enabled === true ? "bg-accent" : "bg-hover-2"
                         }`}
-                      />
-                      {busy === name && <Loader2 size={12} className="absolute right-1 top-1.5 animate-spin" />}
-                    </button>
+                        disabled={busy === name}
+                        onClick={() => toggle(name, cfg.enabled !== true)}
+                      >
+                        <span
+                          className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${
+                            cfg.enabled === true ? "translate-x-4" : "translate-x-0.5"
+                          }`}
+                        />
+                        {busy === name && <Loader2 size={12} className="absolute right-1 top-1.5 animate-spin" />}
+                      </button>
+                    </div>
+                    {editingName === name && (
+                      <div className="mt-2 flex flex-col gap-1.5 border-t border-line/40 pt-2">
+                        {(cfg.url || cfg.command) && (
+                          <label className="flex items-center gap-1.5">
+                            <span className="w-12 flex-none text-2xs text-faint">URL/CMD</span>
+                            <input
+                              className="min-w-0 flex-1 rounded bg-bg2 px-1.5 py-1 font-mono text-2xs text-fg"
+                              defaultValue={cfg.url ?? cfg.command ?? ""}
+                              onChange={(e) => setUrlVal(e.target.value)}
+                              placeholder={cfg.url ? "https://…" : "命令…"}
+                            />
+                          </label>
+                        )}
+                        {cfg.hasEnv && (
+                          <>
+                            <label className="flex items-center gap-1.5">
+                              <span className="w-12 flex-none text-2xs text-faint">Key名</span>
+                              <input
+                                className="min-w-0 flex-1 rounded bg-bg2 px-1.5 py-1 font-mono text-2xs text-fg"
+                                value={keyName}
+                                onChange={(e) => setKeyName(e.target.value)}
+                                placeholder="如 AMAP_MAPS_API_KEY"
+                              />
+                            </label>
+                            <label className="flex items-center gap-1.5">
+                              <span className="w-12 flex-none text-2xs text-faint">Key值</span>
+                              <input
+                                type="password"
+                                className="min-w-0 flex-1 rounded bg-bg2 px-1.5 py-1 font-mono text-2xs text-fg"
+                                value={keyVal}
+                                onChange={(e) => setKeyVal(e.target.value)}
+                                placeholder="已配置（留空保留原值）"
+                              />
+                            </label>
+                          </>
+                        )}
+                        <button
+                          type="button"
+                          className="mt-0.5 self-end rounded bg-accent px-2 py-1 text-2xs font-medium text-white transition-colors hover:opacity-90"
+                          disabled={busy === name}
+                          onClick={() => saveConfig(name)}
+                        >
+                          {busy === name ? <Loader2 size={11} className="animate-spin" /> : "保存配置"}
+                        </button>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
