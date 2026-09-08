@@ -49,7 +49,9 @@ describe("@newhorse/sdk (reuse entry point)", () => {
   })
 
   it("token auth flows through the SDK", async () => {
-    handle = await createServer({ port: 0, token: "sekret", sessionConfig: () => ({ provider, model: "m", fetch: async () => sse("data: [DONE]\n\n") }) })
+    // Bind 127.0.0.2 (loopback iface, non-whitelisted Host) so the SDK client
+    // hits the token gate the same way a LAN caller does.
+    handle = await createServer({ host: "127.0.0.2", port: 0, token: "sekret", sessionConfig: () => ({ provider, model: "m", fetch: async () => sse("data: [DONE]\n\n") }) })
     const bad = createSdkClient({ baseUrl: handle.baseUrl })
     await expect(bad.createSession()).rejects.toThrow(/401/)
     const good = createSdkClient({ baseUrl: handle.baseUrl, token: "sekret" })

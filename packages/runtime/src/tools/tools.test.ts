@@ -43,7 +43,9 @@ describe("builtin tools", () => {
     const { root, cleanup } = await ws()
     try {
       const base = createBuiltinTools({ workspace: root })
-      expect(base.map((t) => t.name).sort()).toEqual(["ask_user", "edit", "enter_plan_mode", "list", "lsp", "multi_edit", "read", "search", "view_image", "write"])
+      // "weather" (Open-Meteo, zh city names) is a default builtin since its
+      // introduction — zero credentials, always mounted.
+      expect(base.map((t) => t.name).sort()).toEqual(["ask_user", "edit", "enter_plan_mode", "list", "lsp", "multi_edit", "read", "search", "view_image", "weather", "write"])
       const withBash = createBuiltinTools({ workspace: root, enableBash: true })
       expect(withBash.map((t) => t.name)).toContain("bash")
     } finally {

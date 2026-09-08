@@ -178,7 +178,12 @@ describe("runtime server", () => {
   })
 
   it("401 when a token is configured but absent", async () => {
+    // Bind a NON-loopback-whitelisted address: 127.0.0.2 is still the loopback
+    // interface (bindable on every platform) but its Host header does not match
+    // the desktop-trust list (127.0.0.1/localhost/[::1]), so the token gate is
+    // exercised exactly as a LAN caller would hit it.
     handle = await createServer({
+      host: "127.0.0.2",
       port: 0,
       token: "secret",
       sessionConfig: () => ({ provider, model: "m", fetch: mockFetch("") }),
