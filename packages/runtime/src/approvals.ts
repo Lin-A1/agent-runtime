@@ -29,13 +29,20 @@ export interface ApprovalHub {
 
 export function createApprovalHub(opts?: { timeoutMs?: number }): ApprovalHub {
   const timeoutMs = opts?.timeoutMs ?? 120_000
-  const pending = new Map<string, { req: PendingApproval; resolve: (allow: boolean, reply?: string, scope?: "session" | "workspace") => void; timer: ReturnType<typeof setTimeout> }>()
+  const pending = new Map<string, { req: PendingApproval; resolve: (allow: boolean, reply?: string, scope?: "session" | "workspace") => void; timer?: ReturnType<typeof setTimeout> }>()
   const park = (req: ApprovalRequest): Promise<{ allow: boolean; reply?: string; scope?: "session" | "workspace" }> =>
     new Promise<{ allow: boolean; reply?: string; scope?: "session" | "workspace" }>((resolve) => {
       const entry: PendingApproval = { ...req, createdAt: Date.now(), expiresAt: Date.now() + timeoutMs }
       // Ref'd on purpose: the auto-deny MUST fire (fail-closed). Bun 1.3.x
       // unref'd timers were observed not to fire on an idle loop.
-      const timer = setTimeout(() => {
+      //
+      // `question` requests NEVER auto-deny: they are the agent asking the
+      // operator to think (travel-plan trade-offs can take minutes) — an
+      // unanswered question is answered by the operator pressing the dock's
+      // "不作答" button, not by a timer. Execpolicy gates keep the timeout
+      // (fail-closed around side effects).
+      const isQuestion = req.kind === "question"
+      const timer = isQuestion ? undefined : setTimeout(() => {
         if (pending.get(req.id)) {
           pending.delete(req.id)
           resolve({ allow: false })
