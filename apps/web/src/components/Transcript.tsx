@@ -913,25 +913,26 @@ export function Transcript({
               )}
 
             {liveTurn && <LiveTurnView turn={liveTurn} />}
-            {/* Floating scroll to bottom anchor — sticky INSIDE the scroll
-                stream so it pins to the visible viewport bottom (an absolute
-                one drifted mid-message on mobile layouts). */}
-            {!sticky && (
-              <button
-                type="button"
-                className="pop-in btn sticky bottom-4 self-center z-20 !bg-panel/95 !border-line-strong text-fg shadow-overlay backdrop-blur-md"
-                onClick={() => {
-                  const el = scrollRef.current
-                  if (el) el.scrollTop = el.scrollHeight
-                }}
-              >
-                <ChevronDown size={13} /> 回到底部
-              </button>
-            )}
             <div className="h-6 flex-none" />
           </div>
         </div>
         </div>
+
+        {/* Floating scroll-to-bottom — anchored to the chat column (bottom,
+            above the composer) rather than inside the long message stream, so
+            it never drifts mid-content on any viewport. */}
+        {!sticky && (
+          <button
+            type="button"
+            className="pop-in btn absolute bottom-4 left-1/2 z-20 -translate-x-1/2 !bg-panel/95 !border-line-strong text-fg shadow-overlay backdrop-blur-md"
+            onClick={() => {
+              const el = scrollRef.current
+              if (el) el.scrollTop = el.scrollHeight
+            }}
+          >
+            <ChevronDown size={13} /> 回到底部
+          </button>
+        )}
 
           {/* Approval dock: engine execpolicy gates + ask_user questions —
               polls the hub and renders above the composer. */}
