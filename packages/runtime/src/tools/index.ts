@@ -24,6 +24,7 @@ import { createSelfTools, type SelfAwarenessOptions } from "./self"
 
 export { createExecPolicy, createBuiltinExecPolicy, rulesFilePath, simpleHash } from "./execpolicy"
 export { createMcpManageTool, type McpManageCtx } from "./mcp-manage"
+export { createScheduleManageTool, type ScheduleManageCtx } from "./schedule-manage"
 
 /**
  * Build the builtin toolset (M3.5). These are the agent's "hands": read / write

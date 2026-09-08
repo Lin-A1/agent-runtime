@@ -27,7 +27,11 @@ export const defaultContextProvider: SessionContextProvider = async (workspace) 
   // system context, so this block deliberately carries no clock that could go
   // stale — live time is one current_time tool call away.
   const env = `\n\n[environment]\ncwd: ${workspace}\nplatform: ${process.platform}`
-  return docsCtx ? rootLine + docsCtx + env : rootLine + env
+  // Emotion tag (frontend drives the avatar ball from it): one short tag on
+  // the LAST line of every reply. The frontend strips it from the rendered
+  // text — the model omitting it is fine (ball keeps its state color).
+  const mood = `\n\n[mood] 每次回复的最后一行以 [mood:标签] 结尾，标签从这些里选一个：happy 开心、excited 兴奋、satisfied 满意/完成、down 失落、angry 生气、worried 担忧、puzzled 疑惑、tired 疲惫、surprised 惊讶、shy 害羞、neutral 平静。标签单独占最后一行，不要有任何其他解释。`
+  return docsCtx ? rootLine + docsCtx + env + mood : rootLine + env + mood
 }
 
 /**

@@ -1,6 +1,6 @@
 import { createServer } from "./server"
 import type { SessionCreateRequest } from "./server"
-import { createApp, loadRuntimeSettings, createSqliteSessionDirectory, createApprovalHub, createScheduler, createDagRunner, writeAgentHomeConfig, createMcpManageTool, type Schedule, type App } from "@newhorse/runtime"
+import { createApp, loadRuntimeSettings, createSqliteSessionDirectory, createApprovalHub, createScheduler, createDagRunner, writeAgentHomeConfig, createMcpManageTool, createScheduleManageTool, type Schedule, type App } from "@newhorse/runtime"
 import type { Tool } from "@newhorse/core"
 import { createMcpTools } from "@newhorse/mcp"
 import { MemoryMemoryStore, SqliteMemoryStore, createEmbeddingProvider } from "@newhorse/memory"
@@ -100,12 +100,19 @@ const loadMcpTools = async (): Promise<Tool[]> => {
   const fresh = loadRuntimeSettings({ env: process.env })
   if (!fresh.mcpServers || Object.keys(fresh.mcpServers).length === 0) return []
   const { createMcpTools: cmt } = await import("@newhorse/mcp")
-  const loaded = await cmt(fresh.mcpServers)
-  mcpDispose = () => loaded.dispose()
-  if (loaded.resourcesByServer && Object.keys(loaded.resourcesByServer).length > 0) {
-    mcpResources = { byServer: loaded.resourcesByServer as never, readResource: loaded.readResource }
+  try {
+    const loaded = await cmt(fresh.mcpServers)
+    mcpDispose = () => loaded.dispose()
+    if (loaded.resourcesByServer && Object.keys(loaded.resourcesByServer).length > 0) {
+      mcpResources = { byServer: loaded.resourcesByServer as never, readResource: loaded.readResource }
+    }
+    return loaded.tools
+  } catch (e) {
+    // Fail-soft at the seam too: an exceptional server (auth timeout etc.)
+    // must never take down the whole reload path (or the process).
+    console.error(`[mcp] reload failed — keeping previous tools:`, e instanceof Error ? e.message : e)
+    return []
   }
-  return loaded.tools
 }
 let appsRegistry: Map<string, App> | undefined
 const hotReloadMcp = async (): Promise<void> => {
@@ -124,6 +131,9 @@ const mcpManageTool = () => createMcpManageTool({
     await hotReloadMcp()
   },
 })
+// The per-session sessionId comes from ToolCtx at execute time — one shared
+// tool instance serves every session (each manages its OWN schedules).
+const scheduleManageTool = () => createScheduleManageTool({ scheduler: schedules })
 const mcp = settings.mcpServers && Object.keys(settings.mcpServers).length > 0 ? await loadMcpTools() : undefined
 if (mcp?.length) console.log(`  mcp       : ${mcp.length} tool(s)`)
 
@@ -146,10 +156,10 @@ const handle = await createServer({
   // any configured MCP server on/off (or change its command/url) without
   // touching the filesystem (the exec policy may chroot the session's fs/bash
   // to the workspace, which would block direct config.json access).
-  tools: [...(mcp ?? []), mcpManageTool()],
+  tools: [...(mcp ?? []), mcpManageTool(), scheduleManageTool()],
   // Hot MCP switching: reload the explicit slice from live config and push it
   // to every live app (next prompt sees it — no restart; mcp_manage too).
-  loadTools: async () => [...(await loadMcpTools()), mcpManageTool()],
+  loadTools: async () => [...(await loadMcpTools()), mcpManageTool(), scheduleManageTool()],
   onApps: (apps) => {
     appsRegistry = apps
   },
