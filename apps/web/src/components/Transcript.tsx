@@ -47,6 +47,7 @@ import { ToolTrace } from "./ToolTrace"
 import { ThinkingTrace } from "./ThinkingTrace"
 import { ChangeList } from "./ChangeList"
 import { Composer } from "./Composer"
+import { ApprovalDock } from "./ApprovalDock"
 import { TurnFooter } from "./TurnFooter"
 import { PixelLoader } from "./PixelLoader"
 import { useMediaQuery } from "../lib/useMediaQuery"
@@ -931,6 +932,10 @@ export function Transcript({
           </div>
         </div>
         </div>
+
+          {/* Approval dock: engine execpolicy gates + ask_user questions —
+              polls the hub and renders above the composer. */}
+          <ApprovalDock sessionId={sessionId} />
 
           {/* Dock composer lives INSIDE the chat sub-column so it stays
               center-aligned with the stream column (mobile keeps it pinned) */}
