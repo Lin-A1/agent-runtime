@@ -1756,9 +1756,10 @@ main > div { min-width: 0; }
   body { font-size: 15px; }
   .composer-commandbar { border-radius: 10px; }
   .composer-textarea { min-height: 64px; padding: 14px 14px 8px; font-size: 16px; }
-  .composer-toolbar { align-items: center; flex-wrap: wrap; gap: 7px; padding: 5px 10px max(10px, env(safe-area-inset-bottom, 10px)); }
+  .composer-toolbar { align-items: center; flex-wrap: nowrap; gap: 7px; padding: 5px 10px max(10px, env(safe-area-inset-bottom, 10px)); }
   .composer-toolbar-left { min-width: 0; flex: 1 1 auto; }
-  .composer-toolbar-right { margin-left: auto; }
+  .composer-toolbar-right { margin-left: auto; flex: none; }
+  .composer-status { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .composer-model { max-width: 34vw; font-size: 10px; }
   .composer-scope { font-size: 10px; }
   .policy-trigger { min-height: 38px; padding-inline: 9px; }

@@ -899,7 +899,7 @@ export function Transcript({
             {!sticky && (
               <button
                 type="button"
-                className="pop-in btn sticky bottom-4 mx-auto z-20 !bg-panel/95 !border-line-strong text-fg shadow-overlay backdrop-blur-md"
+                className="pop-in btn sticky bottom-4 self-center z-20 !bg-panel/95 !border-line-strong text-fg shadow-overlay backdrop-blur-md"
                 onClick={() => {
                   const el = scrollRef.current
                   if (el) el.scrollTop = el.scrollHeight

@@ -571,7 +571,7 @@ export function Composer({
                   </div>
                 )}
               </div>
-              <span className="composer-scope">
+              <span className="composer-scope composer-status">
                 <span className="composer-scope-dot" />
                 {busy ? "插话中 · 发送即插入当前回合" : "准备就绪"}
               </span>
