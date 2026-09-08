@@ -83,71 +83,87 @@ interface McpTransport {
 export async function createMcpTools(configs: Record<string, McpServerConfig>, fetchImpl: typeof fetch = fetch): Promise<McpToolsResult> {
   const transports: Array<{ close(): Promise<void> }> = []
   const live = new Map<string, McpTransport>()
+
+  // Per-server mount (start + tools/list + resources/list) — ALL servers in
+  // PARALLEL: a slow npx cold download (30s timeout) no longer serializes
+  // behind every other server, so a cold boot reaches listening in ONE timeout
+  // window instead of N. Each server fails soft on its own; results are
+  // assembled in CONFIG ORDER below so tool ordering stays stable across
+  // hot reloads.
+  const mounted = await Promise.all(
+    Object.entries(configs).map(async ([name, cfg]) => {
+      if (cfg.enabled === false) return null
+      try {
+        const transport = cfg.url
+          ? new HttpTransport(cfg.url, cfg.headers, fetchImpl, cfg.timeoutMs ?? 30_000, name)
+          : cfg.command
+            ? new StdioTransport(cfg.command, cfg.args ?? [], cfg.env, cfg.timeoutMs ?? 30_000, name)
+            : null
+        if (!transport) {
+          console.error(`[mcp:${name}] config needs "command" or "url" — skipped`)
+          return null
+        }
+        await transport.start()
+        const allow = cfg.allowedTools ? new Set(cfg.allowedTools) : undefined
+        // Follow pagination: servers with >1 page of tools silently truncate
+        // otherwise, and a truncated surface looks like "the tool is missing".
+        const defs: McpToolDef[] = []
+        let cursor: string | undefined
+        do {
+          const page = await transport.request<{ tools?: McpToolDef[]; nextCursor?: string }>("tools/list", ...(cursor ? [{ cursor } as Record<string, unknown>] : []))
+          defs.push(...(page.tools ?? []))
+          cursor = page.nextCursor
+        } while (cursor)
+        // resources/list on the SAME live transport (one spawn per server).
+        const resources: McpResourceDef[] = []
+        let resourcesError: string | undefined
+        try {
+          let rcursor: string | undefined
+          do {
+            const page = await transport.request<{ resources?: McpResourceDef[]; nextCursor?: string }>("resources/list", ...(rcursor ? [{ cursor: rcursor } as Record<string, unknown>] : []))
+            resources.push(...(page.resources ?? []))
+            rcursor = page.nextCursor
+          } while (rcursor)
+        } catch (e) {
+          resourcesError = e instanceof Error ? e.message : String(e)
+        }
+        return { name, transport, tools: defs.filter((def) => !allow || allow.has(def.name)), resources, resourcesError }
+      } catch (err) {
+        // Fail-soft: a dead server is a warning, never a session-creation error.
+        console.error(`[mcp:${name}] failed to start or list tools — skipped:`, err instanceof Error ? err.message : err)
+        return null
+      }
+    }),
+  )
+
+  // Assemble in config order (stable ordering across reloads).
   const tools: Tool[] = []
   const resourcesByServer: McpToolsResult["resourcesByServer"] = {}
-
-  for (const [name, cfg] of Object.entries(configs)) {
-    if (cfg.enabled === false) continue
-    try {
-      const transport = cfg.url
-        ? new HttpTransport(cfg.url, cfg.headers, fetchImpl, cfg.timeoutMs ?? 30_000, name)
-        : cfg.command
-          ? new StdioTransport(cfg.command, cfg.args ?? [], cfg.env, cfg.timeoutMs ?? 30_000, name)
-          : null
-      if (!transport) {
-        console.error(`[mcp:${name}] config needs "command" or "url" — skipped`)
-        continue
-      }
-      await transport.start()
-      transports.push(transport)
-      live.set(name, transport as unknown as McpTransport)
-      const allow = cfg.allowedTools ? new Set(cfg.allowedTools) : undefined
-      const defs: McpToolDef[] = []
-      // Follow pagination: servers with >1 page of tools silently truncate
-      // otherwise, and a truncated surface looks like "the tool is missing".
-      let cursor: string | undefined
-      do {
-        const page = await transport.request<{ tools?: McpToolDef[]; nextCursor?: string }>("tools/list", ...(cursor ? [{ cursor } as Record<string, unknown>] : []))
-        defs.push(...(page.tools ?? []))
-        cursor = page.nextCursor
-      } while (cursor)
-      for (const def of defs) {
-        if (allow && !allow.has(def.name)) continue
-        tools.push({
-          name: `mcp__${name}__${def.name}`,
-          description: def.description,
-          inputSchema: def.inputSchema,
-          sideEffects: true, // unknown third-party effects — conservative always
-          execute: async (input: unknown) => {
-            const result = await transport.request<McpCallResult>("tools/call", { name: def.name, ...(input !== undefined ? { arguments: input } : {}) })
-            const text = (result.content ?? [])
-              .filter((c) => c.type === "text" || c.text !== undefined)
-              .map((c) => c.text ?? "")
-              .join("\n")
-            if (result.isError) throw new Error(text || `mcp tool ${def.name} reported an error`)
-            // Prefer the joined text when there is any; an empty content list
-            // falls through to the raw result so callers never lose data.
-            return text !== "" ? text : result
-          },
-        })
-      }
-      // resources/list on the SAME live transport (one spawn per server).
-      try {
-        const resources: McpResourceDef[] = []
-        let rcursor: string | undefined
-        do {
-          const page = await transport.request<{ resources?: McpResourceDef[]; nextCursor?: string }>("resources/list", ...(rcursor ? [{ cursor: rcursor } as Record<string, unknown>] : []))
-          resources.push(...(page.resources ?? []))
-          rcursor = page.nextCursor
-        } while (rcursor)
-        resourcesByServer[name] = { resources }
-      } catch (e) {
-        resourcesByServer[name] = { resources: [], error: e instanceof Error ? e.message : String(e) }
-      }
-    } catch (err) {
-      // Fail-soft: a dead server is a warning, never a session-creation error.
-      console.error(`[mcp:${name}] failed to start or list tools — skipped:`, err instanceof Error ? err.message : err)
+  for (const m of mounted) {
+    if (!m) continue
+    const { name, transport } = m
+    transports.push(transport)
+    live.set(name, transport as unknown as McpTransport)
+    for (const def of m.tools) {
+      tools.push({
+        name: `mcp__${name}__${def.name}`,
+        description: def.description,
+        inputSchema: def.inputSchema,
+        sideEffects: true, // unknown third-party effects — conservative always
+        execute: async (input: unknown) => {
+          const result = await transport.request<McpCallResult>("tools/call", { name: def.name, ...(input !== undefined ? { arguments: input } : {}) })
+          const text = (result.content ?? [])
+            .filter((c) => c.type === "text" || c.text !== undefined)
+            .map((c) => c.text ?? "")
+            .join("\n")
+          if (result.isError) throw new Error(text || `mcp tool ${def.name} reported an error`)
+          // Prefer the joined text when there is any; an empty content list
+          // falls through to the raw result so callers never lose data.
+          return text !== "" ? text : result
+        },
+      })
     }
+    resourcesByServer[name] = m.resourcesError ? { resources: [], error: m.resourcesError } : { resources: m.resources }
   }
 
   return {
