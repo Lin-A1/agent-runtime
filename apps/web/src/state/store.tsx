@@ -136,6 +136,9 @@ export interface LiveTurn {
   step: number
   busy: boolean
   startedAt: number
+  /** Emotion tag parsed from the reply tail ([mood:xxx] — engine-injected
+   *  instruction). Drives the avatar ball once the reply finishes. */
+  mood?: string
 }
 
 interface StreamStore {
@@ -173,6 +176,19 @@ function outputText(output: unknown): string {
   } catch {
     return String(output)
   }
+}
+
+/** Emotion tag the engine asks the model to append ([mood:标签] on the last
+ *  line): extract it from a text block tail, strip it from display text.
+ *  Tolerates a half-arrived tag while streaming (hides the partial tail). */
+const MOOD_TAG_RE = /\s*\[mood:(happy|excited|satisfied|down|angry|worried|puzzled|tired|surprised|shy|neutral)\]\s*$/i
+const MOOD_TAG_PARTIAL_RE = /\s*\[mood:[a-z]*$/i
+function extractMoodTail(text: string): { text: string; mood?: string } {
+  const full = text.match(MOOD_TAG_RE)
+  if (full) return { text: text.slice(0, full.index), mood: full[1]!.toLowerCase() }
+  const partial = text.match(MOOD_TAG_PARTIAL_RE)
+  if (partial) return { text: text.slice(0, partial.index) }
+  return { text }
 }
 
 export function StreamProvider({ children }: { children: ReactNode }): React.ReactElement {
@@ -241,10 +257,13 @@ export function StreamProvider({ children }: { children: ReactNode }): React.Rea
           const blocks = [...t.blocks]
           const last = blocks[blocks.length - 1]
           switch (ev.type) {
-            case "text":
-              if (last?.kind === "text") blocks[blocks.length - 1] = { kind: "text", text: last.text + ev.text }
-              else blocks.push({ kind: "text", text: ev.text })
-              return { ...t, blocks }
+            case "text": {
+              const joined = last?.kind === "text" ? last.text + ev.text : ev.text
+              const { text, mood } = extractMoodTail(joined)
+              if (last?.kind === "text") blocks[blocks.length - 1] = { kind: "text", text }
+              else blocks.push({ kind: "text", text })
+              return mood ? { ...t, blocks, mood } : { ...t, blocks }
+            }
             case "reasoning":
               if (last?.kind === "thinking") blocks[blocks.length - 1] = { kind: "thinking", text: last.text + ev.text }
               else blocks.push({ kind: "thinking", text: ev.text })

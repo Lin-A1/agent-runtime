@@ -141,8 +141,27 @@ function groupLiveBlocks(blocks: LiveBlock[]): GroupedLiveBlock[] {
 }
 
 // ---------- Infer real-time Live Mood from agent execution blocks ----------
+// Emotion-tag → BallMood (engine asks the model to append [mood:xx]; the
+// store strips it from display text and surfaces it as turn.mood).
+const MOOD_TO_BALL: Record<string, BallMood> = {
+  happy: "happy",
+  excited: "happy",
+  satisfied: "satisfied",
+  down: "down",
+  angry: "angry",
+  worried: "puzzled",
+  puzzled: "puzzled",
+  tired: "tired",
+  surprised: "surprised",
+  shy: "shy",
+  neutral: "idle",
+}
+
 function inferLiveMood(turn: LiveTurn): BallMood {
   if (turn.error) return "error"
+  // Reply content emotion (parsed from the [mood:xx] tail) wins once present —
+  // it is the model telling us how the answer "felt".
+  if (turn.mood && MOOD_TO_BALL[turn.mood]) return MOOD_TO_BALL[turn.mood]
   if (!turn.busy) return "done"
   const lastBlock = turn.blocks[turn.blocks.length - 1]
   if (!lastBlock) return "receiving"

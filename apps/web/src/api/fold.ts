@@ -163,7 +163,10 @@ export function foldTranscript(events: StoredEventRow[]): TranscriptItem[] {
 
   const flushText = (): void => {
     if (!textBuf) return
-    const block: TurnBlock = { kind: "text", text: textBuf, ...(textTs ? { ts: textTs } : {}) }
+    // Strip the engine-injected emotion tag ([mood:xx] on the last line) —
+    // it is machine-facing (drives the avatar ball), never user-visible.
+    const stripped = textBuf.replace(/\s*\[mood:(happy|excited|satisfied|down|angry|worried|puzzled|tired|surprised|shy|neutral)\]\s*$/i, "")
+    const block: TurnBlock = { kind: "text", text: stripped, ...(textTs ? { ts: textTs } : {}) }
     if (turn) turn.blocks.push(block)
     textBuf = ""
     textTs = undefined
