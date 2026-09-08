@@ -106,7 +106,7 @@ export function ApprovalDock({ hidden, sessionId, onPendingCount }: { hidden?: b
       </div>
 
       <div className="px-3 py-2.5">
-        <p className="whitespace-pre-wrap text-xs leading-relaxed text-fg">{current.target}</p>
+        <p className="line-clamp-3 whitespace-pre-wrap text-xs leading-relaxed text-fg" title={current.target}>{current.target}</p>
 
         {isQuestion && current.options && current.options.length > 0 && (
           <div className="mt-2 flex flex-wrap gap-1.5">

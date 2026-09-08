@@ -738,6 +738,9 @@ export function Transcript({
   // --- Auto scroll ---
   const scrollRef = useRef<HTMLDivElement>(null)
   const [sticky, setSticky] = useState(true)
+  // Pending approvals (ask_user / execpolicy questions) occupy the dock above
+  // the composer — the scroll-to-bottom anchor hides while one is up.
+  const [pendingApprovals, setPendingApprovals] = useState(0)
   const onScroll = useCallback(() => {
     const el = scrollRef.current
     if (!el) return
@@ -921,7 +924,7 @@ export function Transcript({
         {/* Floating scroll-to-bottom — anchored to the chat column (bottom,
             above the composer) rather than inside the long message stream, so
             it never drifts mid-content on any viewport. */}
-        {!sticky && (
+        {!sticky && pendingApprovals === 0 && (
           <button
             type="button"
             className="pop-in btn absolute bottom-4 left-1/2 z-20 -translate-x-1/2 !bg-panel/95 !border-line-strong text-fg shadow-overlay backdrop-blur-md"
@@ -935,8 +938,10 @@ export function Transcript({
         )}
 
           {/* Approval dock: engine execpolicy gates + ask_user questions —
-              polls the hub and renders above the composer. */}
-          <ApprovalDock sessionId={sessionId} />
+              polls the hub and renders above the composer. While it holds a
+              pending question it takes the scroll-button's spot, so the
+              scroll-to-bottom anchor hides to keep the two from stacking. */}
+          <ApprovalDock sessionId={sessionId} onPendingCount={setPendingApprovals} />
 
           {/* Dock composer lives INSIDE the chat sub-column so it stays
               center-aligned with the stream column (mobile keeps it pinned) */}

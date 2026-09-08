@@ -34,7 +34,7 @@ test("approval dock mounts exactly once and gates hide with it", async () => {
   const transcript = await Bun.file(new URL("../components/Transcript.tsx", import.meta.url)).text()
   const approval = await Bun.file(new URL("../components/ApprovalDock.tsx", import.meta.url)).text()
   expect(transcript.match(/<ApprovalDock\b/g)).toHaveLength(1)
-  expect(transcript).toContain("<ApprovalDock sessionId={sessionId} />")
+  expect(transcript).toContain("<ApprovalDock sessionId={sessionId} onPendingCount={setPendingApprovals} />")
   // Polling + settle wiring exists.
   expect(approval).toContain(".approvals()")
   expect(approval).toContain(".approve(")
