@@ -893,15 +893,13 @@ export function Transcript({
               )}
 
             {liveTurn && <LiveTurnView turn={liveTurn} />}
-            <div className="h-6 flex-none" />
-          </div>
-        </div>
-
-            {/* Floating scroll to bottom anchor */}
+            {/* Floating scroll to bottom anchor — sticky INSIDE the scroll
+                stream so it pins to the visible viewport bottom (an absolute
+                one drifted mid-message on mobile layouts). */}
             {!sticky && (
               <button
                 type="button"
-                className="pop-in btn absolute bottom-4 left-1/2 z-20 -translate-x-1/2 !bg-panel/95 !border-line-strong text-fg shadow-overlay backdrop-blur-md"
+                className="pop-in btn sticky bottom-4 mx-auto z-20 !bg-panel/95 !border-line-strong text-fg shadow-overlay backdrop-blur-md"
                 onClick={() => {
                   const el = scrollRef.current
                   if (el) el.scrollTop = el.scrollHeight
@@ -910,7 +908,10 @@ export function Transcript({
                 <ChevronDown size={13} /> 回到底部
               </button>
             )}
+            <div className="h-6 flex-none" />
           </div>
+        </div>
+        </div>
 
           {/* Dock composer lives INSIDE the chat sub-column so it stays
               center-aligned with the stream column (mobile keeps it pinned) */}
