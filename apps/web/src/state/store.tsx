@@ -14,6 +14,7 @@ import type { ChatImage, PanelInfo, SessionRow, SettingsView } from "../api/type
 import { useBus } from "../api/bus"
 import { normWorkspace } from "../lib/workspace"
 import { uuid } from "../lib/uuid"
+import { notifyTurnDone } from "../lib/notify"
 import { deriveAutoTitle, type FileChange } from "../api/fold"
 
 // ---------- app store ----------
@@ -178,6 +179,13 @@ function outputText(output: unknown): string {
   }
 }
 
+// The session the user is CURRENTLY looking at (AppShell syncs the route here)
+// — notifications are suppressed for the conversation on screen.
+let viewedSessionId: string | undefined
+export function setViewedSessionId(id: string | undefined): void {
+  viewedSessionId = id
+}
+
 /** Emotion tag the engine asks the model to append ([mood:标签] on the last
  *  line): extract it from a text block tail, strip it from display text.
  *  Tolerates a half-arrived tag while streaming (hides the partial tail). */
@@ -319,7 +327,15 @@ export function StreamProvider({ children }: { children: ReactNode }): React.Rea
         }
       } finally {
         if (aborts.current.get(sessionId) === ctrl) aborts.current.delete(sessionId)
+        const wasAborted = ctrl.signal.aborted
         updateTurn(sessionId, promptId, (t) => ({ ...t, busy: false }))
+        // Reach a human who looked away: system notification + tab-title flash.
+        if (!wasAborted) {
+          const turn = liveRef.current.get(sessionId)
+          const lastText = [...(turn?.blocks ?? [])].reverse().find((b) => b.kind === "text")
+          const summary = lastText && lastText.kind === "text" ? lastText.text.replace(/\s+/g, " ").trim() : ""
+          notifyTurnDone(sessionId, summary, { viewedSessionId, isError: !!turn?.error })
+        }
       }
       return true
     },

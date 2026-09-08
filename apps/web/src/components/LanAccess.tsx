@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type ReactElement } from "react"
 import { Check, Copy, QrCode, X } from "lucide-react"
 import QRCode from "qrcode"
 import { api } from "../api/client"
+import { notificationPermission, requestNotificationPermission } from "../lib/notify"
 
 /**
  * 手机连接（LAN access）：侧边栏底部一个小手机图标，点击弹出居中弹窗。
@@ -18,6 +19,7 @@ export function LanAccess(): ReactElement {
   const [qr, setQr] = useState<string | null>(null)
   const [lanUrl, setLanUrl] = useState("")
   const [loaded, setLoaded] = useState(false)
+  const [notifOn, setNotifOn] = useState(() => notificationPermission() === "granted")
 
   const load = useCallback((): void => {
     void Promise.all([api.lanToken(), api.network().catch(() => null)])
@@ -147,6 +149,23 @@ export function LanAccess(): ReactElement {
                 重启服务后自动生成，即可扫码连接手机。
               </div>
             )}
+
+            {/* 桌面通知：定时任务/后台回复完成时提醒（页面不在前台时）。 */}
+            <div className="mt-3 flex items-center justify-between border-t border-line/40 pt-2.5">
+              <span className="text-2xs text-faint">桌面通知（任务完成时提醒）</span>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={notifOn}
+                aria-label="桌面通知开关"
+                className={`relative h-5 w-9 flex-none rounded-full transition-colors ${notifOn ? "bg-accent" : "bg-hover-2"}`}
+                onClick={() => {
+                  void requestNotificationPermission().then((p) => setNotifOn(p === "granted"))
+                }}
+              >
+                <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${notifOn ? "translate-x-4" : "translate-x-0.5"}`} />
+              </button>
+            </div>
           </div>
         </div>
       )}

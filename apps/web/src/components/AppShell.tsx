@@ -10,7 +10,7 @@ import { useCallback, useEffect, useState, type ReactElement } from "react"
 import { useNavigate, useParams } from "react-router-dom"
 import { Menu, Plus } from "lucide-react"
 import { api } from "../api/client"
-import { AppProvider, StreamProvider, useApp } from "../state/store"
+import { AppProvider, StreamProvider, useApp, setViewedSessionId } from "../state/store"
 import { Sidebar } from "./Sidebar"
 import { Transcript } from "./Transcript"
 import { EmotionBall, HeroParticles } from "./EmotionBall"
@@ -55,6 +55,12 @@ function Shell(): ReactElement {
   const navigate = useNavigate()
   const { sessions, sessionsLoading, refreshSessions, workspace } = useApp()
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
+
+  // Notification suppression target: the session currently on screen never
+  // notifies about itself.
+  useEffect(() => {
+    setViewedSessionId(id)
+  }, [id])
 
   // Default-session resolution: latest task session, else the butler.
   useEffect(() => {
