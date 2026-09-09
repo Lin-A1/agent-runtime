@@ -1,6 +1,6 @@
 # ZCode vs newhorse — 功能缺口详细报告（agent 输出）
 
-> 2026-09-01。由 Explore agent 对 G:/temp/zcode-i18n-keys.txt (5000 键) + newhorse UI 全量代码审读产出。
+> 2026-09-01。由 Explore agent 对 G:/temp/zcode-research/zcode-i18n-keys.txt (5000 键) + newhorse UI 全量代码审读产出。
 > 摘要版见 docs/runtime-comparison.md §7 和 docs/zcode-gap-report.md。
 
 ## 已对齐（28 个功能面）

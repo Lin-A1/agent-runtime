@@ -12,7 +12,7 @@ import { useApp } from "../state/store"
  *    redaction contract);
  *  - add a new provider profile; remove one (providersRemove).
  * Visual language (spinner dots, dense rows) adapted from the galaxy
- * collection's loader/menu patterns (G:/temp/galaxy, MIT).
+ * collection's loader/menu patterns (G:/temp/ref/galaxy, MIT).
  */
 
 interface DraftProfile {

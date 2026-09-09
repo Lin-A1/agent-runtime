@@ -48,4 +48,4 @@ DAG 编排页、运行时目录、类型化记忆+手动写入、webhook 渠道�
 
 以下为详细分类报告。
 
-（完整报告内容见 agent 输出，此处为存档副本的引用。所有键名均可通过 `G:/temp/zcode-i18n-keys.txt` 交叉验证。）
+（完整报告内容见 agent 输出，此处为存档副本的引用。所有键名均可通过 `G:/temp/zcode-research/zcode-i18n-keys.txt` 交叉验证。）

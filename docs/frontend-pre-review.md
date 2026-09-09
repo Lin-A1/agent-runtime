@@ -288,10 +288,10 @@ DAG 列表（done/startedAt）+ 节点状态视图（六态：pending/running/su
 ```bash
 node -e "
 const fs=require('fs')
-const s=fs.readFileSync('G:/temp/zcode-src/out/renderer/assets/IntlProvider-CyTmJHD8.js','utf8')
+const s=fs.readFileSync('G:/temp/zcode-research/zcode-src/out/renderer/assets/IntlProvider-CyTmJHD8.js','utf8')
 const re=/\"([A-Za-z0-9_.\-]{2,70})\":\`([^\`]+)\`/g
 const map=new Map(); let m
 while((m=re.exec(s))!==null) if(!map.has(m[1])) map.set(m[1],m[2])
-fs.writeFileSync('G:/temp/zcode-i18n-keys.txt',[...map].map(([k,v])=>k+'\t'+v).join('\n'))
+fs.writeFileSync('G:/temp/zcode-research/zcode-i18n-keys.txt',[...map].map(([k,v])=>k+'\t'+v).join('\n'))
 console.log(map.size)"
 ```
