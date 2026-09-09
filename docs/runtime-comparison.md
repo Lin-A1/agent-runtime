@@ -1,6 +1,6 @@
 # Runtime 对标：newhorse × ZCode × codex — 上下文管理 / Loop 工程 / 工具 / Harness 工程
 
-> 2026-09-01。方法与证据等级：**newhorse** = 本仓库源码逐文件核实（包路径+行号）；**ZCode** = D:\ZCode 安装包 `resources/glm/zcode.cjs`（12.6MB 单文件，claude-code 同构；minified 但符号名可读，本文引用的函数名/常量均从 bundle 解出）；**codex** = G:/temp/codex（codex-rs 源码，path+symbol 级证据，由探索轮产出）。三家都是「外层会话循环 + 内层 turn（采样→工具→再采样）」的同构体，差异在细节哲学——这正是本文的题材。
+> 2026-09-01。方法与证据等级：**newhorse** = 本仓库源码逐文件核实（包路径+行号）；**ZCode** = D:\ZCode 安装包 `resources/glm/zcode.cjs`（12.6MB 单文件，claude-code 同构；minified 但符号名可读，本文引用的函数名/常量均从 bundle 解出）；**codex** = G:/temp/ref/codex（codex-rs 源码，path+symbol 级证据，由探索轮产出）。三家都是「外层会话循环 + 内层 turn（采样→工具→再采样）」的同构体，差异在细节哲学——这正是本文的题材。
 
 ## 0. 一页总览
 
